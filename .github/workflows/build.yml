@@ -32,6 +32,9 @@ jobs:
         remove-codeql: 'true'
         remove-cached-tools: 'true'
 
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
     - name: Clone repository
       run: |
         git clone --single-branch --depth 1 -b ${{ inputs.branch }} https://github.com/${{ inputs.fork }}/dotnet
