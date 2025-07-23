@@ -39,7 +39,7 @@ jobs:
     - name: Patch repository
       run: |
         cd ${{ github.workspace }}/dotnet
-        patch -p1 < no_publish.patch
+        patch -p1 < ../no_publish.patch
 
     - name: Build
       run: |
