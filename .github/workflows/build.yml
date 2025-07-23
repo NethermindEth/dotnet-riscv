@@ -65,6 +65,7 @@ jobs:
     - name: Make release
       if: ${{ inputs.release }}
       run: |
+        sudo apt update -y
         sudo apt install -y hub
 
         # hub(1) requires release to be created inside a git repo
