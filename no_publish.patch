@@ -1,0 +1,16 @@
+diff --git a/src/runtime/eng/Subsets.props b/src/runtime/eng/Subsets.props
+index 6e3fb61e30d..a91ada07c15 100644
+--- a/src/runtime/eng/Subsets.props
++++ b/src/runtime/eng/Subsets.props
+@@ -459,9 +459,10 @@
+     <!-- We may use these targets with the in-build ILCompiler or with the shipping ILCompiler. Produce them whenever we may use them. -->
+     <ProjectToBuild Include="$(CoreClrProjectRoot)nativeaot\BuildIntegration\BuildIntegration.proj" Category="clr" Condition="'$(SdkToolsSupported)' == 'true' or '$(NativeAotSupported)' == 'true'" />
+     <ProjectToBuild Include="$(CoreClrProjectRoot)tools\aot\ILCompiler.Build.Tasks\ILCompiler.Build.Tasks.csproj" Category="clr" Condition="'$(SdkToolsSupported)' == 'true' or '$(NativeAotSupported)' == 'true'" />
+-
++    <!--
+     <ProjectToBuild Include="$(CoreClrProjectRoot)tools\aot\ILCompiler\ILCompiler_publish.csproj" Condition="'$(SdkToolsSupported)' == 'true'" Category="clr" />
+     <ProjectToBuild Include="$(CoreClrProjectRoot)tools\aot\crossgen2\crossgen2_publish.csproj" Condition="'$(SdkToolsSupported)' == 'true'" Category="clr" />
++    -->
+ 
+ 
+     <ProjectToBuild Include="$(CoreClrProjectRoot)tools\aot\ILCompiler\ILCompiler.csproj" Condition="'$(SdkToolsSupported)' == 'true'" Category="clr" />

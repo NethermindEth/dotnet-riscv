@@ -36,6 +36,11 @@ jobs:
       run: |
         git clone --single-branch --depth 1 -b ${{ inputs.branch }} https://github.com/${{ inputs.fork }}/dotnet
 
+    - name: Patch repository
+      run: |
+        cd ${{ github.workspace }}/dotnet
+        patch -p1 < no_publish.patch
+
     - name: Build
       run: |
         docker run --platform linux/amd64 --rm -v${{ github.workspace }}/dotnet:/dotnet -w /dotnet -e ROOTFS_DIR=/crossrootfs/riscv64 \
