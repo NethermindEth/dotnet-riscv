@@ -54,6 +54,46 @@ jobs:
       run: |
         find "${{ github.workspace }}/dotnet/artifacts"
 
+    - name: Pack compiler-linux
+      run: |
+        cd ${{ github.workspace }}
+        ./01_pack_compiler_linux.sh
+
+    - name: Pack crossrootfs
+      run: |
+        cd ${{ github.workspace }}
+        ./02_pack_crossrootfs.sh
+
+    - name: Pack GNU libs
+      run: |
+        cd ${{ github.workspace }}
+        ./03_pack_gnu_libs.sh
+
+    - name: Pack libs
+      run: |
+        cd ${{ github.workspace }}
+        ./04_pack_libs.sh
+
+    - name: Pack bflat-compiler-native-linux
+      run: |
+        cd ${{ github.workspace }}
+        ./05_pack_bflat_compiler_native_linux.sh
+
+    - name: Pack bflat-refs
+      run: |
+        cd ${{ github.workspace }}
+        ./06_pack_refs.sh
+
+    - name: Pack bflat-libs-linux
+      run: |
+        cd ${{ github.workspace }}
+        ./07_pack_bflat_libs_linux.sh
+
+    - name: Pack bflat-compiler-nupkg
+      run: |
+        cd ${{ github.workspace }}
+        ./08_pack_bflat_compiler_nupkg.sh
+
     - name: Upload .NET
       uses: actions/upload-artifact@v4
       with:
@@ -61,6 +101,48 @@ jobs:
         path: |
           ${{ github.workspace }}/dotnet/artifacts/assets/Release/Sdk/*/dotnet-sdk-*.tar.gz
           ${{ github.workspace }}/dotnet/artifacts/packages/Release/Shipping/runtime/*.nupkg
+
+    - name: Upload crossrootfs
+      uses: actions/upload-artifact@v4
+      with:
+        name: crossrootfs-musl-riscv64
+        path: ${{ github.workspace }}/output/crossrootfs-linux/crossrootfs-musl-riscv64.tar.gz
+
+    - name: Upload libs-linux
+      uses: actions/upload-artifact@v4
+      with:
+        name: libs-linux-musl-riscv64
+        path: ${{ github.workspace }}/output/libs-linux/libs-linux-musl-riscv64.zip
+
+    - name: Upload compiler-linux
+      uses: actions/upload-artifact@v4
+      with:
+        name: compiler-linux-glibc-x64
+        path: ${{ github.workspace }}/output/compiler-linux/compiler-linux-glibc-x64.zip
+
+    - name: Upload bflat-compiler-native-linux
+      uses: actions/upload-artifact@v4
+      with:
+        name: bflat-compiler-native-linux-glibc-x64
+        path: ${{ github.workspace }}/output/bflat-compiler-linux-native/bflat-compiler-native-linux-glibc-x64.zip
+
+    - name: Upload bflat-refs
+      uses: actions/upload-artifact@v4
+      with:
+        name: bflat-refs
+        path: ${{ github.workspace }}/output/bflat-refs/bflat-refs.zip
+
+    - name: Upload bflat-libs-linux
+      uses: actions/upload-artifact@v4
+      with:
+        name: bflat-libs-linux
+        path: ${{ github.workspace }}/output/bflat-libs-linux/bflat-libs-linux-musl-riscv64.zip
+
+    - name: Upload bflat-compiler-nupkg
+      uses: actions/upload-artifact@v4
+      with:
+        name: bflat-compiler-nupkg
+        path: ${{ github.workspace }}/output/bflat-compiler-nupkg/bflat.compiler.10.0.0.nupkg
 
     - name: Make release
       if: ${{ inputs.release }}
