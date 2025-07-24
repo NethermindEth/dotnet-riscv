@@ -100,3 +100,16 @@ index e77e9878e3e..6b7b164eb01 100644
  typedef int BOOL;
  typedef void* LPVOID;
  typedef uint32_t UINT;
+diff --git a/src/coreclr/nativeaot/Runtime/unix/UnixNativeCodeManager.cpp b/src/coreclr/nativeaot/Runtime/unix/UnixNativeCodeManager.cpp
+index 266b56bd1..6d205e275 100644
+--- a/src/coreclr/nativeaot/Runtime/unix/UnixNativeCodeManager.cpp
++++ b/src/coreclr/nativeaot/Runtime/unix/UnixNativeCodeManager.cpp
+@@ -1442,7 +1442,7 @@ bool RhRegisterOSModule(void * pModule,
+
+     pUnixNativeCodeManager.SuppressRelease();
+
+-    ETW::LoaderLog::ModuleLoad(pModule);
++    //ETW::LoaderLog::ModuleLoad(pModule);
+
+     return true;
+ }
