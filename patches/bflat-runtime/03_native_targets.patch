@@ -1,0 +1,66 @@
+diff --git a/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets b/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets
+index f2bf303e494..de375ac12c3 100644
+--- a/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets
++++ b/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets
+@@ -160,7 +160,7 @@ The .NET Foundation licenses this file to you under the MIT license.
+       <NativeLibrary Condition="'$(NativeLib)' == '' and '$(CustomNativeMain)' != 'true'" Include="$(IlcSdkPath)libbootstrapper.o" />
+       <NativeLibrary Condition="'$(NativeLib)' != '' or '$(CustomNativeMain)' == 'true'" Include="$(IlcSdkPath)libbootstrapperdll.o" />
+       <NativeLibrary Include="$(IlcSdkPath)$(FullRuntimeName).a" />
+-      <NativeLibrary Include="$(IlcSdkPath)$(EventPipeName)$(LibFileExt)" />
++      <!--<NativeLibrary Include="$(IlcSdkPath)$(EventPipeName)$(LibFileExt)" />-->
+       <NativeLibrary Condition="'$(_targetArchitecture)' == 'x64'" Include="$(IlcSdkPath)$(VxSortSupportName)$(LibFileExt)" />
+       <NativeLibrary Include="$(IlcSdkPath)$(StandaloneGCSupportName)$(LibFileExt)" />
+       <NativeLibrary Include="$(IlcSdkPath)libaotminipal.a" />
+diff --git a/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Windows.targets b/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Windows.targets
+index 8639c24343b..4a2492d7989 100644
+--- a/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Windows.targets
++++ b/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Windows.targets
+@@ -41,7 +41,7 @@ The .NET Foundation licenses this file to you under the MIT license.
+       <NativeLibrary Condition="'$(NativeLib)' != ''" Include="$(IlcSdkPath)dllmain$(ObjectSuffix)" />
+       <NativeLibrary Include="$(IlcSdkPath)$(BootstrapperName)$(ObjectSuffix)" />
+       <NativeLibrary Include="$(IlcSdkPath)$(FullRuntimeName)$(LibrarySuffix)" />
+-      <NativeLibrary Include="$(IlcSdkPath)$(EventPipeName)$(LibrarySuffix)" />
++      <!--<NativeLibrary Include="$(IlcSdkPath)$(EventPipeName)$(LibrarySuffix)" />-->
+       <NativeLibrary Condition="'$(_targetArchitecture)' == 'x64'" Include="$(IlcSdkPath)$(VxSortSupportName)$(LibrarySuffix)" />
+       <NativeLibrary Condition="'$(IlcMultiModule)' == 'true'" Include="$(SharedLibrary)" />
+       <NativeLibrary Include="$(IlcSdkPath)$(StandaloneGCSupportName)$(LibrarySuffix)" />
+@@ -87,6 +87,26 @@ The .NET Foundation licenses this file to you under the MIT license.
+       <DirectPInvokeList Include="$(MSBuildThisFileDirectory)WindowsAPIs.txt" />
+     </ItemGroup>
+ 
++      <ItemGroup>
++      <LinkerArg Include="$(IlcSdkPath)api-ms-win-crt-conio-l1-1-0.lib" />
++      <LinkerArg Include="$(IlcSdkPath)api-ms-win-crt-convert-l1-1-0.lib" />
++      <LinkerArg Include="$(IlcSdkPath)api-ms-win-crt-environment-l1-1-0.lib" />
++      <LinkerArg Include="$(IlcSdkPath)api-ms-win-crt-filesystem-l1-1-0.lib" />
++      <LinkerArg Include="$(IlcSdkPath)api-ms-win-crt-heap-l1-1-0.lib" />
++      <LinkerArg Include="$(IlcSdkPath)api-ms-win-crt-locale-l1-1-0.lib" />
++      <LinkerArg Include="$(IlcSdkPath)api-ms-win-crt-multibyte-l1-1-0.lib" />
++      <LinkerArg Include="$(IlcSdkPath)api-ms-win-crt-process-l1-1-0.lib" />
++      <LinkerArg Include="$(IlcSdkPath)api-ms-win-crt-runtime-l1-1-0.lib" />
++      <LinkerArg Include="$(IlcSdkPath)api-ms-win-crt-stdio-l1-1-0.lib" />
++      <LinkerArg Include="$(IlcSdkPath)api-ms-win-crt-string-l1-1-0.lib" />
++      <LinkerArg Include="$(IlcSdkPath)api-ms-win-crt-time-l1-1-0.lib" />
++      <LinkerArg Include="$(IlcSdkPath)api-ms-win-crt-utility-l1-1-0.lib" />
++      <LinkerArg Include="$(IlcSdkPath)api-ms-win-crt-math-l1-1-0.lib" />
++      <LinkerArg Include="$(IlcSdkPath)shcrt.lib" />
++      <LinkerArg Include="/nodefaultlib:libcpmt.lib" />
++      <LinkerArg Include="shell32.lib" />
++    </ItemGroup>
++
+     <ItemGroup>
+       <LinkerArg Condition="$(IlcMultiModule) != 'true' and $(EnableSourceLink) == 'true' and $(NativeDebugSymbols) == 'true'" Include="/SOURCELINK:$(NativeIntermediateOutputPath)%(ManagedBinary.Filename).sourcelink" />
+       <LinkerArg Condition="'$(NativeLib)' == 'Shared'" Include="/DLL" />
+diff --git a/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.targets b/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.targets
+index 9eac4d42dc9..238038e1261 100644
+--- a/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.targets
++++ b/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.targets
+@@ -259,7 +259,7 @@ The .NET Foundation licenses this file to you under the MIT license.
+       <IlcArg Condition="'$(NativeLib)' != ''" Include="--nativelib" />
+       <IlcArg Condition="'$(CustomNativeMain)' == 'true'" Include="--splitinit" />
+       <IlcArg Condition="'$(ExportsFile)' != ''" Include="--exportsfile:$(ExportsFile)" />
+-      <IlcArg Condition="'$(_targetOS)' == 'win' and '$(DebuggerSupport)' != 'false'" Include="--export-dynamic-symbol:DotNetRuntimeDebugHeader,DATA" />
++      <!--<IlcArg Condition="'$(_targetOS)' == 'win' and '$(DebuggerSupport)' != 'false'" Include="--export-dynamic-symbol:DotNetRuntimeDebugHeader,DATA" />-->
+       <IlcArg Condition="'$(_targetOS)' != 'win' and '$(DebuggerSupport)' != 'false'" Include="--export-dynamic-symbol:DotNetRuntimeDebugHeader" />
+       <IlcArg Condition="'$(_targetOS)' == 'freebsd' and '$(IsNativeExecutable)' == 'true'" Include="--export-dynamic-symbol:__progname;--export-dynamic-symbol:environ" />
+       <IlcArg Condition="'$(IlcExportUnmanagedEntrypoints)' == 'true'" Include="--export-unmanaged-entrypoints" />

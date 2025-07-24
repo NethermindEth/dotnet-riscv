@@ -1,0 +1,123 @@
+diff --git a/src/coreclr/nativeaot/CMakeLists.txt b/src/coreclr/nativeaot/CMakeLists.txt
+index e1c43480500..f4ad09ba898 100644
+--- a/src/coreclr/nativeaot/CMakeLists.txt
++++ b/src/coreclr/nativeaot/CMakeLists.txt
+@@ -34,3 +34,4 @@ endif()
+ 
+ add_subdirectory(Bootstrap)
+ add_subdirectory(Runtime)
++add_subdirectory(zerolib.native)
+diff --git a/src/coreclr/nativeaot/zerolib.native/CMakeLists.txt b/src/coreclr/nativeaot/zerolib.native/CMakeLists.txt
+new file mode 100644
+index 00000000000..f3325e6f328
+--- /dev/null
++++ b/src/coreclr/nativeaot/zerolib.native/CMakeLists.txt
+@@ -0,0 +1,31 @@
++project(zerolibnative)
++
++if (WIN32)
++  set(ASM_SUFFIX asm)
++else()
++  set(ASM_SUFFIX S)
++endif()
++
++function(install_bootstrapper_object targetName destination)
++  add_dependencies(nativeaot ${targetName})
++  if (MSVC)
++    install (FILES $<TARGET_OBJECTS:${targetName}> DESTINATION ${destination} COMPONENT nativeaot RENAME ${targetName}.obj)
++  else()
++    install (FILES $<TARGET_OBJECTS:${targetName}> DESTINATION ${destination} COMPONENT nativeaot RENAME lib${targetName}.o)
++  endif()
++endfunction()
++
++if (CLR_CMAKE_HOST_ARCH_ARM64 OR CLR_CMAKE_HOST_ARCH_X86 OR CLR_CMAKE_HOST_ARCH_RISCV64)
++  set(SOURCES ${ARCH_SOURCES_DIR}/stubs.${ASM_SUFFIX})
++
++  convert_to_absolute_path(SOURCES ${SOURCES})
++
++  if (CLR_CMAKE_TARGET_WIN32)
++    preprocess_files(SOURCES ${SOURCES})
++  endif()
++
++  add_library(zerolibnative OBJECT ${SOURCES})
++  set_target_properties(zerolibnative PROPERTIES OUTPUT_NAME zerolibnative)
++
++  install_bootstrapper_object(zerolibnative aotsdk)
++endif()
+diff --git a/src/coreclr/nativeaot/zerolib.native/arm64/stubs.S b/src/coreclr/nativeaot/zerolib.native/arm64/stubs.S
+new file mode 100644
+index 00000000000..cb981469b24
+--- /dev/null
++++ b/src/coreclr/nativeaot/zerolib.native/arm64/stubs.S
+@@ -0,0 +1,24 @@
++
++.macro LEAF_ENTRY Name, Section
++        .global \Name
++        .hidden \Name
++        .type \Name, %function
++\Name:
++        .cfi_startproc
++.endm
++
++.macro LEAF_END Name, Section
++        .size \Name, .-\Name
++        .cfi_endproc
++.endm
++
++LEAF_ENTRY RhpAssignRefArm64, _TEXT
++        stlr    x15, [x14]
++        add     x14, x14, 8
++        ret
++LEAF_END RhpAssignRefArm64, _TEXT
++
++LEAF_ENTRY RhpCheckedAssignRefArm64, _TEXT
++        str     x15, [x14], 8
++        ret
++LEAF_END RhpCheckedAssignRefArm64, _TEXT
+diff --git a/src/coreclr/nativeaot/zerolib.native/arm64/stubs.asm b/src/coreclr/nativeaot/zerolib.native/arm64/stubs.asm
+new file mode 100644
+index 00000000000..2b70105b965
+--- /dev/null
++++ b/src/coreclr/nativeaot/zerolib.native/arm64/stubs.asm
+@@ -0,0 +1,16 @@
++#include <ksarm64.h>
++
++TEXTAREA
++
++    LEAF_ENTRY RhpAssignRefArm64, _TEXT
++    stlr    x15, [x14]
++    add     x14, x14, 8
++    ret
++    LEAF_END RhpAssignRefArm64
++
++    LEAF_ENTRY RhpCheckedAssignRefArm64, _TEXT
++    str     x15, [x14], 8
++    ret
++    LEAF_END RhpCheckedAssignRefArm64
++
++END
+diff --git a/src/coreclr/nativeaot/zerolib.native/riscv64/stubs.S b/src/coreclr/nativeaot/zerolib.native/riscv64/stubs.S
+new file mode 100644
+index 00000000000..7f24bf5a6dc
+--- /dev/null
++++ b/src/coreclr/nativeaot/zerolib.native/riscv64/stubs.S
+@@ -0,0 +1,19 @@
++
++.macro LEAF_ENTRY Name, Section
++        .global \Name
++        .hidden \Name
++        .type \Name, %function
++\Name:
++        .cfi_startproc
++.endm
++
++.macro LEAF_END Name, Section
++        .size \Name, .-\Name
++        .cfi_endproc
++.endm
++
++LEAF_ENTRY RhpAssignRefRiscV64, _TEXT
++        sd    t4, 0(t3)
++        addi  t3, t3, 8
++        ret
++LEAF_END RhpAssignRefRiscV64, _TEXT

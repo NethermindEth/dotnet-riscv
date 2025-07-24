@@ -41,8 +41,8 @@ jobs:
 
     - name: Patch repository
       run: |
-        cd ${{ github.workspace }}/dotnet
-        patch -p1 < ${{ github.workspace }}/no_publish.patch
+        cd ${{ github.workspace }}
+        ./patch_runtime.sh
 
     - name: Build
       run: |

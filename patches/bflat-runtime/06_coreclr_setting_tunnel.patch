@@ -1,0 +1,77 @@
+diff --git a/src/coreclr/tools/Common/Compiler/CompilerTypeSystemContext.cs b/src/coreclr/tools/Common/Compiler/CompilerTypeSystemContext.cs
+index 8ecd0fb034d..771ea8eb4e1 100644
+--- a/src/coreclr/tools/Common/Compiler/CompilerTypeSystemContext.cs
++++ b/src/coreclr/tools/Common/Compiler/CompilerTypeSystemContext.cs
+@@ -266,6 +266,11 @@ protected void InheritOpenModules(CompilerTypeSystemContext oldTypeSystemContext
+             }
+         }
+ 
++        protected void CacheOpenModule(string simpleName, string filePath, EcmaModule module, MemoryMappedViewAccessor accessor)
++        {
++            AddModule(filePath, simpleName, true, new ModuleData() { SimpleName = simpleName, FilePath = filePath, Module = module, MappedViewAccessor = accessor });
++        }
++
+         protected override RuntimeInterfacesAlgorithm GetRuntimeInterfacesAlgorithmForDefType(DefType type)
+         {
+             return _metadataRuntimeInterfacesAlgorithm;
+diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/Compilation.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/Compilation.cs
+index ecd3df3a391..b2dfde678b1 100644
+--- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/Compilation.cs
++++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/Compilation.cs
+@@ -19,6 +19,13 @@
+ 
+ namespace ILCompiler
+ {
++    public static class SettingsTunnel
++    {
++        public static bool EmitGSCookies = true;
++        public static bool EmitGCInfo = true;
++        public static bool EmitEHInfo = true;
++    }
++
+     public abstract class Compilation : ICompilation
+     {
+         protected readonly DependencyAnalyzerBase<NodeFactory> _dependencyGraph;
+diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/UnixObjectWriter.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/UnixObjectWriter.cs
+index 0ae31be325e..afb3d09914d 100644
+--- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/UnixObjectWriter.cs
++++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/UnixObjectWriter.cs
+@@ -109,7 +109,7 @@ private protected override void CreateSection(ObjectNodeSection section, string
+                     lsdaSectionWriter.EmitSymbolReference(RelocType.IMAGE_REL_BASED_RELPTR32, symbolName, 0);
+                 }
+ 
+-                if (nodeWithCodeInfo.GCInfo is not null)
++                if (SettingsTunnel.EmitGCInfo && nodeWithCodeInfo.GCInfo is not null)
+                 {
+                     lsdaSectionWriter.Write(nodeWithCodeInfo.GCInfo);
+                 }
+diff --git a/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/DependencyAnalysis/MethodCodeNode.cs b/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/DependencyAnalysis/MethodCodeNode.cs
+index 04418700538..f81b9ed260a 100644
+--- a/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/DependencyAnalysis/MethodCodeNode.cs
++++ b/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/DependencyAnalysis/MethodCodeNode.cs
+@@ -140,6 +140,7 @@ public void InitializeGCInfo(byte[] gcInfo)
+ 
+         public void InitializeEHInfo(ObjectData ehInfo)
+         {
++            if (!SettingsTunnel.EmitEHInfo) return;
+             Debug.Assert(_ehInfo == null);
+             if (ehInfo != null)
+                 _ehInfo = new MethodExceptionHandlingInfoNode(_method, ehInfo);
+diff --git a/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs b/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs
+index b4933c28b25..57bcbe286c6 100644
+--- a/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs
++++ b/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs
+@@ -1911,6 +1911,13 @@ private void getAddressOfPInvokeTarget(CORINFO_METHOD_STRUCT_* method, ref CORIN
+ 
+         private void getGSCookie(IntPtr* pCookieVal, IntPtr** ppCookieVal)
+         {
++            if (!SettingsTunnel.EmitGSCookies)
++            {
++                *pCookieVal = (IntPtr)0x3F796857;
++                *ppCookieVal = null;
++                return;
++            }
++
+             if (ppCookieVal != null)
+             {
+                 *ppCookieVal = (IntPtr*)ObjectToHandle(_compilation.NodeFactory.ExternVariable("__security_cookie"));
