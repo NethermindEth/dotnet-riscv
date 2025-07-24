@@ -91,12 +91,12 @@ diff --git a/src/coreclr/nativeaot/Runtime/inc/CommonTypes.h b/src/coreclr/nativ
 index e77e9878e3e..6b7b164eb01 100644
 --- a/src/coreclr/nativeaot/Runtime/inc/CommonTypes.h
 +++ b/src/coreclr/nativeaot/Runtime/inc/CommonTypes.h
-@@ -38,7 +38,7 @@ typedef uint32_t            UInt32_BOOL;    // windows 4-byte BOOL, 0 -> false,
+@@ -44,7 +44,7 @@ typedef uint32_t            UInt32_BOOL;    // windows 4-byte BOOL, 0 -> false,
  #define UInt32_FALSE        0
  #define UInt32_TRUE         1
  
--#if defined(FEATURE_EVENT_TRACE) && !defined(_INC_WINDOWS)
-+#if 1 //defined(FEATURE_EVENT_TRACE) && !defined(_INC_WINDOWS)
+-#if defined(FEATURE_EVENT_TRACE) && defined(TARGET_UNIX)
++#if 1 //defined(FEATURE_EVENT_TRACE) && defined(TARGET_UNIX)
  typedef int BOOL;
  typedef void* LPVOID;
  typedef uint32_t UINT;
