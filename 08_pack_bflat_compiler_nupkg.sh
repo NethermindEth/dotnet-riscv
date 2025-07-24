@@ -27,13 +27,16 @@ function pack_bflat_compiler_nupkg()
         cp "${template_dir}/$file" ./
         unzip "$file"
         rm "$file"
-        zip -r "$file" *
     popd
 
     pushd "${artifactpath}"
         cp ./bin/ILCompiler.Compiler/riscv64/Release/ILCompiler.*.dll \
            ./bin/crossgen2_inbuild/riscv64/Release/Microsoft.DiaSymReader.dll \
            "${output_dir}/lib/net6.0/"
+    popd
+
+    pushd "${output_dir}"
+        zip -r "$file" *
     popd
 
     return 0
