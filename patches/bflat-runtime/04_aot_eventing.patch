@@ -1,0 +1,102 @@
+diff --git a/src/coreclr/nativeaot/Runtime/CMakeLists.txt b/src/coreclr/nativeaot/Runtime/CMakeLists.txt
+index 9f8473c5ecb..0b5ca7fddf6 100644
+--- a/src/coreclr/nativeaot/Runtime/CMakeLists.txt
++++ b/src/coreclr/nativeaot/Runtime/CMakeLists.txt
+@@ -7,7 +7,7 @@ set(COMMON_RUNTIME_SOURCES
+     ${RUNTIME_DIR}/CachedInterfaceDispatch.cpp
+     CachedInterfaceDispatch_Aot.cpp
+     Crst.cpp
+-    DebugHeader.cpp
++    # DebugHeader.cpp
+     MethodTable.cpp
+     EHHelpers.cpp
+     event.cpp
+@@ -226,10 +226,10 @@ endif ()
+ convert_to_absolute_path(ARCH_SOURCES_DIR ${ARCH_SOURCES_DIR})
+ include_directories(${ARCH_SOURCES_DIR})
+ 
+-if(NOT CLR_CMAKE_TARGET_ARCH_WASM)
+-  set(FEATURE_PERFTRACING 1)
+-  set(FEATURE_EVENT_TRACE 1)
+-endif()
++#if(NOT CLR_CMAKE_TARGET_ARCH_WASM)
++#  set(FEATURE_PERFTRACING 1)
++#  set(FEATURE_EVENT_TRACE 1)
++#endif()
+ 
+ if(FEATURE_PERFTRACING)
+   add_definitions(-DFEATURE_PERFTRACING)
+@@ -269,8 +269,8 @@ add_definitions(-D_LIB)
+ # add_definitions(-DSTRESS_HEAP)
+ 
+ if(CLR_CMAKE_TARGET_WIN32)
+-  set(FEATURE_ETW 1)
+-  add_definitions(-DFEATURE_ETW)
++  #set(FEATURE_ETW 1)
++  #add_definitions(-DFEATURE_ETW)
+   add_definitions(-DFEATURE_SUSPEND_REDIRECTION)
+   if (CLR_CMAKE_TARGET_ARCH_AMD64 OR CLR_CMAKE_TARGET_ARCH_ARM64)
+     add_definitions(-DFEATURE_SPECIAL_USER_MODE_APC)
+diff --git a/src/coreclr/nativeaot/Runtime/Full/CMakeLists.txt b/src/coreclr/nativeaot/Runtime/Full/CMakeLists.txt
+index 821b4fe8ca9..ec807788cda 100644
+--- a/src/coreclr/nativeaot/Runtime/Full/CMakeLists.txt
++++ b/src/coreclr/nativeaot/Runtime/Full/CMakeLists.txt
+@@ -27,17 +27,17 @@ if (CLR_CMAKE_TARGET_WIN32)
+ endif (CLR_CMAKE_TARGET_WIN32)
+ 
+ add_library(Runtime.WorkstationGC STATIC ${COMMON_RUNTIME_SOURCES} ${FULL_RUNTIME_SOURCES} ${RUNTIME_SOURCES_ARCH_ASM} ${RUNTIME_ARCH_ASM_OBJECTS})
+-add_dependencies(Runtime.WorkstationGC aot_eventing_headers)
++#add_dependencies(Runtime.WorkstationGC aot_eventing_headers)
+ target_link_libraries(Runtime.WorkstationGC PRIVATE aotminipal)
+ 
+-add_library(Runtime.ServerGC STATIC ${COMMON_RUNTIME_SOURCES} ${FULL_RUNTIME_SOURCES} ${RUNTIME_SOURCES_ARCH_ASM} ${SERVER_GC_SOURCES} ${RUNTIME_ARCH_ASM_OBJECTS})
+-add_dependencies(Runtime.ServerGC aot_eventing_headers)
+-target_link_libraries(Runtime.ServerGC PRIVATE aotminipal)
++#add_library(Runtime.ServerGC STATIC ${COMMON_RUNTIME_SOURCES} ${FULL_RUNTIME_SOURCES} ${RUNTIME_SOURCES_ARCH_ASM} ${SERVER_GC_SOURCES} ${RUNTIME_ARCH_ASM_OBJECTS})
++#add_dependencies(Runtime.ServerGC aot_eventing_headers)
++#target_link_libraries(Runtime.ServerGC PRIVATE aotminipal)
+ 
+ add_library(standalonegc-disabled STATIC ${STANDALONEGC_DISABLED_SOURCES})
+-add_dependencies(standalonegc-disabled aot_eventing_headers)
++#add_dependencies(standalonegc-disabled aot_eventing_headers)
+ add_library(standalonegc-enabled STATIC ${STANDALONEGC_ENABLED_SOURCES})
+-add_dependencies(standalonegc-enabled aot_eventing_headers)
++#add_dependencies(standalonegc-enabled aot_eventing_headers)
+ if(CLR_CMAKE_TARGET_WIN32)
+   add_dependencies(standalonegc-disabled aot_etw_headers)
+   add_dependencies(standalonegc-enabled aot_etw_headers)
+@@ -48,7 +48,7 @@ if (CLR_CMAKE_TARGET_ARCH_AMD64)
+   add_library(Runtime.VxsortDisabled STATIC ${DUMMY_VXSORT_SOURCES})
+ endif (CLR_CMAKE_TARGET_ARCH_AMD64)
+ 
+-target_compile_definitions(Runtime.ServerGC PRIVATE -DFEATURE_SVR_GC)
++#target_compile_definitions(Runtime.ServerGC PRIVATE -DFEATURE_SVR_GC)
+ 
+ if (CLR_CMAKE_TARGET_WIN32)
+   set_target_properties(aotminipal PROPERTIES
+@@ -96,10 +96,10 @@ add_custom_target(
+ )
+ 
+ add_dependencies(Runtime.WorkstationGC RuntimeAsmHelpers)
+-add_dependencies(Runtime.ServerGC RuntimeAsmHelpers)
++#add_dependencies(Runtime.ServerGC RuntimeAsmHelpers)
+ 
+ install_static_library(Runtime.WorkstationGC aotsdk nativeaot)
+-install_static_library(Runtime.ServerGC aotsdk nativeaot)
++#install_static_library(Runtime.ServerGC aotsdk nativeaot)
+ install_static_library(standalonegc-disabled aotsdk nativeaot)
+ install_static_library(standalonegc-enabled aotsdk nativeaot)
+ install_static_library(aotminipal aotsdk nativeaot)
+diff --git a/src/coreclr/nativeaot/Runtime/inc/CommonTypes.h b/src/coreclr/nativeaot/Runtime/inc/CommonTypes.h
+index e77e9878e3e..6b7b164eb01 100644
+--- a/src/coreclr/nativeaot/Runtime/inc/CommonTypes.h
++++ b/src/coreclr/nativeaot/Runtime/inc/CommonTypes.h
+@@ -38,7 +38,7 @@ typedef uint32_t            UInt32_BOOL;    // windows 4-byte BOOL, 0 -> false,
+ #define UInt32_FALSE        0
+ #define UInt32_TRUE         1
+ 
+-#if defined(FEATURE_EVENT_TRACE) && !defined(_INC_WINDOWS)
++#if 1 //defined(FEATURE_EVENT_TRACE) && !defined(_INC_WINDOWS)
+ typedef int BOOL;
+ typedef void* LPVOID;
+ typedef uint32_t UINT;

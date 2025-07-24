@@ -1,0 +1,13 @@
+diff --git a/src/coreclr/nativeaot/Runtime/startup.cpp b/src/coreclr/nativeaot/Runtime/startup.cpp
+index c53c99d8b73..9a4a567039f 100644
+--- a/src/coreclr/nativeaot/Runtime/startup.cpp
++++ b/src/coreclr/nativeaot/Runtime/startup.cpp
+@@ -386,7 +386,7 @@ extern "C" bool RhInitialize(bool isDll)
+         return false;
+ 
+     // Populate the values needed for debugging
+-    PopulateDebugHeaders();
++    // PopulateDebugHeaders();
+ 
+     return true;
+ }

@@ -1,0 +1,13 @@
+diff --git a/src/coreclr/gc/gc.cpp b/src/coreclr/gc/gc.cpp
+index 9ffb1de45c4..174a6198f3e 100644
+--- a/src/coreclr/gc/gc.cpp
++++ b/src/coreclr/gc/gc.cpp
+@@ -55,7 +55,7 @@ namespace WKS {
+ #include "gcimpl.h"
+ #include "gcpriv.h"
+ 
+-#ifdef TARGET_AMD64
++#if 0
+ #define USE_VXSORT
+ #else
+ #define USE_INTROSORT
