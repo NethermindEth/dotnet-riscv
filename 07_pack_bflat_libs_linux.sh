@@ -27,16 +27,19 @@ function pack_bflat_libs_linux()
            "${output_dir}/"
     popd
 
+    ret="$?"
     pushd "${output_dir}"
         if [ -f "$file" ] ; then
             rm "$file"
         fi
         zip -r "$file" *
+        ret="$?"
     popd
 
-    return 0
+    return $ret
 }
 
 
 pack_bflat_libs_linux "$file" "${output_dir}" "${TOP_DIR}/dotnet/artifacts" || \
 pack_bflat_libs_linux "$file" "${output_dir}" "${TOP_DIR}/dotnet/src/runtime/artifacts"
+exit $?

@@ -34,3 +34,4 @@ if [ -f "$output_file" ] ; then
 fi
 
 zip -r "$output_file" *
+exit $?

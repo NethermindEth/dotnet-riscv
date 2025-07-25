@@ -12,10 +12,13 @@ mkdir -p "${tmp_dir}"
 apt-get update -y
 apt-get install -y git debootstrap
 
+ret="1"
 pushd "${tmp_dir}"
     git clone https://github.com/dotnet/runtime
     pushd runtime
         ./eng/common/cross/build-rootfs.sh riscv64 noble --skipunmount --rootfsdir $(pwd)/crossrootfs/riscv64
         cp "$(pwd)/crossrootfs/riscv64/usr/lib/gcc/riscv64-linux-gnu/13/libatomic.a" "${output_dir}/"
+        ret="0"
     popd
 popd
+exit $ret

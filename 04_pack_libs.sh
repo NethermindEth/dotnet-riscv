@@ -20,6 +20,7 @@ function pack_libs()
         return 1
     fi
 
+    ret="1"
     pushd "${crosspath}"
         cp ./usr/lib/*.a \
            ./usr/lib/*.o \
@@ -33,11 +34,13 @@ function pack_libs()
             rm "$file"
         fi
         zip -r "$file" *
+        ret="$?"
     popd
 
-    return 0
+    return $ret
 }
 
 
 pack_libs "$file" "${output_dir}" "${TOP_DIR}/dotnet/crossrootfs/riscv64" || \
 pack_libs "$file" "${output_dir}" "${TOP_DIR}/dotnet/src/runtime/crossrootfs/riscv64"
+exit $?
