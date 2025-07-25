@@ -6,7 +6,7 @@ output_dir="${TOP_DIR}/output/crossrootfs-linux"
 file="crossrootfs-musl-riscv64.tar.xz"
 
 apt-get update -y
-apt-get install -y xz-utils
+apt-get install -y xz-utils git debootstrap
 
 cd "${TOP_DIR}"
 
