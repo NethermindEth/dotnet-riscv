@@ -41,6 +41,6 @@ function pack_libs()
 }
 
 
-pack_libs "$file" "${output_dir}" "${TOP_DIR}/dotnet/crossrootfs/riscv64" || \
-pack_libs "$file" "${output_dir}" "${TOP_DIR}/dotnet/src/runtime/crossrootfs/riscv64"
+pack_libs "$file" "${output_dir}" "${TOP_DIR}/dotnet/.tools/rootfs/riscv64" || \
+pack_libs "$file" "${output_dir}" "${TOP_DIR}/dotnet/src/runtime/.tools/rootfs/riscv64"
 exit $?
