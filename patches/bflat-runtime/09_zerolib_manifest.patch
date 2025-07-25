@@ -1,0 +1,12 @@
+diff --git a/src/installer/pkg/sfx/Microsoft.NETCore.App/Directory.Build.props b/src/installer/pkg/sfx/Microsoft.NETCore.App/Directory.Build.props
+index 1ea9a5455..3681632ff 100644
+--- a/src/installer/pkg/sfx/Microsoft.NETCore.App/Directory.Build.props
++++ b/src/installer/pkg/sfx/Microsoft.NETCore.App/Directory.Build.props
+@@ -148,6 +148,7 @@
+     <PlatformManifestFileEntry Include="libstandalonegc-enabled.a" IsNative="true" />
+     <PlatformManifestFileEntry Include="libaotminipal.a" IsNative="true" />
+     <PlatformManifestFileEntry Include="libstdc++compat.a" IsNative="true" />
++    <PlatformManifestFileEntry Include="libzerolibnative.o" IsNative="true" />
+     <!-- NativeAOT/Windows specific files -->
+     <PlatformManifestFileEntry Include="bootstrapper.obj" IsNative="true" />
+     <PlatformManifestFileEntry Include="bootstrapperdll.obj" IsNative="true" />
