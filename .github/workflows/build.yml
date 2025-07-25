@@ -57,42 +57,42 @@ jobs:
     - name: Pack compiler-linux
       run: |
         cd ${{ github.workspace }}
-        ./01_pack_compiler_linux.sh
+        sudo ./01_pack_compiler_linux.sh
 
     - name: Pack crossrootfs
       run: |
         cd ${{ github.workspace }}
-        ./02_pack_crossrootfs.sh
+        sudo ./02_pack_crossrootfs.sh
 
     - name: Pack GNU libs
       run: |
         cd ${{ github.workspace }}
-        ./03_pack_gnu_libs.sh
+        sudo ./03_pack_gnu_libs.sh
 
     - name: Pack libs
       run: |
         cd ${{ github.workspace }}
-        ./04_pack_libs.sh
+        sudo ./04_pack_libs.sh
 
     - name: Pack bflat-compiler-native-linux
       run: |
         cd ${{ github.workspace }}
-        ./05_pack_bflat_compiler_native_linux.sh
+        sudo ./05_pack_bflat_compiler_native_linux.sh
 
     - name: Pack bflat-refs
       run: |
         cd ${{ github.workspace }}
-        ./06_pack_refs.sh
+        sudo ./06_pack_refs.sh
 
     - name: Pack bflat-libs-linux
       run: |
         cd ${{ github.workspace }}
-        ./07_pack_bflat_libs_linux.sh
+        sudo ./07_pack_bflat_libs_linux.sh
 
     - name: Pack bflat-compiler-nupkg
       run: |
         cd ${{ github.workspace }}
-        ./08_pack_bflat_compiler_nupkg.sh
+        sudo ./08_pack_bflat_compiler_nupkg.sh
 
     - name: Upload .NET
       uses: actions/upload-artifact@v4
