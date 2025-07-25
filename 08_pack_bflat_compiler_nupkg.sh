@@ -35,13 +35,16 @@ function pack_bflat_compiler_nupkg()
            "${output_dir}/lib/net6.0/"
     popd
 
+    ret="1"
     pushd "${output_dir}"
         zip -r "$file" *
+        ret="$?"
     popd
 
-    return 0
+    return $ret
 }
 
 
 pack_bflat_compiler_nupkg "$file" "${output_dir}" "${TOP_DIR}/dotnet/artifacts" || \
 pack_bflat_compiler_nupkg "$file" "${output_dir}" "${TOP_DIR}/dotnet/src/runtime/artifacts"
+exit $ret

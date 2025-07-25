@@ -5,6 +5,9 @@ libs_dir="${TOP_DIR}/libs"
 output_dir="${TOP_DIR}/output/crossrootfs-linux"
 file="crossrootfs-musl-riscv64.tar.xz"
 
+apt-get update -y
+apt-get install -y xz-utils
+
 cd "${TOP_DIR}"
 
 mkdir -p "${output_dir}"
@@ -28,3 +31,4 @@ function pack_crossrootfs()
 
 pack_crossrootfs "$file" "${output_dir}" "${TOP_DIR}/dotnet/crossrootfs/riscv64" || \
 pack_crossrootfs "$file" "${output_dir}" "${TOP_DIR}/dotnet/src/runtime/crossrootfs/riscv64"
+exit $?
