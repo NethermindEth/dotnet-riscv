@@ -6,6 +6,9 @@ output_dir="${TOP_DIR}/output/libs-linux"
 gnu_output_dir="${TOP_DIR}/output/gnu-libs-linux"
 file="libs-linux-musl-riscv64.zip"
 
+apt-get update -y
+apt-get install -y gcc-riscv64-linux-gnu
+
 cd "${TOP_DIR}"
 
 mkdir -p "${output_dir}"
@@ -33,6 +36,7 @@ function pack_libs()
         if [ -f "$file" ] ; then
             rm "$file"
         fi
+        riscv64-linux-gnu-strip --strip-debug *.a *.o
         zip -r "$file" *
         ret="$?"
     popd

@@ -5,6 +5,9 @@ libs_dir="${TOP_DIR}/libs"
 output_dir="${TOP_DIR}/output/bflat-libs-linux"
 file="bflat-libs-linux-musl-riscv64.zip"
 
+apt-get update -y
+apt-get install -y gcc-riscv64-linux-gnu
+
 cd "${TOP_DIR}"
 
 mkdir -p "${output_dir}"
@@ -32,6 +35,7 @@ function pack_bflat_libs_linux()
         if [ -f "$file" ] ; then
             rm "$file"
         fi
+        riscv64-linux-gnu-strip --strip-debug *.a *.o
         zip -r "$file" *
         ret="$?"
     popd
