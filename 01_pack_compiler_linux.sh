@@ -5,7 +5,7 @@ export DEBIAN_FRONTEND=noninteractive
 output_file="compiler-linux-glibc-x64.zip"
 
 apt-get update -y
-apt-get install -y llvm-20 lld-20 patchelf binutils
+apt-get install -y llvm-20 lld-20 patchelf binutils zip
 
 output="${TOP_DIR}/output/compiler-linux"
 mkdir -p "${output}"
@@ -26,12 +26,11 @@ cp llvm-objcopy "$output/"
 popd
 
 pushd "$output"
-patchelf --set-rpath '$ORIGIN' *
+	patchelf --set-rpath '$ORIGIN' *
+	if [ -f "$output_file" ] ; then
+		rm "$output_file"
+	fi
+	zip -r "$output_file" *
 popd
 
-if [ -f "$output_file" ] ; then
-	rm "$output_file"
-fi
-
-zip -r "$output_file" *
 exit $?
