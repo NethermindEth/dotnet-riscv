@@ -29,6 +29,15 @@ function pack_crossrootfs()
     return 0
 }
 
-pack_crossrootfs "$file" "${output_dir}" "${TOP_DIR}/dotnet/crossrootfs/riscv64" || \
-pack_crossrootfs "$file" "${output_dir}" "${TOP_DIR}/dotnet/src/runtime/crossrootfs/riscv64"
+pushd "${tmp_dir}"
+    git clone https://github.com/dotnet/runtime
+    pushd runtime
+        ./eng/common/cross/build-rootfs.sh riscv64 noble --skipunmount --rootfsdir $(pwd)/.tools/rootfs/riscv64
+        cp "$(pwd)/.tools/rootfs/riscv64/usr/lib/gcc/riscv64-linux-gnu/13/libatomic.a" "${output_dir}/"
+        ret="0"
+    popd
+popd
+
+pack_crossrootfs "$file" "${output_dir}" "${TOP_DIR}/dotnet/.tools/rootfs/riscv64" || \
+pack_crossrootfs "$file" "${output_dir}" "${TOP_DIR}/dotnet/src/runtime/.tools/rootfs/riscv64"
 exit $?
