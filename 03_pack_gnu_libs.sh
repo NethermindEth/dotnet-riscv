@@ -6,6 +6,9 @@ tmp_dir="${TOP_DIR}/tmp/gnu-libs"
 
 cd "${TOP_DIR}"
 
+apt-get install -y xz-utils git debootstrap libc6-riscv64-cross qemu-user-static binfmt-support python3-pip
+pip3 install aiohttp
+
 mkdir -p "${output_dir}"
 mkdir -p "${tmp_dir}"
 

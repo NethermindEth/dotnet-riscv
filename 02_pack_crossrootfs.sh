@@ -3,14 +3,17 @@ export TOP_DIR="$(cd "$(dirname "$(which "$0")")" ; pwd -P)"
 
 libs_dir="${TOP_DIR}/libs"
 output_dir="${TOP_DIR}/output/crossrootfs-linux"
+tmp_dir="${TOP_DIR}/tmp/crossrootfs-linux"
 file="crossrootfs-musl-riscv64.tar.xz"
 
 apt-get update -y
-apt-get install -y xz-utils git debootstrap
+apt-get install -y xz-utils git debootstrap libc6-riscv64-cross qemu-user-static binfmt-support python3-pip
+pip3 install aiohttp
 
 cd "${TOP_DIR}"
 
 mkdir -p "${output_dir}"
+mkdir -p "${tmp_dir}"
 
 function pack_crossrootfs()
 {
