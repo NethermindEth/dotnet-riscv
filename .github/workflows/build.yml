@@ -35,6 +35,11 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
+    - name: Test build rootfs
+      run: |
+        cd ${{ github.workspace }}
+        sudo ./00_test_build_rootfs.sh
+
     - name: Clone repository
       run: |
         git clone --single-branch --depth 1 -b ${{ inputs.branch }} https://github.com/${{ inputs.fork }}/dotnet
