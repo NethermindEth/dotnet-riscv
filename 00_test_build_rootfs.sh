@@ -4,7 +4,8 @@ export TOP_DIR="$(cd "$(dirname "$(which "$0")")" ; pwd -P)"
 tmp_dir="${TOP_DIR}/tmp/test-build-rootfs"
 
 apt-get update -y
-apt-get install -y xz-utils git debootstrap libc6-riscv64-cross qemu-user-static binfmt-support
+apt-get install -y xz-utils git debootstrap libc6-riscv64-cross qemu-user-static binfmt-support python3-pip
+pip3 install aiohttp
 
 cd "${TOP_DIR}"
 
