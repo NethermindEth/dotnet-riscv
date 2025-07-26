@@ -4,7 +4,9 @@ export TOP_DIR="$(cd "$(dirname "$(which "$0")")" ; pwd -P)"
 libs_dir="${TOP_DIR}/libs"
 output_dir="${TOP_DIR}/output/libs-linux"
 gnu_output_dir="${TOP_DIR}/output/gnu-libs-linux"
+
 file="libs-linux-musl-riscv64.zip"
+tmp_dir_rootfs="${TOP_DIR}/tmp/rootfs"
 
 apt-get update -y
 apt-get install -y gcc-riscv64-linux-gnu
@@ -45,6 +47,4 @@ function pack_libs()
 }
 
 
-pack_libs "$file" "${output_dir}" "${TOP_DIR}/dotnet/.tools/rootfs/riscv64" || \
-pack_libs "$file" "${output_dir}" "${TOP_DIR}/dotnet/src/runtime/.tools/rootfs/riscv64"
-exit $?
+pack_libs "$file" "${output_dir}" "${tmp_dir_rootfs}/runtime/.tools/rootfs/riscv64-musl" || exit 1
