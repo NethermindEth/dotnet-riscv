@@ -40,4 +40,5 @@ function pack_bflat_compiler_linux()
 
 pack_bflat_compiler_linux "$file" "${output_dir}" "${TOP_DIR}/dotnet/artifacts" || \
 pack_bflat_compiler_linux "$file" "${output_dir}" "${TOP_DIR}/dotnet/src/runtime/artifacts"
+
 exit $?

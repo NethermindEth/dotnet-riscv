@@ -3,8 +3,10 @@ export TOP_DIR="$(cd "$(dirname "$(which "$0")")" ; pwd -P)"
 
 libs_dir="${TOP_DIR}/libs"
 output_dir="${TOP_DIR}/output/crossrootfs-linux"
-tmp_dir="${TOP_DIR}/tmp/crossrootfs-linux"
-file="crossrootfs-musl-riscv64.tar.xz"
+tmp_dir_rootfs="${TOP_DIR}/tmp/rootfs"
+
+file_musl="crossrootfs-musl-riscv64.tar.xz"
+file_gnu="crossrootfs-gnu-riscv64.tar.xz"
 
 apt-get update -y
 apt-get install -y xz-utils git debootstrap libc6-riscv64-cross qemu-user-static binfmt-support python3-pip
@@ -13,7 +15,6 @@ pip3 install aiohttp
 cd "${TOP_DIR}"
 
 mkdir -p "${output_dir}"
-mkdir -p "${tmp_dir}"
 
 function pack_crossrootfs()
 {
@@ -32,15 +33,5 @@ function pack_crossrootfs()
     return 0
 }
 
-pushd "${tmp_dir}"
-    git clone https://github.com/dotnet/runtime
-    pushd runtime
-        ./eng/common/cross/build-rootfs.sh riscv64 noble --skipunmount --rootfsdir $(pwd)/.tools/rootfs/riscv64
-        cp "$(pwd)/.tools/rootfs/riscv64/usr/lib/gcc/riscv64-linux-gnu/13/libatomic.a" "${output_dir}/"
-        ret="0"
-    popd
-popd
-
-pack_crossrootfs "$file" "${output_dir}" "${TOP_DIR}/dotnet/.tools/rootfs/riscv64" || \
-pack_crossrootfs "$file" "${output_dir}" "${TOP_DIR}/dotnet/src/runtime/.tools/rootfs/riscv64"
-exit $?
+pack_crossrootfs "$file_musl" "${output_dir}" "${tmp_dir_rootfs}/runtime/.tools/rootfs/riscv64-musl" || exit 1
+pack_crossrootfs "$file_gnu" "${output_dir}" "${tmp_dir_rootfs}/runtime/.tools/rootfs/riscv64-gnu" || exit 2

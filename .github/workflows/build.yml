@@ -35,6 +35,11 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
+    - name: Build own rootfs
+      run: |
+        cd ${{ github.workspace }}
+        sudo ./00_build_rootfs.sh
+
     - name: Clone repository
       run: |
         git clone --single-branch --depth 1 -b ${{ inputs.branch }} https://github.com/${{ inputs.fork }}/dotnet
@@ -102,11 +107,17 @@ jobs:
           ${{ github.workspace }}/dotnet/artifacts/assets/Release/Sdk/*/dotnet-sdk-*.tar.gz
           ${{ github.workspace }}/dotnet/artifacts/packages/Release/Shipping/runtime/*.nupkg
 
-    - name: Upload crossrootfs
+    - name: Upload crossrootfs-musl
       uses: actions/upload-artifact@v4
       with:
         name: crossrootfs-musl-riscv64
         path: ${{ github.workspace }}/output/crossrootfs-linux/crossrootfs-musl-riscv64.tar.gz
+
+    - name: Upload crossrootfs-gnu
+      uses: actions/upload-artifact@v4
+      with:
+        name: crossrootfs-gnu-riscv64
+        path: ${{ github.workspace }}/output/crossrootfs-linux/crossrootfs-gnu-riscv64.tar.gz
 
     - name: Upload libs-linux
       uses: actions/upload-artifact@v4
