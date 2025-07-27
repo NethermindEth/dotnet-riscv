@@ -16,6 +16,9 @@ on:
       release:
         description: 'publish release'
         type: boolean
+      whole_source:
+        description: 'publish whole source'
+        type: boolean
 
 jobs:
   run:
@@ -59,47 +62,73 @@ jobs:
       run: |
         find "${{ github.workspace }}/dotnet/artifacts"
 
+    - name: List runtime assets directory
+      run: |
+        find "${{ github.workspace }}/dotnet/runtime/artifacts"
+
+    - name: Pack whole source
+      if: ${{ inputs.whole_source }}
+      run: |
+        cd ${{ github.workspace }}
+        sudo ./xx_pack_whole_source.sh
+
+    - name: Upload whole source
+      if: ${{ inputs.whole_source }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: whole_source
+        path: ${{ github.workspace }}/whole_source.tar.gz
+
     - name: Pack compiler-linux
+      if: ${{ inputs.whole_source == 'false' }}
       run: |
         cd ${{ github.workspace }}
         sudo ./01_pack_compiler_linux.sh
 
     - name: Pack crossrootfs
+      if: ${{ inputs.whole_source == 'false' }}
       run: |
         cd ${{ github.workspace }}
         sudo ./02_pack_crossrootfs.sh
 
     - name: Pack GNU libs
+      if: ${{ inputs.whole_source == 'false' }}
       run: |
         cd ${{ github.workspace }}
         sudo ./03_pack_gnu_libs.sh
 
     - name: Pack libs
+      if: ${{ inputs.whole_source == 'false' }}
       run: |
         cd ${{ github.workspace }}
         sudo ./04_pack_libs.sh
 
     - name: Pack bflat-compiler-native-linux
+      if: ${{ inputs.whole_source == 'false' }}
       run: |
         cd ${{ github.workspace }}
         sudo ./05_pack_bflat_compiler_native_linux.sh
 
     - name: Pack bflat-refs
+      if: ${{ inputs.whole_source == 'false' }}
       run: |
         cd ${{ github.workspace }}
         sudo ./06_pack_refs.sh
 
     - name: Pack bflat-libs-linux
+      if: ${{ inputs.whole_source == 'false' }}
       run: |
         cd ${{ github.workspace }}
         sudo ./07_pack_bflat_libs_linux.sh
 
     - name: Pack bflat-compiler-nupkg
+      if: ${{ inputs.whole_source == 'false' }}
       run: |
         cd ${{ github.workspace }}
         sudo ./08_pack_bflat_compiler_nupkg.sh
 
     - name: Upload .NET
+      if: ${{ inputs.whole_source == 'false' }}
       uses: actions/upload-artifact@v4
       with:
         name: dotnet-sdk-linux-musl-riscv64
@@ -108,48 +137,56 @@ jobs:
           ${{ github.workspace }}/dotnet/artifacts/packages/Release/Shipping/runtime/*.nupkg
 
     - name: Upload crossrootfs-musl
+      if: ${{ inputs.whole_source == 'false' }}
       uses: actions/upload-artifact@v4
       with:
         name: crossrootfs-musl-riscv64
         path: ${{ github.workspace }}/output/crossrootfs-linux/crossrootfs-musl-riscv64.tar.gz
 
     - name: Upload crossrootfs-gnu
+      if: ${{ inputs.whole_source == 'false' }}
       uses: actions/upload-artifact@v4
       with:
         name: crossrootfs-gnu-riscv64
         path: ${{ github.workspace }}/output/crossrootfs-linux/crossrootfs-gnu-riscv64.tar.gz
 
     - name: Upload libs-linux
+      if: ${{ inputs.whole_source == 'false' }}
       uses: actions/upload-artifact@v4
       with:
         name: libs-linux-musl-riscv64
         path: ${{ github.workspace }}/output/libs-linux/libs-linux-musl-riscv64.zip
 
     - name: Upload compiler-linux
+      if: ${{ inputs.whole_source == 'false' }}
       uses: actions/upload-artifact@v4
       with:
         name: compiler-linux-glibc-x64
         path: ${{ github.workspace }}/output/compiler-linux/compiler-linux-glibc-x64.zip
 
     - name: Upload bflat-compiler-native-linux
+      if: ${{ inputs.whole_source == 'false' }}
       uses: actions/upload-artifact@v4
       with:
         name: bflat-compiler-native-linux-glibc-x64
         path: ${{ github.workspace }}/output/bflat-compiler-linux-native/bflat-compiler-native-linux-glibc-x64.zip
 
     - name: Upload bflat-refs
+      if: ${{ inputs.whole_source == 'false' }}
       uses: actions/upload-artifact@v4
       with:
         name: bflat-refs
         path: ${{ github.workspace }}/output/bflat-refs/bflat-refs.zip
 
     - name: Upload bflat-libs-linux
+      if: ${{ inputs.whole_source == 'false' }}
       uses: actions/upload-artifact@v4
       with:
         name: bflat-libs-linux
         path: ${{ github.workspace }}/output/bflat-libs-linux/bflat-libs-linux-musl-riscv64.zip
 
     - name: Upload bflat-compiler-nupkg
+      if: ${{ inputs.whole_source == 'false' }}
       uses: actions/upload-artifact@v4
       with:
         name: bflat-compiler-nupkg
