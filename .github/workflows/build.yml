@@ -64,7 +64,7 @@ jobs:
 
     - name: List runtime assets directory
       run: |
-        find "${{ github.workspace }}/dotnet/runtime/artifacts"
+        find "${{ github.workspace }}/dotnet/runtime/artifacts" | true
 
     - name: Pack whole source
       if: ${{ inputs.whole_source }}
