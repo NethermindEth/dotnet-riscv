@@ -14,7 +14,7 @@ mkdir -p "${output_dir}"
 ret="1"
 pushd "${tmp_dir}"
     pushd runtime
-        cp "$(pwd)/.tools/rootfs/riscv64-gnu/usr/lib/gcc/riscv64-linux-gnu/13/libatomic.a" "${output_dir}/"
+        cp "${tmp_dir_rootfs}/runtime/.tools/rootfs/riscv64-gnu/usr/lib/gcc/riscv64-linux-gnu/13/libatomic.a" "${output_dir}/"
         ret="$?"
     popd
 popd
