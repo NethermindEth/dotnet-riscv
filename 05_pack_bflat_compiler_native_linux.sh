@@ -14,14 +14,15 @@ function pack_bflat_compiler_linux()
     local file="$1"
     local output_dir="$2"
     local artifactpath="$3"
-    local pkgpath=".packages/microsoft.netcore.app.crossgen2.linux-x64/10.0.0-preview.7.25377.199/tools"
+    local pkgpath=".packages/microsoft.netcore.app.crossgen2.linux-x64"
+
     if [ ! -d "${artifactpath}/$pkgpath" ] ; then
         return 1
     fi
 
     pushd "${artifactpath}"
-        cp $pkgpath/libclrjit_unix_riscv64_x64.so \
-           $pkgpath/libjitinterface_x64.so \
+        cp $pkgpath/*/tools/libclrjit_unix_riscv64_x64.so \
+           $pkgpath/*/tools/libjitinterface_x64.so \
            "${output_dir}/"
     popd
 
