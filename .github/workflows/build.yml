@@ -60,7 +60,11 @@ jobs:
 
     - name: List assets directory
       run: |
-        find "${{ github.workspace }}/dotnet/artifacts"
+        find "${{ github.workspace }}/dotnet/artifacts" | true
+
+    - name: List packages directory
+      run: |
+        find "${{ github.workspace }}/dotnet/.packages" | true
 
     - name: List runtime assets directory
       run: |
