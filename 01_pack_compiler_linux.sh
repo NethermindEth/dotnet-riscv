@@ -5,7 +5,7 @@ export DEBIAN_FRONTEND=noninteractive
 output_file="compiler-linux-glibc-x64.zip"
 
 apt-get update -y
-apt-get install -y llvm-20 lld-20 patchelf binutils zip
+apt-get install -y llvm-18 lld-18 patchelf binutils zip
 
 output="${TOP_DIR}/output/compiler-linux"
 mkdir -p "${output}"
@@ -16,11 +16,11 @@ cp libedit.so.2* "$output/"
 cp libxml2.so* "$output/"
 popd
 
-pushd /usr/lib/llvm-20/lib
+pushd /usr/lib/llvm-18/lib
 cp libLLVM.so* "$output/"
 popd
 
-pushd /usr/lib/llvm-20/bin
+pushd /usr/lib/llvm-18/bin
 cp lld "$output/"
 cp llvm-objcopy "$output/"
 popd
