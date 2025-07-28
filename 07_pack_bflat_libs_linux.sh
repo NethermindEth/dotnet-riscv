@@ -17,18 +17,18 @@ function pack_bflat_libs_linux()
     local file="$1"
     local output_dir="$2"
     local artifactpath="$3"
-    local pkgpath=".packages/microsoft.netcore.app.runtime.nativeaot.linux-riscv64/10.0.0-preview.7.25377.199/runtimes/linux-riscv64"
+    local pkgpath=".packages/microsoft.netcore.app.runtime.nativeaot.linux-riscv64"
 
     if [ ! -d "${artifactpath}/bin/coreclr/linux.riscv64.Release/aotsdk" ] ; then
         return 1
     fi
 
     pushd "${artifactpath}/$pkgpath"
-        cp ./lib/net10.0/*.dll \
-           ./native/*.a \
-           ./native/*.o \
-           ./native/*.so \
-           ./native/*.dll \
+        cp 10.0.0*/runtimes/linux-riscv64/lib/net10.0/*.dll \
+           10.0.0*/runtimes/linux-riscv64/native/*.a \
+           10.0.0*/runtimes/linux-riscv64/native/*.o \
+           10.0.0*/runtimes/linux-riscv64/native/*.so \
+           10.0.0*/runtimes/linux-riscv64/native/*.dll \
            "${output_dir}/"
     popd
 
