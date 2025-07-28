@@ -14,13 +14,14 @@ function pack_bflat_refs()
     local file="$1"
     local output_dir="$2"
     local artifactpath="$3"
+    local pkgpath=".packages/microsoft.netcore.app.ref/10.0.0-preview.7.25377.199/ref/net10.0"
 
-    if [ ! -d "${artifactpath}/bin/ref/net10.0" ] ; then
+    if [ ! -d "${artifactpath}/$pkgpath" ] ; then
         return 1
     fi
 
     pushd "${artifactpath}"
-        cp ./bin/ref/net10.0/*.dll \
+        cp $pkgpath/*.dll
            "${output_dir}/"
     popd
 
@@ -37,6 +38,5 @@ function pack_bflat_refs()
 }
 
 
-pack_bflat_refs "$file" "${output_dir}" "${TOP_DIR}/dotnet/artifacts" || \
-pack_bflat_refs "$file" "${output_dir}" "${TOP_DIR}/dotnet/src/runtime/artifacts"
+pack_bflat_refs "$file" "${output_dir}" "${TOP_DIR}/dotnet"
 exit $?

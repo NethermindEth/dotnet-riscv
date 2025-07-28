@@ -6,9 +6,34 @@ output_dir="${TOP_DIR}/output/bflat-compiler-nupkg"
 template_dir="${TOP_DIR}/template"
 file="bflat.compiler.10.0.0.nupkg"
 
+export DEBIAN_FRONTEND=noninteractive
+
+apt-get update -y
+apt-get install -y build-essential file gettext locales cmake llvm clang lld lldb \
+                   liblldb-dev libunwind8-dev libicu-dev liblttng-ust-dev libssl-dev \
+                   libkrb5-dev ninja-build pigz cpio \
+                   python3
+
 cd "${TOP_DIR}"
 
 mkdir -p "${output_dir}"
+
+function build_compiler()
+{
+    local runtime_dir="$1"
+
+    pushd "${runtime_dir}"
+        export ROOTFS_DIR="$(pwd)/.tools/rootfs/riscv64-musl"
+        ./eng/common/cross/build-rootfs.sh riscv64 alpineedge --skipemulation --skipunmount --rootfsdir ${ROOTFS_DIR}
+        ./build.sh -s clr+clr.aot+clr.tools \
+                   -c Release \
+                   -rc Release \
+                   -os linux-musl \
+                   -arch riscv64 \
+                   -cross \
+                   -p:StageOneBuild=true
+    popd
+}
 
 function pack_bflat_compiler_nupkg()
 {
@@ -45,6 +70,7 @@ function pack_bflat_compiler_nupkg()
 }
 
 
-pack_bflat_compiler_nupkg "$file" "${output_dir}" "${TOP_DIR}/dotnet/artifacts" || \
+build_compiler "${TOP_DIR}/dotnet/src/runtime"
+
 pack_bflat_compiler_nupkg "$file" "${output_dir}" "${TOP_DIR}/dotnet/src/runtime/artifacts"
 exit $ret

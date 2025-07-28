@@ -14,14 +14,14 @@ function pack_bflat_compiler_linux()
     local file="$1"
     local output_dir="$2"
     local artifactpath="$3"
-
-    if [ ! -d "${artifactpath}/bin/coreclr/linux.riscv64.Release/x64" ] ; then
+    local pkgpath=".packages/microsoft.netcore.app.crossgen2.linux-x64/10.0.0-preview.7.25377.199/tools"
+    if [ ! -d "${artifactpath}/$pkgpath" ] ; then
         return 1
     fi
 
     pushd "${artifactpath}"
-        cp ./bin/coreclr/linux.riscv64.Release/x64/libclrjit_unix_riscv64_x64.so \
-           ./bin/coreclr/linux.riscv64.Release/x64/libjitinterface_x64.so \
+        cp $pkgpath/libclrjit_unix_riscv64_x64.so \
+           $pkgpath/libjitinterface_x64.so \
            "${output_dir}/"
     popd
 
@@ -38,7 +38,6 @@ function pack_bflat_compiler_linux()
 }
 
 
-pack_bflat_compiler_linux "$file" "${output_dir}" "${TOP_DIR}/dotnet/artifacts" || \
-pack_bflat_compiler_linux "$file" "${output_dir}" "${TOP_DIR}/dotnet/src/runtime/artifacts"
+pack_bflat_compiler_linux "$file" "${output_dir}" "${TOP_DIR}/dotnet"
 
 exit $?

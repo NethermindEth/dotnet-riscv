@@ -17,16 +17,18 @@ function pack_bflat_libs_linux()
     local file="$1"
     local output_dir="$2"
     local artifactpath="$3"
+    local pkgpath=".packages/microsoft.netcore.app.runtime.nativeaot.linux-riscv64/10.0.0-preview.7.25377.199/runtimes/linux-riscv64"
 
     if [ ! -d "${artifactpath}/bin/coreclr/linux.riscv64.Release/aotsdk" ] ; then
         return 1
     fi
 
-    pushd "${artifactpath}"
-        cp ./bin/coreclr/linux.riscv64.Release/aotsdk/*.a \
-           ./bin/coreclr/linux.riscv64.Release/aotsdk/*.o \
-           ./bin/coreclr/linux.riscv64.Release/aotsdk/*.dll \
-           ./bin/runtime/net10.0-linux-Release-riscv64/*.dll \
+    pushd "${artifactpath}/$pkgpath"
+        cp ./lib/net10.0/*.dll \
+           ./native/*.a \
+           ./native/*.o \
+           ./native/*.so \
+           ./native/*.dll \
            "${output_dir}/"
     popd
 
@@ -44,6 +46,6 @@ function pack_bflat_libs_linux()
 }
 
 
-pack_bflat_libs_linux "$file" "${output_dir}" "${TOP_DIR}/dotnet/artifacts" || \
-pack_bflat_libs_linux "$file" "${output_dir}" "${TOP_DIR}/dotnet/src/runtime/artifacts"
+pack_bflat_libs_linux "$file" "${output_dir}" "${TOP_DIR}/dotnet"
+
 exit $?
