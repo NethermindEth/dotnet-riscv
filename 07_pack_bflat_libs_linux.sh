@@ -19,7 +19,7 @@ function pack_bflat_libs_linux()
     local artifactpath="$3"
     local pkgpath=".packages/microsoft.netcore.app.runtime.nativeaot.linux-riscv64"
 
-    if [ ! -d "${artifactpath}/bin/coreclr/linux.riscv64.Release/aotsdk" ] ; then
+    if [ ! -d "${artifactpath}/$pkgpath" ] ; then
         return 1
     fi
 

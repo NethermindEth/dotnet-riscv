@@ -21,7 +21,7 @@ function pack_bflat_refs()
     fi
 
     pushd "${artifactpath}"
-        cp $pkgpath/*/ref/net10.0/*.dll
+        cp $pkgpath/*/ref/net10.0/*.dll \
            "${output_dir}/"
     popd
 
