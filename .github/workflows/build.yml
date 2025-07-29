@@ -145,14 +145,14 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: crossrootfs-musl-riscv64
-        path: ${{ github.workspace }}/output/crossrootfs-linux/crossrootfs-musl-riscv64.tar.gz
+        path: ${{ github.workspace }}/output/crossrootfs-linux/crossrootfs-musl-riscv64.tar.xz
 
     - name: Upload crossrootfs-gnu
       if: ${{ ! inputs.whole_source }}
       uses: actions/upload-artifact@v4
       with:
         name: crossrootfs-gnu-riscv64
-        path: ${{ github.workspace }}/output/crossrootfs-linux/crossrootfs-gnu-riscv64.tar.gz
+        path: ${{ github.workspace }}/output/crossrootfs-linux/crossrootfs-gnu-riscv64.tar.xz
 
     - name: Upload libs-linux
       if: ${{ ! inputs.whole_source }}
