@@ -202,6 +202,8 @@ jobs:
         sudo apt update -y
         sudo apt install -y hub
 
+        rm -rf "${{ github.workspace }}/dotnet/src/runtime/artifacts"
+
         # hub(1) requires release to be created inside a git repo
         git clone https://${{ secrets.CLONE_TOKEN }}:x-oauth-basic@github.com/${{ github.repository }}.git repo
         cd repo
@@ -214,6 +216,15 @@ jobs:
 
         artifacts=" -a $sdk_path"
         artifacts+=" -a $(find ${{ github.workspace }}/dotnet/artifacts/packages/Release/Shipping/runtime -name '*.nupkg' ! -name '*symbols.nupkg' | head -n1)"
+
+        artifacts+=" -a ${{ github.workspace }}/output/crossrootfs-linux/crossrootfs-musl-riscv64.tar.xz"
+        artifacts+=" -a ${{ github.workspace }}/output/crossrootfs-linux/crossrootfs-gnu-riscv64.tar.xz"
+        artifacts+=" -a ${{ github.workspace }}/output/libs-linux/libs-linux-musl-riscv64.zip"
+        artifacts+=" -a ${{ github.workspace }}/output/compiler-linux/compiler-linux-glibc-x64.zip"
+        artifacts+=" -a ${{ github.workspace }}/output/bflat-compiler-native-linux/bflat-compiler-native-linux-glibc-x64.zip"
+        artifacts+=" -a ${{ github.workspace }}/output/bflat-refs/bflat-refs.zip"
+        artifacts+=" -a ${{ github.workspace }}/output/bflat-libs-linux/bflat-libs-linux-musl-riscv64.zip"
+        artifacts+=" -a ${{ github.workspace }}/output/bflat-compiler-nupkg/bflat.compiler.10.0.0.nupkg"
 
         tag_name="$sdk_version"
 
