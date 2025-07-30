@@ -196,6 +196,13 @@ jobs:
         name: bflat-compiler-nupkg
         path: ${{ github.workspace }}/output/bflat-compiler-nupkg/bflat.compiler.10.0.0.nupkg
 
+    - name: Upload runtime artifacts
+      if: ${{ ! inputs.whole_source }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: runtime-artifacts
+        path: ${{ github.workspace }}/dotnet/src/runtime/artifacts
+
     - name: Make release
       if: ${{ inputs.release }}
       run: |
