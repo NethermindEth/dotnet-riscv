@@ -200,7 +200,7 @@ jobs:
       if: ${{ ! inputs.whole_source }}
       uses: actions/upload-artifact@v4
       with:
-        name: runtime-artifacts
+        name: runtime-artifacts-musl-riscv64
         path: ${{ github.workspace }}/dotnet/src/runtime/artifacts
 
     - name: Make release
