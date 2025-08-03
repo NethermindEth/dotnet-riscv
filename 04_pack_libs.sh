@@ -29,7 +29,7 @@ function pack_libs()
     pushd "${crosspath}"
         cp ./usr/lib/*.a \
            ./usr/lib/*.o \
-           ./usr/lib/gcc/riscv64-alpine-linux-musl/14.3.0/libgcc.a \
+           ./usr/lib/gcc/riscv64-alpine-linux-musl/*/libgcc.a \
            "${gnu_output_dir}/libatomic.a" \
            "${output_dir}/"
     popd
