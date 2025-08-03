@@ -52,9 +52,26 @@ jobs:
         cd ${{ github.workspace }}
         ./patch_runtime.sh
 
+    - name: Build rootfs
+      run: |
+        docker run --platform linux/amd64 --rm \
+          -v${{ github.workspace }}/dotnet:/dotnet \
+          -v${{ github.workspace }}/crossrootfs:/crossrootfs \
+          -w /dotnet \
+          -e ROOTFS_DIR=/crossrootfs/riscv64 \
+          mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-riscv64 \
+            ./eng/common/cross/build-rootfs.sh riscv64 alpineedge \
+                                               --skipemulation \
+                                               --skipunmount \
+                                               --rootfsdir /crossrootfs/riscv64
+
     - name: Build
       run: |
-        docker run --platform linux/amd64 --rm -v${{ github.workspace }}/dotnet:/dotnet -w /dotnet -e ROOTFS_DIR=/crossrootfs/riscv64 \
+        docker run --platform linux/amd64 --rm \
+          -v${{ github.workspace }}/dotnet:/dotnet \
+          -v${{ github.workspace }}/crossrootfs:/crossrootfs \
+          -w /dotnet \
+          -e ROOTFS_DIR=/crossrootfs/riscv64 \
           mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-riscv64 \
             ./build.sh --clean-while-building --prep -sb \
                        --os linux \
