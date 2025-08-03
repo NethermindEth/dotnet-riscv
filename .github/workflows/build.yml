@@ -111,12 +111,6 @@ jobs:
         cd ${{ github.workspace }}
         sudo ./04_pack_libs.sh
 
-    - name: Pack bflat-compiler-native-linux
-      if: ${{ ! inputs.whole_source }}
-      run: |
-        cd ${{ github.workspace }}
-        sudo ./05_pack_bflat_compiler_native_linux.sh
-
     - name: Pack bflat-refs
       if: ${{ ! inputs.whole_source }}
       run: |
@@ -134,6 +128,12 @@ jobs:
       run: |
         cd ${{ github.workspace }}
         sudo ./08_pack_bflat_compiler_nupkg.sh
+
+    - name: Pack bflat-compiler-native-linux
+      if: ${{ ! inputs.whole_source }}
+      run: |
+        cd ${{ github.workspace }}
+        sudo ./09_pack_bflat_compiler_native_linux.sh
 
     - name: Upload .NET
       if: ${{ ! inputs.whole_source }}
