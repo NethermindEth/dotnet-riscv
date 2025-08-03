@@ -1,3 +1,4 @@
+
 #!/bin/bash
 export TOP_DIR="$(cd "$(dirname "$(which "$0")")" ; pwd -P)"
 
@@ -14,15 +15,15 @@ function pack_bflat_compiler_linux()
     local file="$1"
     local output_dir="$2"
     local artifactpath="$3"
-    local pkgpath=".packages/microsoft.netcore.app.crossgen2.linux-x64"
+    local pkgpath="bin/coreclr/linux.riscv64.Release"
 
     if [ ! -d "${artifactpath}/$pkgpath" ] ; then
         return 1
     fi
 
     pushd "${artifactpath}"
-        cp $pkgpath/*/tools/libclrjit_unix_riscv64_x64.so \
-           $pkgpath/*/tools/libjitinterface_x64.so \
+        cp $pkgpath/x64/libclrjit_unix_riscv64_x64.so \
+           $pkgpath/x64/libjitinterface_x64.so \
            "${output_dir}/"
     popd
 
@@ -39,6 +40,6 @@ function pack_bflat_compiler_linux()
 }
 
 
-pack_bflat_compiler_linux "$file" "${output_dir}" "${TOP_DIR}/dotnet"
+pack_bflat_compiler_linux "$file" "${output_dir}" "${TOP_DIR}/dotnet/src/runtime/artifacts"
 
 exit $?
