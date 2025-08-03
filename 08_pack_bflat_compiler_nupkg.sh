@@ -29,6 +29,7 @@ function build_compiler()
                    -c Release \
                    -rc Release \
                    -os linux-musl \
+                   --targetrid linux-musl-riscv64 \
                    -arch riscv64 \
                    -cross \
                    -p:StageOneBuild=true
