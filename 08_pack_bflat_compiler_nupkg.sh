@@ -56,9 +56,10 @@ function pack_bflat_compiler_nupkg()
     popd
 
     pushd "${artifactpath}"
-        cp ./bin/ILCompiler.Compiler/riscv64/Release/ILCompiler.*.dll \
-           ./bin/coreclr/linux.riscv64.Release/ilc/ILCompiler.RyuJit.dll \
-           ./bin/crossgen2_inbuild/riscv64/Release/Microsoft.DiaSymReader.dll \
+        cp ./bin/coreclr/linux.riscv64.Release/ilc/ILCompiler*.dll \
+           ./bin/coreclr/linux.riscv64.Release/ilc/Microsoft.DiaSymReader.dll \
+           "${output_dir}/lib/net6.0/"
+        cp ./bin/coreclr/linux.riscv64.Release/crossgen2/ILCompiler*.dll \
            "${output_dir}/lib/net6.0/"
     popd
 
