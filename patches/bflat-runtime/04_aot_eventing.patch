@@ -11,21 +11,6 @@ index 9f8473c5ecb..0b5ca7fddf6 100644
      MethodTable.cpp
      EHHelpers.cpp
      event.cpp
-@@ -226,10 +226,10 @@ endif ()
- convert_to_absolute_path(ARCH_SOURCES_DIR ${ARCH_SOURCES_DIR})
- include_directories(${ARCH_SOURCES_DIR})
- 
--if(NOT CLR_CMAKE_TARGET_ARCH_WASM)
--  set(FEATURE_PERFTRACING 1)
--  set(FEATURE_EVENT_TRACE 1)
--endif()
-+#if(NOT CLR_CMAKE_TARGET_ARCH_WASM)
-+#  set(FEATURE_PERFTRACING 1)
-+#  set(FEATURE_EVENT_TRACE 1)
-+#endif()
- 
- if(FEATURE_PERFTRACING)
-   add_definitions(-DFEATURE_PERFTRACING)
 @@ -269,8 +269,8 @@ add_definitions(-D_LIB)
  # add_definitions(-DSTRESS_HEAP)
  
