@@ -1,4 +1,3 @@
-
 #!/bin/bash
 export TOP_DIR="$(cd "$(dirname "$(which "$0")")" ; pwd -P)"
 
