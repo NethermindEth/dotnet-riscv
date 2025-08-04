@@ -61,6 +61,7 @@ function pack_bflat_compiler_nupkg()
            "${output_dir}/lib/net6.0/"
         cp ./bin/coreclr/linux.riscv64.Release/crossgen2/ILCompiler*.dll \
            "${output_dir}/lib/net6.0/"
+        rm "${output_dir}/lib/net6.0/ILCompiler.ReadyToRun.dll"
     popd
 
     ret="1"
