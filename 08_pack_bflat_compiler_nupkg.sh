@@ -23,15 +23,25 @@ function build_compiler()
     local runtime_dir="$1"
 
     pushd "${runtime_dir}"
-        export ROOTFS_DIR="$(pwd)/.tools/rootfs/riscv64-musl"
-        ./eng/common/cross/build-rootfs.sh riscv64 alpineedge --skipemulation --skipunmount --rootfsdir ${ROOTFS_DIR}
+        export ROOTFS_DIR="$(pwd)/.tools/rootfs/${ARCH}-${LIBC}"
+        ./eng/common/cross/build-rootfs.sh ${ARCH} alpineedge --skipemulation --skipunmount --rootfsdir ${ROOTFS_DIR}
+        if [ "$LIBC" == "musl" ] ; then
+            libc="-musl"
+        else
+            libc=""
+        fi
+        if [ "$ARCH" == "riscv64" ] ; then
+            cross="-cross"
+        else
+            cross=""
+        fi
         ./build.sh -s clr+clr.aot+clr.tools \
                    -c Release \
                    -rc Release \
-                   -os linux-musl \
-                   --targetrid linux-musl-riscv64 \
-                   -arch riscv64 \
-                   -cross \
+                   -os linux-${LIBC} \
+                   --targetrid linux${libc}-${ARCH} \
+                   -arch ${ARCH} \
+                   ${cross} \
                    -p:StageOneBuild=true
     popd
 }
@@ -42,7 +52,7 @@ function pack_bflat_compiler_nupkg()
     local output_dir="$2"
     local artifactpath="$3"
 
-    if [ ! -d "${artifactpath}/bin/ILCompiler.Compiler/riscv64/Release" ] ; then
+    if [ ! -d "${artifactpath}/bin/ILCompiler.Compiler/${ARCH}/Release" ] ; then
         return 1
     fi
 
@@ -56,10 +66,10 @@ function pack_bflat_compiler_nupkg()
     popd
 
     pushd "${artifactpath}"
-        cp ./bin/coreclr/linux.riscv64.Release/ilc/ILCompiler*.dll \
-           ./bin/coreclr/linux.riscv64.Release/ilc/Microsoft.DiaSymReader.dll \
+        cp ./bin/coreclr/linux.${ARCH}.Release/ilc/ILCompiler*.dll \
+           ./bin/coreclr/linux.${ARCH}.Release/ilc/Microsoft.DiaSymReader.dll \
            "${output_dir}/lib/net6.0/"
-        cp ./bin/coreclr/linux.riscv64.Release/crossgen2/ILCompiler*.dll \
+        cp ./bin/coreclr/linux.${ARCH}.Release/crossgen2/ILCompiler*.dll \
            "${output_dir}/lib/net6.0/"
         rm "${output_dir}/lib/net6.0/ILCompiler.ReadyToRun.dll"
     popd

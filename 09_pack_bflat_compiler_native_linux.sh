@@ -14,14 +14,14 @@ function pack_bflat_compiler_linux()
     local file="$1"
     local output_dir="$2"
     local artifactpath="$3"
-    local pkgpath="bin/coreclr/linux.riscv64.Release"
+    local pkgpath="bin/coreclr/linux.${ARCH}.Release"
 
     if [ ! -d "${artifactpath}/$pkgpath" ] ; then
         return 1
     fi
 
     pushd "${artifactpath}"
-        cp $pkgpath/x64/libclrjit_unix_riscv64_x64.so \
+        cp $pkgpath/x64/libclrjit_unix_${ARCH}_x64.so \
            $pkgpath/x64/libjitinterface_x64.so \
            "${output_dir}/"
     popd

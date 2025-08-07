@@ -5,12 +5,15 @@ libs_dir="${TOP_DIR}/libs"
 output_dir="${TOP_DIR}/output/libs-linux"
 gnu_output_dir="${TOP_DIR}/output/gnu-libs-linux"
 
-file="libs-linux-musl-riscv64.zip"
+file="libs-linux-${LIBC}-${ARCH}.zip"
 tmp_dir_rootfs="${TOP_DIR}/tmp/rootfs"
 
 apt-get update -y
-apt-get install -y gcc-riscv64-linux-gnu
-
+if [ "${ARCH}" == "riscv64" ] ; then
+    apt-get install -y gcc-riscv64-linux-gnu
+else
+    apt-get install -y build-essential
+fi
 cd "${TOP_DIR}"
 
 mkdir -p "${output_dir}"
@@ -29,7 +32,7 @@ function pack_libs()
     pushd "${crosspath}"
         cp ./usr/lib/*.a \
            ./usr/lib/*.o \
-           ./usr/lib/gcc/riscv64-alpine-linux-musl/*/libgcc.a \
+           ./usr/lib/gcc/${ARCH}-alpine-linux-musl/*/libgcc.a \
            "${gnu_output_dir}/libatomic.a" \
            "${output_dir}/"
     popd
@@ -38,7 +41,11 @@ function pack_libs()
         if [ -f "$file" ] ; then
             rm "$file"
         fi
-        riscv64-linux-gnu-strip --strip-debug *.a *.o
+        if [ "${ARCH}" == "riscv64" ] ; then
+            riscv64-linux-gnu-strip --strip-debug *.a *.o
+        else
+            strip --strip-debug *.a *.o
+        fi
         zip -r "$file" *
         ret="$?"
     popd
@@ -47,4 +54,4 @@ function pack_libs()
 }
 
 
-pack_libs "$file" "${output_dir}" "${tmp_dir_rootfs}/runtime/.tools/rootfs/riscv64-musl" || exit 1
+pack_libs "$file" "${output_dir}" "${tmp_dir_rootfs}/runtime/.tools/rootfs/${ARCH}-${LIBC}" || exit 1

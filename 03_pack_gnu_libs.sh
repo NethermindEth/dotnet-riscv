@@ -6,7 +6,11 @@ tmp_dir_rootfs="${TOP_DIR}/tmp/rootfs"
 
 cd "${TOP_DIR}"
 
-apt-get install -y xz-utils git debootstrap libc6-riscv64-cross qemu-user-static binfmt-support python3-pip
+if [ "$ARCH" == "riscv64" ] ; then
+    apt-get install -y xz-utils git debootstrap libc6-riscv64-cross qemu-user-static binfmt-support python3-pip
+else
+    apt-get install -y xz-utils git debootstrap python3-pip
+fi
 pip3 install aiohttp
 
 mkdir -p "${output_dir}"
@@ -14,7 +18,7 @@ mkdir -p "${output_dir}"
 ret="1"
 pushd "${tmp_dir}"
     pushd runtime
-        cp "${tmp_dir_rootfs}/runtime/.tools/rootfs/riscv64-gnu/usr/lib/gcc/riscv64-linux-gnu/13/libatomic.a" "${output_dir}/"
+        cp "${tmp_dir_rootfs}/runtime/.tools/rootfs/${ARCH}-gnu/usr/lib/gcc/${ARCH}-linux-gnu/*/libatomic.a" "${output_dir}/"
         ret="$?"
     popd
 popd

@@ -19,6 +19,16 @@ on:
       whole_source:
         description: 'publish whole source'
         type: boolean
+      arch:
+        description: 'target architecture'
+        required: true
+        type: string
+        default: riscv64
+      libc:
+        description: 'target libc'
+        required: true
+        type: string
+        default: musl
 
 jobs:
   run:
@@ -41,6 +51,7 @@ jobs:
     - name: Build own rootfs
       run: |
         cd ${{ github.workspace }}
+        export ARCH="{{ inputs.arch }}"
         sudo ./00_build_rootfs.sh
 
     - name: Clone repository
@@ -54,29 +65,33 @@ jobs:
 
     - name: Build rootfs
       run: |
+        test "${{ inputs.arch }}" = "x64" && platform="amd64"
+        test "${{ inputs.arch }}" = "riscv64" && platform="riscv64"
         docker run --platform linux/amd64 --rm \
           -v${{ github.workspace }}/dotnet:/dotnet \
           -v${{ github.workspace }}/crossrootfs:/crossrootfs \
           -w /dotnet \
-          -e ROOTFS_DIR=/crossrootfs/riscv64 \
-          mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-riscv64 \
-            ./eng/common/cross/build-rootfs.sh riscv64 alpineedge \
+          -e ROOTFS_DIR=/crossrootfs/${{ inputs.arch }} \
+          mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-${platform} \
+            ./eng/common/cross/build-rootfs.sh ${{ inputs.arch }} alpineedge \
                                                --skipemulation \
                                                --skipunmount \
-                                               --rootfsdir /crossrootfs/riscv64
+                                               --rootfsdir /crossrootfs/${{ inputs.arch }}
 
     - name: Build
       run: |
+        test "${{ inputs.arch }}" = "x64" && platform="amd64"
+        test "${{ inputs.arch }}" = "riscv64" && platform="riscv64"
         docker run --platform linux/amd64 --rm \
           -v${{ github.workspace }}/dotnet:/dotnet \
           -v${{ github.workspace }}/crossrootfs:/crossrootfs \
           -w /dotnet \
-          -e ROOTFS_DIR=/crossrootfs/riscv64 \
-          mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-riscv64 \
+          -e ROOTFS_DIR=/crossrootfs/${{ inputs.arch }} \
+          mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-${platform} \
             ./build.sh --clean-while-building --prep -sb \
                        --os linux \
-                       --rid linux-musl-riscv64 \
-                       --arch riscv64 \
+                       --rid linux-${{ inputs.libc }}-${{ inputs.arch }} \
+                       --arch ${{ inputs.arch }} \
                        -p:OfficialBuildId=$(date +%Y%m%d).99
 
     - name: List assets directory
@@ -126,6 +141,8 @@ jobs:
       if: ${{ ! inputs.whole_source }}
       run: |
         cd ${{ github.workspace }}
+        export LIBC="${{ inputs.libc }}"
+        export ARCH="${{ inputs.arch }}"
         sudo ./04_pack_libs.sh
 
     - name: Pack bflat-refs
@@ -138,25 +155,31 @@ jobs:
       if: ${{ ! inputs.whole_source }}
       run: |
         cd ${{ github.workspace }}
+        export LIBC="${{ inputs.libc }}"
+        export ARCH="${{ inputs.arch }}"
         sudo ./07_pack_bflat_libs_linux.sh
 
     - name: Pack bflat-compiler-nupkg
       if: ${{ ! inputs.whole_source }}
       run: |
         cd ${{ github.workspace }}
+        export LIBC="${{ inputs.libc }}"
+        export ARCH="${{ inputs.arch }}"
         sudo ./08_pack_bflat_compiler_nupkg.sh
 
     - name: Pack bflat-compiler-native-linux
       if: ${{ ! inputs.whole_source }}
       run: |
         cd ${{ github.workspace }}
+        export LIBC="${{ inputs.libc }}"
+        export ARCH="${{ inputs.arch }}"
         sudo ./09_pack_bflat_compiler_native_linux.sh
 
     - name: Upload .NET
       if: ${{ ! inputs.whole_source }}
       uses: actions/upload-artifact@v4
       with:
-        name: dotnet-sdk-linux-musl-riscv64
+        name: dotnet-sdk-linux-${{ inputs.libc }}-${{ inputs.arch }}
         path: |
           ${{ github.workspace }}/dotnet/artifacts/assets/Release/Sdk/*/dotnet-sdk-*.tar.gz
           ${{ github.workspace }}/dotnet/artifacts/packages/Release/Shipping/runtime/*.nupkg
@@ -165,22 +188,22 @@ jobs:
       if: ${{ ! inputs.whole_source }}
       uses: actions/upload-artifact@v4
       with:
-        name: crossrootfs-musl-riscv64
-        path: ${{ github.workspace }}/output/crossrootfs-linux/crossrootfs-musl-riscv64.tar.xz
+        name: crossrootfs-musl-${{ inputs.arch }}
+        path: ${{ github.workspace }}/output/crossrootfs-linux/crossrootfs-musl-${{ inputs.arch }}.tar.xz
 
     - name: Upload crossrootfs-gnu
       if: ${{ ! inputs.whole_source }}
       uses: actions/upload-artifact@v4
       with:
-        name: crossrootfs-gnu-riscv64
-        path: ${{ github.workspace }}/output/crossrootfs-linux/crossrootfs-gnu-riscv64.tar.xz
+        name: crossrootfs-gnu-${{ inputs.arch }}
+        path: ${{ github.workspace }}/output/crossrootfs-linux/crossrootfs-gnu-${{ inputs.arch }}.tar.xz
 
     - name: Upload libs-linux
       if: ${{ ! inputs.whole_source }}
       uses: actions/upload-artifact@v4
       with:
-        name: libs-linux-musl-riscv64
-        path: ${{ github.workspace }}/output/libs-linux/libs-linux-musl-riscv64.zip
+        name: libs-linux-${{ inputs.libc }}-${{ inputs.arch }}
+        path: ${{ github.workspace }}/output/libs-linux/libs-linux-${{ inputs.libc }}-${{ inputs.arch }}.zip
 
     - name: Upload compiler-linux
       if: ${{ ! inputs.whole_source }}
@@ -208,7 +231,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: bflat-libs-linux
-        path: ${{ github.workspace }}/output/bflat-libs-linux/bflat-libs-linux-musl-riscv64.zip
+        path: ${{ github.workspace }}/output/bflat-libs-linux/bflat-libs-linux-${{ inputs.libc }}-${{ inputs.arch }}.zip
 
     - name: Upload bflat-compiler-nupkg
       if: ${{ ! inputs.whole_source }}
@@ -221,7 +244,7 @@ jobs:
       if: ${{ ! inputs.whole_source }}
       uses: actions/upload-artifact@v4
       with:
-        name: runtime-artifacts-musl-riscv64
+        name: runtime-artifacts-${{ inputs.libc }}-${{ inputs.arch }}
         path: ${{ github.workspace }}/dotnet/src/runtime/artifacts
 
     - name: Make release
@@ -245,13 +268,13 @@ jobs:
         artifacts=" -a $sdk_path"
         artifacts+=" -a $(find ${{ github.workspace }}/dotnet/artifacts/packages/Release/Shipping/runtime -name '*.nupkg' ! -name '*symbols.nupkg' | head -n1)"
 
-        artifacts+=" -a ${{ github.workspace }}/output/crossrootfs-linux/crossrootfs-musl-riscv64.tar.xz"
-        artifacts+=" -a ${{ github.workspace }}/output/crossrootfs-linux/crossrootfs-gnu-riscv64.tar.xz"
-        artifacts+=" -a ${{ github.workspace }}/output/libs-linux/libs-linux-musl-riscv64.zip"
+        artifacts+=" -a ${{ github.workspace }}/output/crossrootfs-linux/crossrootfs-musl-${{ inputs.arch }}.tar.xz"
+        artifacts+=" -a ${{ github.workspace }}/output/crossrootfs-linux/crossrootfs-gnu-${{ inputs.arch }}.tar.xz"
+        artifacts+=" -a ${{ github.workspace }}/output/libs-linux/libs-linux-${{ inputs.libc }}-${{ inputs.arch }}.zip"
         artifacts+=" -a ${{ github.workspace }}/output/compiler-linux/compiler-linux-glibc-x64.zip"
         artifacts+=" -a ${{ github.workspace }}/output/bflat-compiler-native-linux/bflat-compiler-native-linux-glibc-x64.zip"
         artifacts+=" -a ${{ github.workspace }}/output/bflat-refs/bflat-refs.zip"
-        artifacts+=" -a ${{ github.workspace }}/output/bflat-libs-linux/bflat-libs-linux-musl-riscv64.zip"
+        artifacts+=" -a ${{ github.workspace }}/output/bflat-libs-linux/bflat-libs-linux-${{ inputs.libc }}-${{ inputs.arch }}.zip"
         artifacts+=" -a ${{ github.workspace }}/output/bflat-compiler-nupkg/bflat.compiler.10.0.0.nupkg"
 
         tag_name="$sdk_version"

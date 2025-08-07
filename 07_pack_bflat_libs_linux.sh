@@ -3,10 +3,14 @@ export TOP_DIR="$(cd "$(dirname "$(which "$0")")" ; pwd -P)"
 
 libs_dir="${TOP_DIR}/libs"
 output_dir="${TOP_DIR}/output/bflat-libs-linux"
-file="bflat-libs-linux-musl-riscv64.zip"
+file="bflat-libs-linux-${LIBC}-${ARCH}.zip"
 
 apt-get update -y
-apt-get install -y gcc-riscv64-linux-gnu
+if [ "${ARCH}" == "riscv64" ] ; then
+    apt-get install -y gcc-riscv64-linux-gnu
+else
+    apt-get install -y build-essential
+fi
 
 cd "${TOP_DIR}"
 
@@ -17,18 +21,18 @@ function pack_bflat_libs_linux()
     local file="$1"
     local output_dir="$2"
     local artifactpath="$3"
-    local pkgpath=".packages/microsoft.netcore.app.runtime.nativeaot.linux-musl-riscv64"
+    local pkgpath=".packages/microsoft.netcore.app.runtime.nativeaot.linux-${LIBC}-${ARCH}"
 
     if [ ! -d "${artifactpath}/$pkgpath" ] ; then
         return 1
     fi
 
     pushd "${artifactpath}/$pkgpath"
-        cp 10.0.0*/runtimes/linux-*riscv64/lib/net10.0/*.dll \
-           10.0.0*/runtimes/linux-*riscv64/native/*.a \
-           10.0.0*/runtimes/linux-*riscv64/native/*.o \
-           10.0.0*/runtimes/linux-*riscv64/native/*.so \
-           10.0.0*/runtimes/linux-*riscv64/native/*.dll \
+        cp 10.0.0*/runtimes/linux-*${ARCH}/lib/net10.0/*.dll \
+           10.0.0*/runtimes/linux-*${ARCH}/native/*.a \
+           10.0.0*/runtimes/linux-*${ARCH}/native/*.o \
+           10.0.0*/runtimes/linux-*${ARCH}/native/*.so \
+           10.0.0*/runtimes/linux-*${ARCH}/native/*.dll \
            "${output_dir}/"
     popd
 
@@ -37,7 +41,11 @@ function pack_bflat_libs_linux()
         if [ -f "$file" ] ; then
             rm "$file"
         fi
-        riscv64-linux-gnu-strip --strip-debug *.a *.o
+        if [ "${ARCH}" == "riscv64" ] ; then
+            riscv64-linux-gnu-strip --strip-debug *.a *.o
+        else
+            strip --strip-debug *.a *.o
+        fi
         zip -r "$file" *
         ret="$?"
     popd
