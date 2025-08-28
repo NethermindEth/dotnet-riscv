@@ -1,0 +1,13 @@
+diff --git a/src/coreclr/vm/riscv64/thunktemplates.S b/src/coreclr/vm/riscv64/thunktemplates.S
+index 8b58b4ec48b..27dc5f17d6d 100644
+--- a/src/coreclr/vm/riscv64/thunktemplates.S
++++ b/src/coreclr/vm/riscv64/thunktemplates.S
+@@ -14,7 +14,7 @@ LEAF_END_MARKED StubPrecodeCode
+ LEAF_ENTRY FixupPrecodeCode
+     auipc t2, 0x4
+     ld t2, (FixupPrecodeData__Target)(t2)
+-    c.jr t2
++    jr t2
+ 
+     auipc t2, 0x4
+     ld t1, (FixupPrecodeData__PrecodeFixupThunk - 0xa)(t2)
