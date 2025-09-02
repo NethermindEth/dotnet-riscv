@@ -7,8 +7,8 @@ index e8ad8615f6d..2020742f4a0 100644
  endif()
  
 +if(CLR_CMAKE_HOST_UNIX_RISCV64)
-+  # Still leaving D instructions for compatibility with userland
-+  add_compile_options(-march=rv64imad)
++  # Remove compressed instructions and D extension
++  add_compile_options(-march=rv64ima)
 +endif()
 +
  if(CLR_CMAKE_HOST_UNIX)
