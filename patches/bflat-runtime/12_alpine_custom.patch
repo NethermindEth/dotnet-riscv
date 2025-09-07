@@ -1,0 +1,72 @@
+diff --git a/eng/common/cross/build-rootfs.sh b/eng/common/cross/build-rootfs.sh
+index 8abfb71f727..8341304b63f 100755
+--- a/eng/common/cross/build-rootfs.sh
++++ b/eng/common/cross/build-rootfs.sh
+@@ -42,8 +42,8 @@ __UbuntuPackages="build-essential"
+ __AlpinePackages="alpine-base"
+ __AlpinePackages+=" build-base"
+ __AlpinePackages+=" linux-headers"
+-__AlpinePackages+=" lldb-dev"
+-__AlpinePackages+=" python3"
++#__AlpinePackages+=" lldb-dev"
++#__AlpinePackages+=" python3"
+ __AlpinePackages+=" libedit"
+ 
+ # symlinks fixer
+@@ -57,8 +57,8 @@ __UbuntuPackages+=" libunwind8-dev"
+ __AlpinePackages+=" gettext-dev"
+ __AlpinePackages+=" icu-dev"
+ __AlpinePackages+=" libunwind-dev"
+-__AlpinePackages+=" lttng-ust-dev"
+-__AlpinePackages+=" compiler-rt"
++#__AlpinePackages+=" lttng-ust-dev"
++#__AlpinePackages+=" compiler-rt"
+ 
+ # runtime libraries' dependencies
+ __UbuntuPackages+=" libcurl4-openssl-dev"
+@@ -68,7 +68,7 @@ __UbuntuPackages+=" zlib1g-dev"
+ __UbuntuPackages+=" libbrotli-dev"
+ 
+ __AlpinePackages+=" curl-dev"
+-__AlpinePackages+=" krb5-dev"
++__AlpinePackages+=" "
+ __AlpinePackages+=" openssl-dev"
+ __AlpinePackages+=" zlib-dev"
+ 
+@@ -132,7 +132,7 @@ __AlpineKeys='
+ '
+ __Keyring=
+ __KeyringFile="/usr/share/keyrings/ubuntu-archive-keyring.gpg"
+-__SkipSigCheck=0
++__SkipSigCheck=1
+ __SkipEmulation=0
+ __UseMirror=0
+ 
+@@ -544,15 +544,13 @@ if [[ "$__CodeName" == "alpine" ]]; then
+     # initialize DB
+     # shellcheck disable=SC2086
+     "$__ApkToolsDir/apk.static" \
+-        -X "http://dl-cdn.alpinelinux.org/alpine/$version/main" \
+-        -X "http://dl-cdn.alpinelinux.org/alpine/$version/community" \
++        -X "https://opensource.interpretica.io/bflat/alpine/b8/main" \
+         -U $__ApkSignatureArg --root "$__RootfsDir" --arch "$__AlpineArch" --initdb add
+ 
+     if [[ "$__AlpineLlvmLibsLookup" == 1 ]]; then
+         # shellcheck disable=SC2086
+         __AlpinePackages+=" $("$__ApkToolsDir/apk.static" \
+-            -X "http://dl-cdn.alpinelinux.org/alpine/$version/main" \
+-            -X "http://dl-cdn.alpinelinux.org/alpine/$version/community" \
++            -X "https://opensource.interpretica.io/bflat/alpine/b8/main" \
+             -U $__ApkSignatureArg --root "$__RootfsDir" --arch "$__AlpineArch" \
+             search 'llvm*-libs' | grep -E '^llvm' | sort | tail -1 | sed 's/-[^-]*//2g')"
+     fi
+@@ -560,8 +558,7 @@ if [[ "$__CodeName" == "alpine" ]]; then
+     # install all packages in one go
+     # shellcheck disable=SC2086
+     "$__ApkToolsDir/apk.static" \
+-        -X "http://dl-cdn.alpinelinux.org/alpine/$version/main" \
+-        -X "http://dl-cdn.alpinelinux.org/alpine/$version/community" \
++        -X "https://opensource.interpretica.io/bflat/alpine/b8/main" \
+         -U $__ApkSignatureArg --root "$__RootfsDir" --arch "$__AlpineArch" $__NoEmulationArg \
+         add $__AlpinePackages
+ 
