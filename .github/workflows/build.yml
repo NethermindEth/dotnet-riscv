@@ -19,6 +19,9 @@ on:
       whole_source:
         description: 'publish whole source'
         type: boolean
+      whole_source_early:
+        description: 'publish whole source early'
+        type: boolean
 
 jobs:
   run:
@@ -52,6 +55,12 @@ jobs:
         cd ${{ github.workspace }}
         ./patch_alpine.sh
         ./patch_runtime.sh
+
+    - name: Pack whole source early
+      if: ${{ inputs.whole_source_early }}
+      run: |
+        cd ${{ github.workspace }}
+        sudo ./xx_pack_whole_source.sh
 
     - name: Build rootfs
       run: |
