@@ -62,6 +62,13 @@ jobs:
         cd ${{ github.workspace }}
         sudo ./xx_pack_whole_source.sh
 
+    - name: Upload whole source early
+      if: ${{ inputs.whole_source_early }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: whole_source
+        path: ${{ github.workspace }}/whole_source.tar.gz
+
     - name: Build rootfs
       run: |
         docker run --platform linux/amd64 --rm \
