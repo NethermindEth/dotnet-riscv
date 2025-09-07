@@ -50,6 +50,7 @@ jobs:
     - name: Patch repository
       run: |
         cd ${{ github.workspace }}
+        ./patch_alpine.sh
         ./patch_runtime.sh
 
     - name: Build rootfs
