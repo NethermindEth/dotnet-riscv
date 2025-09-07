@@ -42,6 +42,15 @@ index 8abfb71f727..8341304b63f 100755
  __SkipEmulation=0
  __UseMirror=0
  
+@@ -532,7 +532,7 @@ if [[ "$__CodeName" == "alpine" ]]; then
+     done
+
+     if [[ "$__SkipSigCheck" == "1" ]]; then
+-        __ApkSignatureArg="--allow-untrusted"
++        __ApkSignatureArg="--allow-untrusted --no-check-certificate"
+     else
+         __ApkSignatureArg="--keys-dir $__ApkKeysDir"
+     fi
 @@ -544,15 +544,13 @@ if [[ "$__CodeName" == "alpine" ]]; then
      # initialize DB
      # shellcheck disable=SC2086
