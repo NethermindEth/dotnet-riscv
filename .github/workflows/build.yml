@@ -93,6 +93,7 @@ jobs:
             ./build.sh --clean-while-building --prep -sb \
                        --os linux \
                        --rid linux-musl-riscv64 \
+                       --verbosity normal \
                        --arch riscv64 \
                        -p:OfficialBuildId=$(date +%Y%m%d).99
 
