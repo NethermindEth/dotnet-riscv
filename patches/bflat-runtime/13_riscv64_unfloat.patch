@@ -1,3 +1,20 @@
+diff --git a/src/runtime/eng/native/build-commons.sh b/src/runtime/eng/native/build-commons.sh
+index a3bdc2ac1..2c0e1ed91 100755
+--- a/src/runtime/eng/native/build-commons.sh
++++ b/src/runtime/eng/native/build-commons.sh
+@@ -63,6 +63,12 @@ build_native()
+     # All set to commence the build
+     echo "Commencing build of \"$target\" target in \"$message\" for $__TargetOS.$__TargetArch.$__BuildType in $intermediatesDir"
+
++    if [ "${__TargetRid}" == "linux-musl-riscv64" ] && [ "${hostArch}" == "riscv64" ]; then
++        echo "Hijack cxxflags/cflags $hostArch"
++        export EXTRA_CXXFLAGS="-march=rv64ima -mabi=lp64 -gdwarf-4"
++        export EXTRA_CFLAGS="-march=rv64ima -mabi=lp64 -gdwarf-4"
++    fi
++
+     SAVED_CFLAGS="${CFLAGS}"
+     SAVED_CXXFLAGS="${CXXFLAGS}"
+     SAVED_LDFLAGS="${LDFLAGS}"
 diff --git a/eng/native/configurecompiler.cmake b/eng/native/configurecompiler.cmake
 index 2957221d4..856e7093b 100644
 --- a/eng/native/configurecompiler.cmake
