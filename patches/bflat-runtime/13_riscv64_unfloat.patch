@@ -7,7 +7,7 @@ index a3bdc2ac1..2c0e1ed91 100755
      echo "Commencing build of \"$target\" target in \"$message\" for $__TargetOS.$__TargetArch.$__BuildType in $intermediatesDir"
 -
 +    echo "Target RID: ${__TargetRid}, Host arch: ${hostArch}"
-+    if [ "${__TargetRid}" == "linux-musl-riscv64" ] && [ "${hostArch}" == "riscv64" ]; then
++    if [[ "${__TargetRid}" == linux*-riscv64 ]] && [ "${hostArch}" == "riscv64" ] ; then
 +        echo "Hijack cxxflags/cflags $hostArch"
 +        export EXTRA_CXXFLAGS="-march=rv64ima -mabi=lp64 -gdwarf-4"
 +        export EXTRA_CFLAGS="-march=rv64ima -mabi=lp64 -gdwarf-4"
