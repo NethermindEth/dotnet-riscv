@@ -1,7 +1,7 @@
 diff --git a/src/runtime/eng/native/build-commons.sh b/src/runtime/eng/native/build-commons.sh
 index a3bdc2ac1..2c0e1ed91 100755
---- a/src/runtime/eng/native/build-commons.sh
-+++ b/src/runtime/eng/native/build-commons.sh
+--- a/eng/native/build-commons.sh
++++ b/eng/native/build-commons.sh
 @@ -63,6 +63,12 @@ build_native()
      # All set to commence the build
      echo "Commencing build of \"$target\" target in \"$message\" for $__TargetOS.$__TargetArch.$__BuildType in $intermediatesDir"
