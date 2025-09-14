@@ -1,4 +1,4 @@
-diff --git a/src/runtime/eng/native/build-commons.sh b/src/runtime/eng/native/build-commons.sh
+diff --git a/eng/native/build-commons.sh b/eng/native/build-commons.sh
 index a3bdc2ac1..2c0e1ed91 100755
 --- a/eng/native/build-commons.sh
 +++ b/eng/native/build-commons.sh
