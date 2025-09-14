@@ -8,7 +8,7 @@ index e8ad8615f6d..2020742f4a0 100644
  
 +if(CLR_CMAKE_HOST_UNIX_RISCV64)
 +  # Remove compressed instructions and D extension
-+  add_compile_options(-march=rv64ima)
++  add_compile_options(-march=rv64ima -fno-jump-tables)
 +endif()
 +
  if(CLR_CMAKE_HOST_UNIX)
