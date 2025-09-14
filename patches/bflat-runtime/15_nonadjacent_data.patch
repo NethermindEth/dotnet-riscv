@@ -1,0 +1,22 @@
+diff --git a/src/coreclr/jit/ee_il_dll.cpp b/src/coreclr/jit/ee_il_dll.cpp
+index 9df0a0c29e5..0db61ed547b 100644
+--- a/src/coreclr/jit/ee_il_dll.cpp
++++ b/src/coreclr/jit/ee_il_dll.cpp
+@@ -1140,7 +1140,7 @@ void Compiler::eeAllocMem(AllocMemArgs* args, const UNATIVE_OFFSET roDataSection
+ 
+ #endif // DEBUG
+ 
+-#if defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
++#if defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || 0 // defined(TARGET_RISCV64)
+ 
+     // For arm64/LoongArch64/RISCV64, we want to allocate JIT data always adjacent to code similar to what native
+     // compiler does.
+@@ -1174,7 +1174,7 @@ void Compiler::eeAllocMem(AllocMemArgs* args, const UNATIVE_OFFSET roDataSection
+ 
+ #endif // DEBUG
+ 
+-#if defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
++#if defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || 0 // defined(TARGET_RISCV64)
+ 
+     // Fix up data section pointers.
+     assert(args->roDataBlock == nullptr);
