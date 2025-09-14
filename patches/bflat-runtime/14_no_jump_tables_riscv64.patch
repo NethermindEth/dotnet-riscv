@@ -1,0 +1,13 @@
+diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
+index 75f49a1d3e9..92caf5d2f1d 100644
+--- a/src/coreclr/jit/lower.cpp
++++ b/src/coreclr/jit/lower.cpp
+@@ -1081,7 +1081,7 @@ GenTree* Lowering::LowerSwitch(GenTree* node)
+ 
+     bool useJumpSequence = jumpCnt < minSwitchTabJumpCnt;
+ 
+-    if (TargetOS::IsUnix && TargetArchitecture::IsArm32)
++    if (TargetOS::IsUnix && (TargetArchitecture::IsArm32 || TargetArchitecture::IsRiscV64))
+     {
+         // Force using an inlined jumping instead switch table generation.
+         // Switch jump table is generated with incorrect values in NativeAOT case,
