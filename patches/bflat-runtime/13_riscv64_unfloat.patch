@@ -9,8 +9,8 @@ index a3bdc2ac1..2c0e1ed91 100755
 +    echo "Target RID: ${__TargetRid}, Host arch: ${hostArch}"
 +    if [[ "${__TargetRid}" == linux*-riscv64 ]] && [ "${hostArch}" == "riscv64" ] ; then
 +        echo "Hijack cxxflags/cflags $hostArch"
-+        export EXTRA_CXXFLAGS="-march=rv64ima -mabi=lp64 -gdwarf-4"
-+        export EXTRA_CFLAGS="-march=rv64ima -mabi=lp64 -gdwarf-4"
++        export EXTRA_CXXFLAGS="-march=rv64ima -mabi=lp64 -gdwarf-4 -fno-jump-tables"
++        export EXTRA_CFLAGS="-march=rv64ima -mabi=lp64 -gdwarf-4 -fno-jump-tables"
 +    fi
 +
      SAVED_CFLAGS="${CFLAGS}"
@@ -26,7 +26,7 @@ index 2957221d4..856e7093b 100644
  
 +if(CLR_CMAKE_HOST_UNIX_RISCV64)
 +  # Remove compressed instructions and D extension
-+  add_compile_options(-march=rv64ima -mabi=lp64 -gdwarf-4 -mno-relax)
++  add_compile_options(-march=rv64ima -mabi=lp64 -gdwarf-4 -mno-relax -fno-jump-tables)
 +endif()
 +
  if(CLR_CMAKE_HOST_UNIX)
