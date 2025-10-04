@@ -20,7 +20,7 @@ index bf1122280..32c7b5be6 100644
          #include "instrs.h"
      };
      // clang-format on
-@@ -2374,10 +2374,37 @@ AGAIN:
+@@ -2374,10 +2374,36 @@ AGAIN:
   *  Emit a 32-bit RISCV64 instruction
   */
  
@@ -49,7 +49,6 @@ index bf1122280..32c7b5be6 100644
 +        if ((is_cfd_check_code[i] & 0x7F) == (code & 0x7F) &&
 +            is_cfd_check[i])
 +        {
-+            fprintf(stderr, "Replaced code %x with nop\n", code);
 +            code = 0x00000013;
 +            break;
 +        }
