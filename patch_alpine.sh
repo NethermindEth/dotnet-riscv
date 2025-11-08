@@ -6,6 +6,10 @@ pushd dotnet > /dev/null 2> /dev/null
 
 br_path="eng/common/cross/build-rootfs.sh"
 patch -p1 < "${TOP_DIR}/patches/bflat-runtime/12_alpine_custom.patch"
+if [ "$?" != "0" ] ; then
+    echo "Failed to apply alpine patch (1)" >&2
+    exit 1
+fi
 
 for folder in $(ls src) ; do
     if [ ! -d src/$folder ] || [ "$folder" == "command-line-api" ] || [ "$folder" == "razor" ] ; then
@@ -15,6 +19,10 @@ for folder in $(ls src) ; do
     if [ -f $br_path ] ; then
         echo Project: $folder
         patch -p1 < "${TOP_DIR}/patches/bflat-runtime/12_alpine_custom.patch"
+        if [ "$?" != "0" ] ; then
+            echo "Failed to apply alpine patch (2)" >&2
+            exit 2
+        fi
     fi
     popd > /dev/null 2> /dev/null
 done
