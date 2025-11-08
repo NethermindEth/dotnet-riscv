@@ -1,5 +1,5 @@
 diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
-index bf1122280..32c7b5be6 100644
+index c0c80413a..fdc05c872 100644
 --- a/src/coreclr/jit/emitriscv64.cpp
 +++ b/src/coreclr/jit/emitriscv64.cpp
 @@ -134,7 +134,7 @@ bool emitter::emitInsWritesToLclVarStackLoc(instrDesc* id)
@@ -20,7 +20,7 @@ index bf1122280..32c7b5be6 100644
          #include "instrs.h"
      };
      // clang-format on
-@@ -2374,10 +2374,36 @@ AGAIN:
+@@ -2245,10 +2245,36 @@ AGAIN:
   *  Emit a 32-bit RISCV64 instruction
   */
  
@@ -58,7 +58,7 @@ index bf1122280..32c7b5be6 100644
      return sizeof(code_t);
  }
 diff --git a/src/coreclr/jit/instr.cpp b/src/coreclr/jit/instr.cpp
-index 5e4a775a4..244711a46 100644
+index 844a621b5..d11c51609 100644
 --- a/src/coreclr/jit/instr.cpp
 +++ b/src/coreclr/jit/instr.cpp
 @@ -83,7 +83,7 @@ const char* CodeGen::genInsName(instruction ins)
@@ -71,7 +71,7 @@ index 5e4a775a4..244711a46 100644
  
  #else
 diff --git a/src/coreclr/jit/instr.h b/src/coreclr/jit/instr.h
-index eb081a73b..4e43ac4e1 100644
+index 15de2fd08..11e1ab4a4 100644
 --- a/src/coreclr/jit/instr.h
 +++ b/src/coreclr/jit/instr.h
 @@ -72,7 +72,7 @@ enum instruction : uint32_t
@@ -84,10 +84,10 @@ index eb081a73b..4e43ac4e1 100644
  
      INS_lea,   // Not a real instruction. It is used for load the address of stack locals
 diff --git a/src/coreclr/jit/instrsriscv64.h b/src/coreclr/jit/instrsriscv64.h
-index 62169e583..21e2bf476 100644
+index 293b6df09..f9c3d272d 100644
 --- a/src/coreclr/jit/instrsriscv64.h
 +++ b/src/coreclr/jit/instrsriscv64.h
-@@ -31,281 +31,281 @@
+@@ -31,282 +31,282 @@
  // clang-format off
  
  // RV32I & RV64I
@@ -99,8 +99,10 @@ index 62169e583..21e2bf476 100644
  //// R_R
 -INST(mov,           "mv",             0,    0x00000013)
 -INST(sext_w,        "sext.w",         0,    0x0000001b)
+-INST(not,           "not",            0,    0xFFF04013)
 +INST(mov,           "mv",             0,    0x00000013, 0)
 +INST(sext_w,        "sext.w",         0,    0x0000001b, 0)
++INST(not,           "not",            0,    0xFFF04013, 0)
  
  ////R_I
 -INST(lui,           "lui",            0,    0x00000037)
