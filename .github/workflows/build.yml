@@ -12,10 +12,11 @@ on:
         description: 'dotnet VMR branch name'
         required: true
         type: string
-        default: main
+        default: release/10.0.1xx
       release:
         description: 'publish release'
         type: boolean
+        default: true
       whole_source:
         description: 'publish whole source'
         type: boolean
