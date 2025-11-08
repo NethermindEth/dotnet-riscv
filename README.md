@@ -5,12 +5,11 @@ This project is a pipeline for building RISC-V .NET runtime for [Nethermind clie
 ## Why is it needed?
 
 [Nethermind client](https://github.com/nethermindeth/nethermind)'s [Stateless Executor](https://github.com/NethermindEth/nethermind/tree/tanishq/feature/stateless_execv2/tools/StatelessExecution) has to be compiled natively for the RISC-V platform. To do this, runtime requires several patches, namely for:
- - bflat runtime support
- - support for custom Alpine images
- - disabling of compressed instructions
- - disabling of floating point support (both for runtime binaries and inside the code generator)
- - removing switch jump tables
- - making data non-adjacent to the code in .text sections.
+ - bflat runtime support.
+ - support for custom Alpine images.
+ - disabling of compressed instructions.
+ - disabling of floating point support (both for runtime binaries and inside the code generator).
+ - removing switch jump tables.
 
 ## How to build?
 To build the project, please check the available GitHub Actions for the main
