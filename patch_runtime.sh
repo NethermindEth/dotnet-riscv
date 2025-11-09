@@ -7,7 +7,7 @@ pushd dotnet/src/runtime
         echo Applying $file
         patch -p1 < $file
         res="$?"
-        if [ "$file" != "${TOP_DIR}/patches/bflat-runtime/12_alpine_custom.patch"] && [ "$res" != "0" ] ; then
+        if [ "$file" != "${TOP_DIR}/patches/bflat-runtime/12_alpine_custom.patch" ] && [ "$res" != "0" ] ; then
             echo Failed to apply patch $file >&2
             exit 1
         fi
