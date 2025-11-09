@@ -77,7 +77,7 @@ jobs:
           -v${{ github.workspace }}/crossrootfs:/crossrootfs \
           -w /dotnet \
           -e ROOTFS_DIR=/crossrootfs/riscv64 \
-          mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-riscv64 \
+          mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-riscv64-musl \
             ./eng/common/cross/build-rootfs.sh riscv64 alpineedge \
                                                --skipemulation \
                                                --skipunmount \
@@ -90,7 +90,7 @@ jobs:
           -v${{ github.workspace }}/crossrootfs:/crossrootfs \
           -w /dotnet \
           -e ROOTFS_DIR=/crossrootfs/riscv64 \
-          mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-riscv64 \
+          mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-riscv64-musl \
             ./build.sh --clean-while-building --prep -sb \
                        --os linux \
                        --rid linux-musl-riscv64 \
