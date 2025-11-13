@@ -11,3 +11,41 @@ index c8bc9ffafc2..2e0659bac94 100644
  
      <!-- Use the portable "linux-x64" Rid when downloading Linux shared framework compressed file. -->
      <UsePortableLinuxSharedFramework Condition="'$(UsePortableLinuxSharedFramework)' == '' and '$(IsLinux)' == 'true' and !$(TargetRid.StartsWith('linux-musl'))">true</UsePortableLinuxSharedFramework>
+diff --git a/src/Layout/redist/targets/GenerateBundledVersions.targets b/src/Layout/redist/targets/GenerateBundledVersions.targets
+index f7b382246dc..defe613e8c8 100644
+--- a/src/Layout/redist/targets/GenerateBundledVersions.targets
++++ b/src/Layout/redist/targets/GenerateBundledVersions.targets
+@@ -580,6 +580,7 @@ Copyright (c) .NET Foundation. All rights reserved.
+                       ExcludedRuntimeIdentifiers="android"
+                       />
+ 
++    <!--
+     <KnownCrossgen2Pack Include="Microsoft.NETCore.App.Crossgen2"
+                         TargetFramework="net10.0"
+                         Crossgen2PackNamePattern="Microsoft.NETCore.App.Crossgen2.**RID**"
+@@ -587,6 +588,7 @@ Copyright (c) .NET Foundation. All rights reserved.
+                         Crossgen2PortableRuntimeIdentifiers="@(Crossgen2SupportedPortableRids, '%3B')"
+                         Crossgen2RuntimeIdentifiers="@(Crossgen2SupportedRids, '%3B')"
+                         />
++    -->
+ 
+     <KnownILCompilerPack Include="Microsoft.DotNet.ILCompiler"
+                          TargetFramework="net10.0"
+diff --git a/src/Layout/redist/targets/RestoreLayout.targets b/src/Layout/redist/targets/RestoreLayout.targets
+index b5cbd8993fc..48f89ae32aa 100644
+--- a/src/Layout/redist/targets/RestoreLayout.targets
++++ b/src/Layout/redist/targets/RestoreLayout.targets
+@@ -102,11 +102,13 @@
+       PackageVersion="$(MicrosoftWindowsDesktopAppRefPackageVersion)"
+       RelativeLayoutPath="packs/%(PackageName)/%(PackageVersion)" />
+ 
++    <!--
+     <BundledLayoutPackage Include="Microsoft.NETCore.App.Crossgen2.$(SharedFrameworkRid)"
+       Condition="'$(BundleCrossgen2)' == 'true'"
+       PackageName="Microsoft.NETCore.App.Crossgen2.$(SharedFrameworkRid)"
+       PackageVersion="$(MicrosoftNETCoreAppRuntimePackageVersion)"
+       RelativeLayoutPath="packs/%(PackageName)/%(PackageVersion)" />
++    -->
+ 
+     <BundledLayoutPackage Include="runtime.$(SharedFrameworkRid).Microsoft.DotNet.ILCompiler"
+       Condition="'$(BundleNativeAotCompiler)' == 'true'"
