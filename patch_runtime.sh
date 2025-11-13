@@ -13,3 +13,15 @@ pushd dotnet/src/runtime
         fi
     done
 popd
+
+pushd dotnet/src/sdk
+    for file in $(ls ${TOP_DIR}/patches/sdk/*.patch | xargs) ; do
+        echo Applying $file
+        patch -p1 < $file
+        res="$?"
+        if [ "$res" != "0" ] ; then
+            echo Failed to apply patch $file >&2
+            exit 1
+        fi
+    done
+popd
