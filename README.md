@@ -16,7 +16,7 @@ To build the project, please check the available GitHub Actions for the main
 branch and run **Build .NET SDK**:
 
  - Choose **dotnet VMR fork name**=`dotnet`
- - Choose **dotnet VMR branch name**=`release/10.0.1xx`
+ - Choose **dotnet VMR branch name**=`release/10.0.100`
  - Tick **Publish release**
 
 ## License
