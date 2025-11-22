@@ -27,7 +27,8 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: write
     steps:
 
     - name: Maximize build space
