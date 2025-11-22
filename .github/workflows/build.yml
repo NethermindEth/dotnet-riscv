@@ -12,7 +12,7 @@ on:
         description: 'dotnet VMR branch name'
         required: true
         type: string
-        default: release/10.0.100
+        default: v10.0.100
       release:
         description: 'publish release'
         type: boolean
