@@ -1,0 +1,52 @@
+diff --git a/src/libraries/System.Runtime.Numerics/src/System/Number.BigInteger.cs b/src/libraries/System.Runtime.Numerics/src/System/Number.BigInteger.cs
+index 2ec19b8d824..af3c72aa4cd 100644
+--- a/src/libraries/System.Runtime.Numerics/src/System/Number.BigInteger.cs
++++ b/src/libraries/System.Runtime.Numerics/src/System/Number.BigInteger.cs
+@@ -369,8 +369,14 @@ private static ParsingStatus NumberToBigInteger(ref NumberBuffer number, out Big
+                 Debug.Assert(intDigits.Length == 0);
+             }
+ 
+-            const double digitRatio = 0.10381025297; // log_{2^32}(10)
+-            int resultLength = checked((int)(digitRatio * number.Scale) + 1 + 2);
++            // Estimate required uint length using integer math only.
++            // We need ceil(number.Scale * log2(10) / 32) + a small safety margin.
++            // log2(10) ~= 3.321928094887362. We approximate ceil(x * log2(10) / 32) as:
++            // ceil(x * 3321928095 / (1<<30) / 32) == ceil(x * 3321928095 / (1<<35)).
++            const long Log2_10_Q30 = 3321928095L; // round(log2(10) * 2^30)
++            long scale = number.Scale;
++            long estimatedWords = checked((scale * Log2_10_Q30 + ((1L << 35) - 1)) >> 35);
++            int resultLength = checked((int)estimatedWords + 3); // +3 provides slack for carry/rounding
+             uint[]? resultBufferFromPool = null;
+             Span<uint> resultBuffer = (
+                 resultLength <= BigIntegerCalculator.StackAllocThreshold
+@@ -415,7 +421,14 @@ static void DivideAndConquer(ReadOnlySpan<uint> base1E9, int trailingZeroCount,
+ 
+                 if (trailingZeroCount > 0)
+                 {
+-                    int leadingLength = checked((int)(digitRatio * PowersOf1e9.MaxPartialDigits * base1E9.Length) + 3);
++                    // Estimate required uint length using integer math only.
++                    // digitCount ~= MaxPartialDigits * base1E9.Length
++                    // words ~= ceil(digitCount * log2(10) / 32) with a small safety margin.
++                    const long Log2_10_Q30 = 3321928095L; // round(log2(10) * 2^30)
++                    long digitCount = checked((long)PowersOf1e9.MaxPartialDigits * base1E9.Length);
++                    long estimatedWords = checked((digitCount * Log2_10_Q30 + ((1L << 35) - 1)) >> 35);
++                    int leadingLength = checked((int)estimatedWords + 3);
++
+                     uint[]? leadingFromPool = null;
+                     Span<uint> leading = (
+                         leadingLength <= BigIntegerCalculator.StackAllocThreshold
+@@ -462,7 +475,13 @@ static void Recursive(in PowersOf1e9 powersOf1e9, int powersOf1e9Index, ReadOnly
+ 
+                 Debug.Assert(multiplier1E9Length < base1E9.Length && base1E9.Length <= multiplier1E9Length * 2);
+ 
+-                int bufferLength = checked((int)(digitRatio * PowersOf1e9.MaxPartialDigits * multiplier1E9Length) + 1 + 2);
++                // Estimate required uint length using integer math only.
++                // digitCount ~= MaxPartialDigits * multiplier1E9Length
++                // words ~= ceil(digitCount * log2(10) / 32) with a small safety margin.
++                const long Log2_10_Q30 = 3321928095L; // round(log2(10) * 2^30)
++                long digitCount = checked((long)PowersOf1e9.MaxPartialDigits * multiplier1E9Length);
++                long estimatedWords = checked((digitCount * Log2_10_Q30 + ((1L << 35) - 1)) >> 35);
++                int bufferLength = checked((int)estimatedWords + 3);
+                 uint[]? bufferFromPool = null;
+                 scoped Span<uint> buffer = (
+                     bufferLength <= BigIntegerCalculator.StackAllocThreshold
