@@ -1,0 +1,45 @@
+diff --git a/src/coreclr/tools/Common/TypeSystem/Common/MetadataVirtualMethodAlgorithm.cs b/src/coreclr/tools/Common/TypeSystem/Common/MetadataVirtualMethodAlgorithm.cs
+index f0eae5441d0..996d3ca5c7d 100644
+--- a/src/coreclr/tools/Common/TypeSystem/Common/MetadataVirtualMethodAlgorithm.cs
++++ b/src/coreclr/tools/Common/TypeSystem/Common/MetadataVirtualMethodAlgorithm.cs
+@@ -9,6 +9,11 @@ namespace Internal.TypeSystem
+ {
+     public class MetadataVirtualMethodAlgorithm : VirtualMethodAlgorithm
+     {
++#if true
++        private static readonly bool s_traceInterfaceResolution =
++            string.Equals(Environment.GetEnvironmentVariable("DOTNET_TYPELOADER_TRACE_INTERFACE_RESOLUTION"), "1", StringComparison.Ordinal);
++#endif
++
+         private sealed class MethodDescHashtable : LockFreeReaderHashtable<MethodDesc, MethodDesc>
+         {
+             protected override int GetKeyHashCode(MethodDesc key)
+@@ -809,9 +814,28 @@ private static MethodDesc ResolveInterfaceMethodToVirtualMethodOnTypeRecursive(M
+                     return null;
+                 }
+ 
++#if true
++                // Optional tracing to help diagnose unexpected interface method resolution results.
++                // Enable by setting the environment variable "DOTNET_TYPELOADER_TRACE_INTERFACE_RESOLUTION" to "1".
++                if (s_traceInterfaceResolution)
++                {
++                    Debug.WriteLine(
++                        $"[TypeSystem] ResolveInterfaceMethodToVirtualMethodOnTypeRecursive: ifaceMethod={interfaceMethod} ifaceType={interfaceType} onType={currentType}");
++                }
++#endif
++
+                 MethodDesc currentTypeInterfaceResolution = ResolveInterfaceMethodToVirtualMethodOnType(interfaceMethod, currentType, returnRecursive: true);
+                 if (currentTypeInterfaceResolution != null)
++                {
++#if true
++                    if (s_traceInterfaceResolution)
++                    {
++                        Debug.WriteLine(
++                            $"[TypeSystem] ResolveInterfaceMethodToVirtualMethodOnTypeRecursive: resolvedTo={currentTypeInterfaceResolution} (onType={currentType})");
++                    }
++#endif
+                     return currentTypeInterfaceResolution;
++                }
+ 
+                 currentType = currentType.MetadataBaseType;
+             }
