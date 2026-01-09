@@ -2,39 +2,30 @@
 
   <!--
     Purpose:
-      Some builds produce a 4-part version like "8.0.0.70108". The 4th part (revision) must be <= 65535
-      for AssemblyVersion/FileVersion attributes, otherwise C# compilation can fail (CS7035).
+      Upstream computes FileVersion as: $(WilsonCurrentVersion).<yy>.<MMdd>
+      Example: 8.0.0.70109 (70109 comes from yy=70, MMdd=109). The revision must be <= 65535 for
+      AssemblyVersion/FileVersion attributes, otherwise C# compilation fails (CS7035).
 
-    Strategy:
-      - If AssemblyVersion/FileVersion are present and look like 4 numeric parts, clamp the 4th part to 65535.
-      - If they are missing, do nothing (avoid interfering with upstream logic).
-      - InformationalVersion is left untouched (it can safely contain longer versions).
+    Strategy (for this external package only):
+      - Derive AssemblyVersion from VersionPrefix (e.g. 8.0.0.0) so it is always valid and stable.
+      - Clamp FileVersion's revision (4th part) to 65535 if it is 4 numeric parts.
+      - Leave InformationalVersion untouched.
   -->
 
-  <Target Name="_ClampAssemblyAndFileVersionRevision"
+  <Target Name="_FixAssemblyAndFileVersionsForSourceBuild"
           BeforeTargets="GenerateAssemblyInfo;CoreCompile"
           Condition="'$(Language)' == 'C#'">
 
-    <!-- Clamp AssemblyVersion -->
-    <PropertyGroup Condition="'$(AssemblyVersion)' != ''">
-      <_AsmVer>$([MSBuild]::ValueOrDefault('$(AssemblyVersion)', ''))</_AsmVer>
-      <_AsmVerPartCount>$(_AsmVer.Split('.').Length)</_AsmVerPartCount>
+    <!-- Always use a safe AssemblyVersion derived from VersionPrefix when available -->
+    <PropertyGroup Condition="'$(VersionPrefix)' != ''">
+      <_VersionPrefix>$([MSBuild]::ValueOrDefault('$(VersionPrefix)', ''))</_VersionPrefix>
+      <_VersionPrefixPartCount>$(_VersionPrefix.Split('.').Length)</_VersionPrefixPartCount>
 
-      <_AsmVerMajor Condition="'$(_AsmVerPartCount)' == '4'">$(_AsmVer.Split('.')[0])</_AsmVerMajor>
-      <_AsmVerMinor Condition="'$(_AsmVerPartCount)' == '4'">$(_AsmVer.Split('.')[1])</_AsmVerMinor>
-      <_AsmVerBuild Condition="'$(_AsmVerPartCount)' == '4'">$(_AsmVer.Split('.')[2])</_AsmVerBuild>
-      <_AsmVerRev   Condition="'$(_AsmVerPartCount)' == '4'">$(_AsmVer.Split('.')[3])</_AsmVerRev>
-
-      <_AsmVerRevClamped Condition="'$(_AsmVerPartCount)' == '4' and '$(_AsmVerRev)' != ''">
-        $([System.Math]::Min(65535, $([System.Int32]::Parse('$(_AsmVerRev)'))))
-      </_AsmVerRevClamped>
-
-      <AssemblyVersion Condition="'$(_AsmVerPartCount)' == '4' and '$(_AsmVerRevClamped)' != ''">
-        $(_AsmVerMajor).$(_AsmVerMinor).$(_AsmVerBuild).$(_AsmVerRevClamped)
-      </AssemblyVersion>
+      <AssemblyVersion Condition="'$(_VersionPrefixPartCount)' == '3'">$(_VersionPrefix).0</AssemblyVersion>
+      <AssemblyVersion Condition="'$(_VersionPrefixPartCount)' == '4'">$(_VersionPrefix)</AssemblyVersion>
     </PropertyGroup>
 
-    <!-- Clamp FileVersion -->
+    <!-- Clamp FileVersion revision -->
     <PropertyGroup Condition="'$(FileVersion)' != ''">
       <_FileVer>$([MSBuild]::ValueOrDefault('$(FileVersion)', ''))</_FileVer>
       <_FileVerPartCount>$(_FileVer.Split('.').Length)</_FileVerPartCount>
