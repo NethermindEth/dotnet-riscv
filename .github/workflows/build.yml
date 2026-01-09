@@ -103,9 +103,21 @@ jobs:
                        --arch riscv64 \
                        -p:OfficialBuildId=$(date +%Y%m%d).99 || true
 
-    - name: Output AssemblyInfo
+    - name: Replace AssemblyInfo
       run: |
-        cat ${{ github.workspace }}/dotnet/src/source-build-reference-packages/src/externalPackages/src/azure-activedirectory-identitymodel-extensions-for-dotnet/artifacts/clone/src/Microsoft.IdentityModel.Abstractions/obj/Release/netstandard2.0/Microsoft.IdentityModel.Abstractions.AssemblyInfo.cs || false
+        cp ${{ github.workspace }}/Microsoft.IdentityModel.Abstractions.AssemblyInfo.cs ${{ github.workspace }}/dotnet/src/source-build-reference-packages/src/externalPackages/src/azure-activedirectory-identitymodel-extensions-for-dotnet/artifacts/clone/src/Microsoft.IdentityModel.Abstractions/obj/Release/netstandard2.0/Microsoft.IdentityModel.Abstractions.AssemblyInfo.cs
+        docker run --platform linux/amd64 --rm \
+          -v${{ github.workspace }}/dotnet:/dotnet \
+          -v${{ github.workspace }}/crossrootfs:/crossrootfs \
+          -w /dotnet \
+          -e ROOTFS_DIR=/crossrootfs/riscv64 \
+          mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-riscv64-musl \
+            ./build.sh --clean-while-building --prep -sb \
+                       --os linux-musl \
+                       --rid linux-musl-riscv64 \
+                       --verbosity normal \
+                       --arch riscv64 \
+                       -p:OfficialBuildId=$(date +%Y%m%d).99
 
     - name: List assets directory
       run: |
