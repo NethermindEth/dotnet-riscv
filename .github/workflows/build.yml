@@ -105,7 +105,7 @@ jobs:
 
     - name: Replace AssemblyInfo
       run: |
-        cp ${{ github.workspace }}/Microsoft.IdentityModel.Abstractions.AssemblyInfo.cs ${{ github.workspace }}/dotnet/src/source-build-reference-packages/src/externalPackages/src/azure-activedirectory-identitymodel-extensions-for-dotnet/artifacts/clone/src/Microsoft.IdentityModel.Abstractions/obj/Release/netstandard2.0/Microsoft.IdentityModel.Abstractions.AssemblyInfo.cs
+        sudo cp ${{ github.workspace }}/Microsoft.IdentityModel.Abstractions.AssemblyInfo.cs ${{ github.workspace }}/dotnet/src/source-build-reference-packages/src/externalPackages/src/azure-activedirectory-identitymodel-extensions-for-dotnet/artifacts/clone/src/Microsoft.IdentityModel.Abstractions/obj/Release/netstandard2.0/Microsoft.IdentityModel.Abstractions.AssemblyInfo.cs
         docker run --platform linux/amd64 --rm \
           -v${{ github.workspace }}/dotnet:/dotnet \
           -v${{ github.workspace }}/crossrootfs:/crossrootfs \
