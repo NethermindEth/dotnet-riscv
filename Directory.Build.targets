@@ -26,7 +26,7 @@
       <_AsmVerRev   Condition="'$(_AsmVerPartCount)' == '4'">$(_AsmVer.Split('.')[3])</_AsmVerRev>
 
       <_AsmVerRevClamped Condition="'$(_AsmVerPartCount)' == '4' and '$(_AsmVerRev)' != ''">
-        $([MSBuild]::Min(65535, $([System.Int32]::Parse('$(_AsmVerRev)'))))
+        $([System.Math]::Min(65535, $([System.Int32]::Parse('$(_AsmVerRev)'))))
       </_AsmVerRevClamped>
 
       <AssemblyVersion Condition="'$(_AsmVerPartCount)' == '4' and '$(_AsmVerRevClamped)' != ''">
@@ -45,7 +45,7 @@
       <_FileVerRev   Condition="'$(_FileVerPartCount)' == '4'">$(_FileVer.Split('.')[3])</_FileVerRev>
 
       <_FileVerRevClamped Condition="'$(_FileVerPartCount)' == '4' and '$(_FileVerRev)' != ''">
-        $([MSBuild]::Min(65535, $([System.Int32]::Parse('$(_FileVerRev)'))))
+        $([System.Math]::Min(65535, $([System.Int32]::Parse('$(_FileVerRev)'))))
       </_FileVerRevClamped>
 
       <FileVersion Condition="'$(_FileVerPartCount)' == '4' and '$(_FileVerRevClamped)' != ''">
