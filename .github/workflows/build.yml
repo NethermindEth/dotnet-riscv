@@ -86,7 +86,6 @@ jobs:
 
     - name: Add AssemblyInfo patch
       run: |
-        cp ${{ github.workspace }}/Directory.Build.targets ${{ github.workspace }}/dotnet/src/source-build-reference-packages/src/externalPackages/src/azure-activedirectory-identitymodel-extensions-for-dotnet/
         cp ${{ github.workspace }}/0001-fix-for-source-build.patch ${{ github.workspace }}/dotnet/src/source-build-reference-packages/src/externalPackages/patches/azure-activedirectory-identitymodel-extensions-for-dotnet/
 
     - name: Build
