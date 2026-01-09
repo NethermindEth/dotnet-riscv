@@ -26,19 +26,19 @@ Subject: [PATCH] fix for source build
 
 diff --git a/Directory.Build.targets b/Directory.Build.targets
 new file mode 100644
-index 00000000..b4c1d2e3
+index 00000000000..cda66e736aa
 --- /dev/null
 +++ b/Directory.Build.targets
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,49 @@
 +<Project>
 +
 +  <!--
-+    Fix CS7035 during source-build:
++    Purpose:
 +      Upstream computes FileVersion as: $(WilsonCurrentVersion).<yy>.<MMdd>
 +      Example: 8.0.0.70109 (70109 comes from yy=70, MMdd=109). The revision must be <= 65535 for
-+      AssemblyVersion/FileVersion attributes, otherwise C# compilation fails.
++      AssemblyVersion/FileVersion attributes, otherwise C# compilation fails (CS7035).
 +
-+    Strategy:
++    Strategy (for this external package only):
 +      - Derive AssemblyVersion from VersionPrefix (e.g. 8.0.0.0) so it is always valid and stable.
 +      - Clamp FileVersion's revision (4th part) to 65535 if it is 4 numeric parts.
 +      - Leave InformationalVersion untouched.
@@ -79,7 +79,6 @@ index 00000000..b4c1d2e3
 +  </Target>
 +
 +</Project>
-+
 diff --git a/build/common.props b/build/common.props
 index efd7e90e..a0cf3de7 100644
 --- a/build/common.props
