@@ -84,6 +84,10 @@ jobs:
                                                --skipunmount \
                                                --rootfsdir /crossrootfs/riscv64
 
+    - name: Add AssemblyInfo patch
+      run: |
+        cp ${{ github.workspace }}/Directory.Build.targets ${{ github.workspace }}/dotnet/src/source-build-reference-packages/src/externalPackages/src/azure-activedirectory-identitymodel-extensions-for-dotnet/
+
     - name: Build
       run: |
         docker run --platform linux/amd64 --rm \
