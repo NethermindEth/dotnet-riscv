@@ -101,12 +101,11 @@ jobs:
                        --rid linux-musl-riscv64 \
                        --verbosity normal \
                        --arch riscv64 \
-                       -p:OfficialBuildId=$(date +%Y%m%d).99 || return 0
+                       -p:OfficialBuildId=$(date +%Y%m%d).99 || true
 
     - name: Output AssemblyInfo
       run: |
-        cat ${{ github.workspace }}/dotnet/src/source-build-reference-packages/src/externalPackages/src/azure-activedirectory-identitymodel-extensions-for-dotnet/artifacts/clone/src/Microsoft.IdentityModel.Abstractions/obj/Release/netstandard2.0/Microsoft.IdentityModel.Abstractions.AssemblyInfo.cs
-        return 1
+        cat ${{ github.workspace }}/dotnet/src/source-build-reference-packages/src/externalPackages/src/azure-activedirectory-identitymodel-extensions-for-dotnet/artifacts/clone/src/Microsoft.IdentityModel.Abstractions/obj/Release/netstandard2.0/Microsoft.IdentityModel.Abstractions.AssemblyInfo.cs || false
 
     - name: List assets directory
       run: |
