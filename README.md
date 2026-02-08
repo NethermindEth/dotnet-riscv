@@ -1,5 +1,11 @@
 # dotnet-riscv
 
+[![Build .NET SDK](https://github.com/nethermindeth/dotnet-riscv/actions/workflows/build.yml/badge.svg)](https://github.com/nethermindeth/dotnet-riscv/actions/workflows/build.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![GitHub release](https://img.shields.io/github/v/release/nethermindeth/dotnet-riscv?include_prereleases)](https://github.com/nethermindeth/dotnet-riscv/releases)
+[![Platform](https://img.shields.io/badge/platform-RISC--V-blue.svg)](https://riscv.org/)
+[![.NET](https://img.shields.io/badge/.NET-10.0-512BD4.svg)](https://dotnet.microsoft.com/)
+
 This project is a pipeline for building RISC-V .NET runtime for [Nethermind client](https://github.com/nethermindeth/nethermind).
 
 ## Why is it needed?
