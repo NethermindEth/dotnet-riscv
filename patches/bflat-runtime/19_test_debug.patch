@@ -116,10 +116,21 @@ index edba0b2ed20..2b0e9604454 100644
      return nullptr;
  }
 diff --git a/src/coreclr/nativeaot/System.Private.CoreLib/src/System.Private.CoreLib.csproj b/src/coreclr/nativeaot/System.Private.CoreLib/src/System.Private.CoreLib.csproj
-index 39d9b041a18..fae6520261f 100644
+index 39d9b041a18..1fb05002e65 100644
 --- a/src/coreclr/nativeaot/System.Private.CoreLib/src/System.Private.CoreLib.csproj
 +++ b/src/coreclr/nativeaot/System.Private.CoreLib/src/System.Private.CoreLib.csproj
-@@ -196,6 +196,7 @@
+@@ -3,6 +3,10 @@
+     <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+   </PropertyGroup>
+ 
++  <ItemGroup>
++    <InternalsVisibleTo Include="System.Private.TypeLoader" />
++  </ItemGroup>
++
+   <ItemGroup>
+     <ApiCompatSuppressionFile Include="$(MSBuildProjectDirectory)\CompatibilitySuppressions.xml" />
+   </ItemGroup>
+@@ -196,6 +200,7 @@
      <Compile Include="System\Runtime\GCSettings.NativeAot.cs" />
      <Compile Include="System\Runtime\InteropServices\TypeMapLazyDictionary.NativeAot.cs" />
      <Compile Include="System\Runtime\TypeLoaderExports.cs" />
@@ -129,7 +140,7 @@ index 39d9b041a18..fae6520261f 100644
      <Compile Include="System\Runtime\InteropServices\ComWrappers.NativeAot.cs" Condition="'$(FeatureComWrappers)' == 'true'" />
 diff --git a/src/coreclr/nativeaot/System.Private.CoreLib/src/System/Runtime/GvmDebugLog.cs b/src/coreclr/nativeaot/System.Private.CoreLib/src/System/Runtime/GvmDebugLog.cs
 new file mode 100644
-index 00000000000..bb4d6d7e3c8
+index 00000000000..ec4fd0fd2e1
 --- /dev/null
 +++ b/src/coreclr/nativeaot/System.Private.CoreLib/src/System/Runtime/GvmDebugLog.cs
 @@ -0,0 +1,159 @@
@@ -145,7 +156,7 @@ index 00000000000..bb4d6d7e3c8
 +    /// Reliable logging for GVM debugging that works in all build configurations.
 +    /// Uses direct P/Invoke to fprintf from __Internal - guaranteed to never be optimized away.
 +    /// </summary>
-+    public static class GvmDebugLog
++    internal static class GvmDebugLog
 +    {
 +        // Direct P/Invoke to fprintf from __Internal
 +        // __Internal is a special library name that refers to symbols in the current executable
