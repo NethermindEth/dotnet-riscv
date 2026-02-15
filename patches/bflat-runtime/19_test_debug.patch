@@ -41,7 +41,7 @@ index 138c3917198..e42dddea42c 100644
  FCIMPLEND
  
 diff --git a/src/coreclr/nativeaot/Runtime/TypeManager.cpp b/src/coreclr/nativeaot/Runtime/TypeManager.cpp
-index edba0b2ed20..db8228bc46b 100644
+index edba0b2ed20..2b0e9604454 100644
 --- a/src/coreclr/nativeaot/Runtime/TypeManager.cpp
 +++ b/src/coreclr/nativeaot/Runtime/TypeManager.cpp
 @@ -43,6 +43,10 @@ TypeManager::TypeManager(HANDLE osModule, ReadyToRunHeader * pHeader, void** pCl
@@ -55,27 +55,43 @@ index edba0b2ed20..db8228bc46b 100644
      int length;
      m_pStaticsGCDataSection = (uint8_t*)GetModuleSection(ReadyToRunSectionType::GCStaticRegion, &length);
      m_pThreadStaticsDataSection = (uint8_t*)GetModuleSection(ReadyToRunSectionType::ThreadStaticRegion, &length);
-@@ -50,6 +54,19 @@ TypeManager::TypeManager(HANDLE osModule, ReadyToRunHeader * pHeader, void** pCl
+@@ -50,6 +54,35 @@ TypeManager::TypeManager(HANDLE osModule, ReadyToRunHeader * pHeader, void** pCl
  
  void * TypeManager::GetModuleSection(ReadyToRunSectionType sectionId, int * length)
  {
 +    const char* sectionName = "Unknown";
-+    switch (sectionId)
++    int sectionIdInt = (int)sectionId;
++    
++    // Blob region: 300 + blob_id
++    if (sectionIdInt >= 300 && sectionIdInt < 400)
 +    {
-+        case ReadyToRunSectionType::ReadonlyBlobRegionStart: sectionName = "ReadonlyBlobRegionStart"; break;
-+        case ReadyToRunSectionType::InterfaceGenericVirtualMethodTable: sectionName = "InterfaceGenericVirtualMethodTable"; break;
-+        case ReadyToRunSectionType::GCStaticRegion: sectionName = "GCStaticRegion"; break;
-+        case ReadyToRunSectionType::ThreadStaticRegion: sectionName = "ThreadStaticRegion"; break;
-+        default: sectionName = "Other"; break;
++        int blobId = sectionIdInt - 300;
++        switch (blobId)
++        {
++            case 8: sectionName = "CommonFixupsTable"; break;
++            case 18: sectionName = "GenericVirtualMethodTable"; break;
++            case 19: sectionName = "InterfaceGenericVirtualMethodTable"; break;
++            case 30: sectionName = "NativeLayoutInfo"; break;
++            default: sectionName = "ReadonlyBlob"; break;
++        }
++    }
++    else
++    {
++        switch (sectionId)
++        {
++            case ReadyToRunSectionType::GCStaticRegion: sectionName = "GCStaticRegion"; break;
++            case ReadyToRunSectionType::ThreadStaticRegion: sectionName = "ThreadStaticRegion"; break;
++            default: sectionName = "Other"; break;
++        }
 +    }
 +
-+    printf("[TypeManager::GetModuleSection] ENTER: sectionId=%d (%s)\n", (int)sectionId, sectionName);
++    printf("[TypeManager::GetModuleSection] ENTER: sectionId=%d (%s)\n", sectionIdInt, sectionName);
 +    printf("[TypeManager::GetModuleSection]   NumberOfSections=%d\n", m_pHeader->NumberOfSections);
 +
      ModuleInfoRow * pModuleInfoRows = (ModuleInfoRow *)(m_pHeader + 1);
  
      ASSERT(m_pHeader->EntrySize == sizeof(ModuleInfoRow));
-@@ -58,13 +75,23 @@ void * TypeManager::GetModuleSection(ReadyToRunSectionType sectionId, int * leng
+@@ -58,13 +91,23 @@ void * TypeManager::GetModuleSection(ReadyToRunSectionType sectionId, int * leng
      for (int i = 0; i < m_pHeader->NumberOfSections; i++)
      {
          ModuleInfoRow * pCurrent = pModuleInfoRows + i;
