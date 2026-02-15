@@ -1,0 +1,779 @@
+diff --git a/src/coreclr/nativeaot/Runtime/MiscHelpers.cpp b/src/coreclr/nativeaot/Runtime/MiscHelpers.cpp
+index 138c3917198..e42dddea42c 100644
+--- a/src/coreclr/nativeaot/Runtime/MiscHelpers.cpp
++++ b/src/coreclr/nativeaot/Runtime/MiscHelpers.cpp
+@@ -130,16 +130,36 @@ FCIMPL4(FC_BOOL_RET, RhFindBlob, TypeManagerHandle *pTypeManagerHandle, uint32_t
+         (ReadyToRunSectionType)((uint32_t)ReadyToRunSectionType::ReadonlyBlobRegionStart + blobId);
+     ASSERT(section <= ReadyToRunSectionType::ReadonlyBlobRegionEnd);
+ 
++    const char* blobName = "Unknown";
++    switch (blobId)
++    {
++        case 0: blobName = "CommonFixupsTable"; break;
++        case 1: blobName = "TypeReferences"; break;
++        case 2: blobName = "NativeLayoutInfo"; break;
++        case 3: blobName = "InterfaceGenericVirtualMethodTable"; break;
++        case 4: blobName = "GenericVirtualMethodTable"; break;
++        default: blobName = "Other"; break;
++    }
++
++    printf("[RhFindBlob] ENTER: blobId=%u (%s), section=%d\n", blobId, blobName, (int)section);
++    printf("[RhFindBlob]   TypeManagerHandle=0x%p\n", pTypeManagerHandle);
++
+     TypeManager* pModule = typeManagerHandle.AsTypeManager();
++    printf("[RhFindBlob]   TypeManager=0x%p\n", pModule);
+ 
+     int length;
+     void* pBlob;
+     pBlob = pModule->GetModuleSection(section, &length);
+ 
++    printf("[RhFindBlob]   Result: pBlob=0x%p, length=%d\n", pBlob, length);
++
+     *ppbBlob = (uint8_t*)pBlob;
+     *pcbBlob = (uint32_t)length;
+ 
+-    FC_RETURN_BOOL(pBlob != NULL);
++    bool found = (pBlob != NULL);
++    printf("[RhFindBlob] EXIT: Found=%s\n", found ? "TRUE" : "FALSE");
++
++    FC_RETURN_BOOL(found);
+ }
+ FCIMPLEND
+ 
+diff --git a/src/coreclr/nativeaot/Runtime/TypeManager.cpp b/src/coreclr/nativeaot/Runtime/TypeManager.cpp
+index edba0b2ed20..db8228bc46b 100644
+--- a/src/coreclr/nativeaot/Runtime/TypeManager.cpp
++++ b/src/coreclr/nativeaot/Runtime/TypeManager.cpp
+@@ -43,6 +43,10 @@ TypeManager::TypeManager(HANDLE osModule, ReadyToRunHeader * pHeader, void** pCl
+     : m_osModule(osModule), m_pHeader(pHeader),
+       m_pClasslibFunctions(pClasslibFunctions), m_nClasslibFunctions(nClasslibFunctions)
+ {
++    printf("[TypeManager] Constructor: osModule=0x%p, pHeader=0x%p\n", osModule, pHeader);
++    printf("[TypeManager]   NumberOfSections=%d, EntrySize=%d\n", 
++           m_pHeader->NumberOfSections, m_pHeader->EntrySize);
++    
+     int length;
+     m_pStaticsGCDataSection = (uint8_t*)GetModuleSection(ReadyToRunSectionType::GCStaticRegion, &length);
+     m_pThreadStaticsDataSection = (uint8_t*)GetModuleSection(ReadyToRunSectionType::ThreadStaticRegion, &length);
+@@ -50,6 +54,19 @@ TypeManager::TypeManager(HANDLE osModule, ReadyToRunHeader * pHeader, void** pCl
+ 
+ void * TypeManager::GetModuleSection(ReadyToRunSectionType sectionId, int * length)
+ {
++    const char* sectionName = "Unknown";
++    switch (sectionId)
++    {
++        case ReadyToRunSectionType::ReadonlyBlobRegionStart: sectionName = "ReadonlyBlobRegionStart"; break;
++        case ReadyToRunSectionType::InterfaceGenericVirtualMethodTable: sectionName = "InterfaceGenericVirtualMethodTable"; break;
++        case ReadyToRunSectionType::GCStaticRegion: sectionName = "GCStaticRegion"; break;
++        case ReadyToRunSectionType::ThreadStaticRegion: sectionName = "ThreadStaticRegion"; break;
++        default: sectionName = "Other"; break;
++    }
++
++    printf("[TypeManager::GetModuleSection] ENTER: sectionId=%d (%s)\n", (int)sectionId, sectionName);
++    printf("[TypeManager::GetModuleSection]   NumberOfSections=%d\n", m_pHeader->NumberOfSections);
++
+     ModuleInfoRow * pModuleInfoRows = (ModuleInfoRow *)(m_pHeader + 1);
+ 
+     ASSERT(m_pHeader->EntrySize == sizeof(ModuleInfoRow));
+@@ -58,13 +75,23 @@ void * TypeManager::GetModuleSection(ReadyToRunSectionType sectionId, int * leng
+     for (int i = 0; i < m_pHeader->NumberOfSections; i++)
+     {
+         ModuleInfoRow * pCurrent = pModuleInfoRows + i;
++        
++        if (i < 10 || (int32_t)sectionId == pCurrent->SectionId)
++        {
++            printf("[TypeManager::GetModuleSection]   Section[%d]: SectionId=%d, Start=0x%p, Length=%d\n",
++                   i, pCurrent->SectionId, pCurrent->Start, pCurrent->GetLength());
++        }
++        
+         if ((int32_t)sectionId == pCurrent->SectionId)
+         {
+             *length = pCurrent->GetLength();
++            printf("[TypeManager::GetModuleSection] FOUND: Section %s at 0x%p, length=%d\n",
++                   sectionName, pCurrent->Start, *length);
+             return pCurrent->Start;
+         }
+     }
+ 
++    printf("[TypeManager::GetModuleSection] NOT FOUND: Section %s not in module!\n", sectionName);
+     *length = 0;
+     return nullptr;
+ }
+diff --git a/src/coreclr/nativeaot/System.Private.CoreLib/src/System/Runtime/TypeLoaderExports.cs b/src/coreclr/nativeaot/System.Private.CoreLib/src/System/Runtime/TypeLoaderExports.cs
+index 82065e8c510..04a9ddb2926 100644
+--- a/src/coreclr/nativeaot/System.Private.CoreLib/src/System/Runtime/TypeLoaderExports.cs
++++ b/src/coreclr/nativeaot/System.Private.CoreLib/src/System/Runtime/TypeLoaderExports.cs
+@@ -98,18 +98,55 @@ public static IntPtr GenericLookup(IntPtr context, IntPtr signature)
+ 
+         public static unsafe IntPtr GVMLookupForSlot(object obj, RuntimeMethodHandle slot)
+         {
+-            if (TryGetFromCache((IntPtr)obj.GetMethodTable(), RuntimeMethodHandle.ToIntPtr(slot), out var v))
++            IntPtr methodTable = (IntPtr)obj.GetMethodTable();
++            IntPtr slotPtr = RuntimeMethodHandle.ToIntPtr(slot);
++
++            Console.WriteLine($"[GVMLookup] ENTER: obj.Type={obj.GetType().FullName}, MethodTable=0x{methodTable:X}, Slot=0x{slotPtr:X}");
++
++            if (TryGetFromCache(methodTable, slotPtr, out var v))
++            {
++                Console.WriteLine($"[GVMLookup] CACHE HIT: Result=0x{v._result:X}");
+                 return v._result;
++            }
+ 
+-            return GVMLookupForSlotSlow(obj, slot);
++            Console.WriteLine($"[GVMLookup] CACHE MISS: Calling GVMLookupForSlotSlow...");
++            IntPtr result = GVMLookupForSlotSlow(obj, slot);
++            Console.WriteLine($"[GVMLookup] EXIT: Result=0x{result:X}");
++            return result;
+         }
+ 
+         private static unsafe IntPtr GVMLookupForSlotSlow(object obj, RuntimeMethodHandle slot)
+         {
+-            Value v = CacheMiss((IntPtr)obj.GetMethodTable(), RuntimeMethodHandle.ToIntPtr(slot),
+-                    (IntPtr context, IntPtr signature, object contextObject, ref IntPtr auxResult)
+-                        => RuntimeAugments.TypeLoaderCallbacks.ResolveGenericVirtualMethodTarget(new RuntimeTypeHandle((MethodTable*)context), *(RuntimeMethodHandle*)&signature));
++            IntPtr methodTable = (IntPtr)obj.GetMethodTable();
++            IntPtr slotPtr = RuntimeMethodHandle.ToIntPtr(slot);
++
++            Console.WriteLine($"[GVMLookupSlow] ENTER: Resolving GVM for Type={obj.GetType().FullName}");
++            Console.WriteLine($"[GVMLookupSlow]   MethodTable=0x{methodTable:X}");
++            Console.WriteLine($"[GVMLookupSlow]   Slot=0x{slotPtr:X}");
++
++            Value v = CacheMiss(methodTable, slotPtr,
++                    (IntPtr context, IntPtr signature, object contextObject, ref IntPtr auxResult) =>
++                    {
++                        Console.WriteLine($"[GVMLookupSlow] Calling ResolveGenericVirtualMethodTarget...");
++                        Console.WriteLine($"[GVMLookupSlow]   Context (MethodTable)=0x{context:X}");
++                        Console.WriteLine($"[GVMLookupSlow]   Signature (Slot)=0x{signature:X}");
++
++                        IntPtr result = RuntimeAugments.TypeLoaderCallbacks.ResolveGenericVirtualMethodTarget(
++                            new RuntimeTypeHandle((MethodTable*)context),
++                            *(RuntimeMethodHandle*)&signature);
++
++                        Console.WriteLine($"[GVMLookupSlow] ResolveGenericVirtualMethodTarget returned: 0x{result:X}");
++
++                        if (result == IntPtr.Zero)
++                        {
++                            Console.WriteLine($"[GVMLookupSlow] ERROR: ResolveGenericVirtualMethodTarget returned NULL!");
++                            Console.WriteLine($"[GVMLookupSlow]   This means the GVM table is missing entries for this method.");
++                        }
++
++                        return result;
++                    });
+ 
++            Console.WriteLine($"[GVMLookupSlow] EXIT: Cached result=0x{v._result:X}");
+             return v._result;
+         }
+ 
+diff --git a/src/coreclr/nativeaot/System.Private.TypeLoader/src/Internal/Runtime/TypeLoader/TypeLoaderEnvironment.GVMResolution.cs b/src/coreclr/nativeaot/System.Private.TypeLoader/src/Internal/Runtime/TypeLoader/TypeLoaderEnvironment.GVMResolution.cs
+index 1b6d16fa3ff..d6152e3aaf8 100644
+--- a/src/coreclr/nativeaot/System.Private.TypeLoader/src/Internal/Runtime/TypeLoader/TypeLoaderEnvironment.GVMResolution.cs
++++ b/src/coreclr/nativeaot/System.Private.TypeLoader/src/Internal/Runtime/TypeLoader/TypeLoaderEnvironment.GVMResolution.cs
+@@ -47,6 +47,20 @@ private static string GetTypeNameDebug(TypeDesc type)
+ 
+         internal static InstantiatedMethod GVMLookupForSlotWorker(DefType targetType, InstantiatedMethod slotMethod)
+         {
++            Console.WriteLine($"[GVMLookupWorker] ENTER:");
++            Console.WriteLine($"[GVMLookupWorker]   TargetType={GetTypeNameDebug(targetType)}");
++            Console.WriteLine($"[GVMLookupWorker]   SlotMethod={slotMethod.Name}");
++            Console.WriteLine($"[GVMLookupWorker]   SlotOwningType={GetTypeNameDebug(slotMethod.OwningType)}");
++            Console.WriteLine($"[GVMLookupWorker]   IsInterface={slotMethod.OwningType.IsInterface}");
++            if (slotMethod.Instantiation.Length > 0)
++            {
++                Console.WriteLine($"[GVMLookupWorker]   Instantiation:");
++                for (int i = 0; i < slotMethod.Instantiation.Length; i++)
++                {
++                    Console.WriteLine($"[GVMLookupWorker]     [{i}] {GetTypeNameDebug(slotMethod.Instantiation[i])}");
++                }
++            }
++
+             InstantiatedMethod resolution = null;
+ 
+             bool lookForDefaultImplementations = false;
+@@ -58,15 +72,21 @@ internal static InstantiatedMethod GVMLookupForSlotWorker(DefType targetType, In
+ 
+             while (currentType is not null)
+             {
++                Console.WriteLine($"[GVMLookupWorker] Walking hierarchy: CurrentType={GetTypeNameDebug(currentType)}");
++
+                 if (resolvingInterfaceMethod)
+                 {
++                    Console.WriteLine($"[GVMLookupWorker]   Resolving interface method, lookForDefaultImpl={lookForDefaultImplementations}");
+                     resolution = ResolveInterfaceGenericVirtualMethodSlot(currentType, slotMethod, lookForDefaultImplementations);
+                     if (resolution != null)
+                     {
++                        Console.WriteLine($"[GVMLookupWorker]   Found resolution: {resolution.Name} on {GetTypeNameDebug(resolution.OwningType)}");
++
+                         // If this is a static virtual, we're done, nobody can override this.
+                         if (IsStaticMethodSignature(resolution.NameAndSignature))
+                         {
+                             Debug.Assert(IsStaticMethodSignature(slotMethod.NameAndSignature));
++                            Console.WriteLine($"[GVMLookupWorker]   Static virtual method, done.");
+                             break;
+                         }
+ 
+@@ -74,18 +94,32 @@ internal static InstantiatedMethod GVMLookupForSlotWorker(DefType targetType, In
+                         if (resolution.OwningType.IsInterface)
+                         {
+                             Debug.Assert(lookForDefaultImplementations);
++                            Console.WriteLine($"[GVMLookupWorker]   Default interface implementation, done.");
+                             break;
+                         }
+ 
+                         // Otherwise resolve to whatever implements the virtual method on the type.
++                        Console.WriteLine($"[GVMLookupWorker]   Recursing to find implementation on type.");
+                         return GVMLookupForSlotWorker(currentType, resolution);
+                     }
++                    else
++                    {
++                        Console.WriteLine($"[GVMLookupWorker]   No resolution found on this type.");
++                    }
+                 }
+                 else
+                 {
++                    Console.WriteLine($"[GVMLookupWorker]   Resolving non-interface method");
+                     resolution = ResolveGenericVirtualMethodTarget(currentType, slotMethod);
+                     if (resolution != null)
++                    {
++                        Console.WriteLine($"[GVMLookupWorker]   Found resolution: {resolution.Name} on {GetTypeNameDebug(resolution.OwningType)}");
+                         break;
++                    }
++                    else
++                    {
++                        Console.WriteLine($"[GVMLookupWorker]   No resolution found on this type.");
++                    }
+                 }
+ 
+                 currentType = currentType.BaseType;
+@@ -95,12 +129,14 @@ internal static InstantiatedMethod GVMLookupForSlotWorker(DefType targetType, In
+                 && !lookForDefaultImplementations
+                 && resolvingInterfaceMethod)
+             {
++                Console.WriteLine($"[GVMLookupWorker] No resolution found, retrying with default implementations");
+                 lookForDefaultImplementations = true;
+                 goto again;
+             }
+ 
+             if (resolution == null)
+             {
++                Console.WriteLine($"[GVMLookupWorker] ERROR: No resolution found after exhausting hierarchy!");
+                 var sb = new System.Text.StringBuilder();
+                 sb.AppendLine("Generic virtual method pointer lookup failure.");
+                 sb.AppendLine();
+@@ -116,20 +152,32 @@ internal static InstantiatedMethod GVMLookupForSlotWorker(DefType targetType, In
+                 Environment.FailFast(sb.ToString());
+             }
+ 
++            Console.WriteLine($"[GVMLookupWorker] EXIT: Success, resolution={resolution.Name} on {GetTypeNameDebug(resolution.OwningType)}");
+             return resolution;
+         }
+ 
+         internal unsafe IntPtr ResolveGenericVirtualMethodTarget(RuntimeTypeHandle type, RuntimeMethodHandle slot)
+         {
++            Console.WriteLine($"[ResolveGVMTarget] ENTER: RuntimeTypeHandle=0x{*(IntPtr*)&type:X}");
++
+             TypeSystemContext context = TypeSystemContextFactory.Create();
+             DefType targetType = (DefType)context.ResolveRuntimeTypeHandle(type);
+ 
++            Console.WriteLine($"[ResolveGVMTarget]   Resolved TargetType={GetTypeNameDebug(targetType)}");
++
+             InstantiatedMethod slotMethod = (InstantiatedMethod)GetMethodDescForRuntimeMethodHandle(context, slot);
+ 
++            Console.WriteLine($"[ResolveGVMTarget]   Resolved SlotMethod={slotMethod.Name} on {GetTypeNameDebug(slotMethod.OwningType)}");
++
+             InstantiatedMethod result = GVMLookupForSlotWorker(targetType, slotMethod);
+ 
++            Console.WriteLine($"[ResolveGVMTarget] GVMLookupForSlotWorker returned: {result.Name} on {GetTypeNameDebug(result.OwningType)}");
++
++            Console.WriteLine($"[ResolveGVMTarget] Calling TryGetGenericVirtualMethodPointer...");
++
+             if (!TryGetGenericVirtualMethodPointer(result, out IntPtr methodPointer, out IntPtr dictionaryPointer))
+             {
++                Console.WriteLine($"[ResolveGVMTarget] ERROR: TryGetGenericVirtualMethodPointer failed!");
+                 var sb = new System.Text.StringBuilder();
+                 sb.AppendLine("Failed to create generic virtual method implementation");
+                 sb.AppendLine();
+@@ -143,8 +191,13 @@ internal unsafe IntPtr ResolveGenericVirtualMethodTarget(RuntimeTypeHandle type,
+                 Environment.FailFast(sb.ToString());
+             }
+ 
++            Console.WriteLine($"[ResolveGVMTarget]   MethodPointer=0x{methodPointer:X}, DictionaryPointer=0x{dictionaryPointer:X}");
++
+             TypeSystemContextFactory.Recycle(context);
+-            return FunctionPointerOps.GetGenericMethodFunctionPointer(methodPointer, dictionaryPointer);
++            IntPtr finalPointer = FunctionPointerOps.GetGenericMethodFunctionPointer(methodPointer, dictionaryPointer);
++
++            Console.WriteLine($"[ResolveGVMTarget] EXIT: FinalPointer=0x{finalPointer:X}");
++            return finalPointer;
+         }
+ 
+         public static MethodNameAndSignature GetMethodNameAndSignatureFromToken(TypeManagerHandle moduleHandle, uint token)
+@@ -316,53 +369,111 @@ private static InstantiatedMethod FindMatchingInterfaceSlot(NativeFormatModuleIn
+                         }
+                     }
+                 }
++
++                if (entryCount == 0)
++                {
++                    Console.WriteLine($"[ResolveInterfaceGVMSlot]   No entries found in GVM table for this hash");
++                }
+             }
+ 
++            if (moduleCount == 0)
++            {
++                Console.WriteLine($"[ResolveInterfaceGVMSlot] ERROR: No modules found to scan!");
++            }
++
++            Console.WriteLine($"[ResolveInterfaceGVMSlot] EXIT: No resolution found, returning NULL");
+             return null;
+         }
+ 
+         private static InstantiatedMethod ResolveInterfaceGenericVirtualMethodSlot(DefType targetType, InstantiatedMethod slotMethod, bool lookForDefaultImplementation)
+         {
++            Console.WriteLine($"[ResolveInterfaceGVMSlot] ENTER:");
++            Console.WriteLine($"[ResolveInterfaceGVMSlot]   TargetType={GetTypeNameDebug(targetType)}");
++            Console.WriteLine($"[ResolveInterfaceGVMSlot]   SlotMethod={slotMethod.Name}");
++            Console.WriteLine($"[ResolveInterfaceGVMSlot]   SlotOwningType={GetTypeNameDebug(slotMethod.OwningType)}");
++            Console.WriteLine($"[ResolveInterfaceGVMSlot]   LookForDefaultImpl={lookForDefaultImplementation}");
++
+             // Get the open type definition of the containing type of the generic virtual method being resolved
+             RuntimeTypeHandle openCallingTypeHandle = slotMethod.OwningType.GetTypeDefinition().RuntimeTypeHandle;
+ 
+             // Get the open type definition of the current type of the object instance on which the GVM is being resolved
+             RuntimeTypeHandle openTargetTypeHandle = targetType.GetTypeDefinition().RuntimeTypeHandle;
+ 
++            Console.WriteLine($"[ResolveInterfaceGVMSlot]   OpenCallingTypeHandle=0x{*(IntPtr*)&openCallingTypeHandle:X}");
++            Console.WriteLine($"[ResolveInterfaceGVMSlot]   OpenTargetTypeHandle=0x{*(IntPtr*)&openTargetTypeHandle:X}");
++
+ #if GVM_RESOLUTION_TRACE
+             Debug.WriteLine("INTERFACE GVM call = " + GetTypeNameDebug(slotMethod.OwningType) + "." + slotMethod.Name);
+ #endif
+ 
++            int moduleCount = 0;
+             foreach (NativeFormatModuleInfo module in ModuleList.EnumerateModules(RuntimeAugments.GetModuleFromTypeHandle(openTargetTypeHandle)))
+             {
++                moduleCount++;
++                Console.WriteLine($"[ResolveInterfaceGVMSlot] Scanning module #{moduleCount}: {module.Handle}");
++
+                 NativeReader gvmTableReader;
+                 if (!TryGetNativeReaderForBlob(module, ReflectionMapBlob.InterfaceGenericVirtualMethodTable, out gvmTableReader))
++                {
++                    Console.WriteLine($"[ResolveInterfaceGVMSlot]   No InterfaceGenericVirtualMethodTable blob found in module");
+                     continue;
++                }
++
++                Console.WriteLine($"[ResolveInterfaceGVMSlot]   Found InterfaceGenericVirtualMethodTable blob");
+ 
+                 NativeReader nativeLayoutReader;
+                 if (!TryGetNativeReaderForBlob(module, ReflectionMapBlob.NativeLayoutInfo, out nativeLayoutReader))
++                {
++                    Console.WriteLine($"[ResolveInterfaceGVMSlot]   No NativeLayoutInfo blob found in module");
+                     continue;
++                }
++
++                Console.WriteLine($"[ResolveInterfaceGVMSlot]   Found NativeLayoutInfo blob");
+ 
+                 NativeParser gvmTableParser = new NativeParser(gvmTableReader, 0);
+                 NativeHashtable gvmHashtable = new NativeHashtable(gvmTableParser);
+ 
++                Console.WriteLine($"[ResolveInterfaceGVMSlot]   Created GVM hashtable");
++
+                 ExternalReferencesTable extRefs = default(ExternalReferencesTable);
+                 extRefs.InitializeCommonFixupsTable(module);
+ 
+-                var lookup = gvmHashtable.Lookup(openCallingTypeHandle.GetHashCode());
++                int hashCode = openCallingTypeHandle.GetHashCode();
++                Console.WriteLine($"[ResolveInterfaceGVMSlot]   Looking up hash=0x{hashCode:X} in GVM table");
++
++                var lookup = gvmHashtable.Lookup(hashCode);
+ 
+                 NativeParser entryParser;
++                int entryCount = 0;
+                 while (!(entryParser = lookup.GetNext()).IsNull)
+                 {
++                    entryCount++;
++                    Console.WriteLine($"[ResolveInterfaceGVMSlot]   Entry #{entryCount}:");
++
+                     RuntimeTypeHandle interfaceTypeHandle = extRefs.GetRuntimeTypeHandleFromIndex(entryParser.GetUnsigned());
++                    Console.WriteLine($"[ResolveInterfaceGVMSlot]     InterfaceTypeHandle=0x{*(IntPtr*)&interfaceTypeHandle:X}");
++
+                     if (!openCallingTypeHandle.Equals(interfaceTypeHandle))
++                    {
++                        Console.WriteLine($"[ResolveInterfaceGVMSlot]     Skipping: InterfaceTypeHandle mismatch");
+                         continue;
++                    }
++
++                    Console.WriteLine($"[ResolveInterfaceGVMSlot]     InterfaceTypeHandle matches!");
+ 
+                     uint nameAndSigToken = entryParser.GetUnsigned();
++                    Console.WriteLine($"[ResolveInterfaceGVMSlot]     NameAndSigToken=0x{nameAndSigToken:X}");
++
+                     MethodNameAndSignature interfaceMethodNameAndSignature = GetMethodNameAndSignatureFromToken(module.Handle, nameAndSigToken);
++                    Console.WriteLine($"[ResolveInterfaceGVMSlot]     Method name={interfaceMethodNameAndSignature.Name}");
+ 
+                     if (!interfaceMethodNameAndSignature.Equals(slotMethod.NameAndSignature))
++                    {
++                        Console.WriteLine($"[ResolveInterfaceGVMSlot]     Skipping: NameAndSignature mismatch");
+                         continue;
++                    }
++
++                    Console.WriteLine($"[ResolveInterfaceGVMSlot]     NameAndSignature matches! Searching for implementation...");
+ 
+                     // For each of the possible GVM slot targets for the current interface call, we will do the following:
+                     //
+diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/GVMDependenciesNode.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/GVMDependenciesNode.cs
+index 531cdefffd5..3ca30a4c9dc 100644
+--- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/GVMDependenciesNode.cs
++++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/GVMDependenciesNode.cs
+@@ -40,14 +40,26 @@ public GVMDependenciesNode(MethodDesc method)
+ 
+         public override IEnumerable<DependencyListEntry> GetStaticDependencies(NodeFactory factory)
+         {
++            System.Console.WriteLine($"[GVMDependencies] GetStaticDependencies for: {_method}");
++            System.Console.WriteLine($"[GVMDependencies]   OwningType: {_method.OwningType}");
++            System.Console.WriteLine($"[GVMDependencies]   IsAbstract: {_method.IsAbstract}");
++            System.Console.WriteLine($"[GVMDependencies]   IsInterface: {_method.OwningType.IsInterface}");
++
+             if (!_method.IsAbstract)
+             {
++                System.Console.WriteLine($"[GVMDependencies]   Adding GenericVirtualMethodImpl");
+                 yield return new DependencyListEntry(factory.GenericVirtualMethodImpl(_method), "Implementation of the generic virtual method");
+             }
+ 
+             if (!_method.OwningType.IsInterface)
+             {
+-                yield return new DependencyListEntry(factory.TypeGVMEntries(_method.OwningType.GetTypeDefinition()), "Resolution metadata");
++                var typeDefn = _method.OwningType.GetTypeDefinition();
++                System.Console.WriteLine($"[GVMDependencies]   Adding TypeGVMEntries for: {typeDefn}");
++                yield return new DependencyListEntry(factory.TypeGVMEntries(typeDefn), "Resolution metadata");
++            }
++            else
++            {
++                System.Console.WriteLine($"[GVMDependencies]   Skipping TypeGVMEntries (interface GVM)");
+             }
+         }
+ 
+@@ -70,13 +82,21 @@ public override bool HasDynamicDependencies
+ 
+         public override IEnumerable<CombinedDependencyListEntry> SearchDynamicDependencies(List<DependencyNodeCore<NodeFactory>> markedNodes, int firstNode, NodeFactory factory)
+         {
++            System.Console.WriteLine($"[GVMDependencies::SearchDynamic] ENTER for: {_method}");
++            System.Console.WriteLine($"[GVMDependencies::SearchDynamic]   MarkedNodes: {markedNodes.Count}, FirstNode: {firstNode}");
++
+             List<CombinedDependencyListEntry> dynamicDependencies = new List<CombinedDependencyListEntry>();
+ 
+             TypeDesc methodOwningType = _method.OwningType;
+             bool methodIsShared = _method.IsSharedByGenericInstantiations;
+ 
++            System.Console.WriteLine($"[GVMDependencies::SearchDynamic]   MethodOwningType: {methodOwningType}");
++            System.Console.WriteLine($"[GVMDependencies::SearchDynamic]   IsInterface: {methodOwningType.IsInterface}");
++            System.Console.WriteLine($"[GVMDependencies::SearchDynamic]   IsShared: {methodIsShared}");
++
+             TypeSystemContext context = _method.Context;
+ 
++            int processedTypes = 0;
+             for (int i = firstNode; i < markedNodes.Count; i++)
+             {
+                 DependencyNodeCore<NodeFactory> entry = markedNodes[i];
+@@ -96,6 +116,12 @@ public override IEnumerable<CombinedDependencyListEntry> SearchDynamicDependenci
+                 if (!potentialOverrideType.IsDefType || potentialOverrideType.IsInterface)
+                     continue;
+ 
++                processedTypes++;
++                if (processedTypes <= 10 || methodOwningType.IsInterface)
++                {
++                    System.Console.WriteLine($"[GVMDependencies::SearchDynamic]   Checking type #{processedTypes}: {potentialOverrideType}");
++                }
++
+                 // If method is canonical, don't allow using it with non-canonical types - we can wait until
+                 // we see the __Canon instantiation. If there isn't one, the canonical method wouldn't be useful anyway.
+                 if (methodIsShared &&
+@@ -110,6 +136,8 @@ public override IEnumerable<CombinedDependencyListEntry> SearchDynamicDependenci
+                 // relationship in the vtable.
+                 if (methodOwningType.IsInterface)
+                 {
++                    System.Console.WriteLine($"[GVMDependencies::SearchDynamic]     Interface GVM resolution for {potentialOverrideType}");
++
+                     // We go over definitions because a single canonical interface method could actually be implemented
+                     // by multiple methods - consider:
+                     //
+@@ -121,22 +149,32 @@ public override IEnumerable<CombinedDependencyListEntry> SearchDynamicDependenci
+                     TypeDesc potentialOverrideDefinition = potentialOverrideType.GetTypeDefinition();
+                     DefType[] potentialInterfaces = potentialOverrideType.RuntimeInterfaces;
+                     DefType[] potentialDefinitionInterfaces = potentialOverrideDefinition.RuntimeInterfaces;
++
++                    System.Console.WriteLine($"[GVMDependencies::SearchDynamic]     RuntimeInterfaces count: {potentialInterfaces.Length}");
+                     for (int interfaceIndex = 0; interfaceIndex < potentialInterfaces.Length; interfaceIndex++)
+                     {
+                         if (potentialInterfaces[interfaceIndex].ConvertToCanonForm(CanonicalFormKind.Specific) == methodOwningType)
+                         {
++                            System.Console.WriteLine($"[GVMDependencies::SearchDynamic]       Found matching interface at index {interfaceIndex}: {potentialInterfaces[interfaceIndex]}");
+                             MethodDesc interfaceMethod = _method.GetMethodDefinition();
+                             if (methodOwningType.HasInstantiation)
+                                 interfaceMethod = context.GetMethodForInstantiatedType(
+                                     _method.GetTypicalMethodDefinition(), (InstantiatedType)potentialDefinitionInterfaces[interfaceIndex]);
+ 
++                            System.Console.WriteLine($"[GVMDependencies::SearchDynamic]       InterfaceMethod: {interfaceMethod}");
++                            System.Console.WriteLine($"[GVMDependencies::SearchDynamic]       IsStatic: {interfaceMethod.Signature.IsStatic}");
++
+                             MethodDesc slotDecl = interfaceMethod.Signature.IsStatic ?
+                                 potentialOverrideDefinition.InstantiateAsOpen().ResolveInterfaceMethodToStaticVirtualMethodOnType(interfaceMethod)
+                                 : potentialOverrideDefinition.InstantiateAsOpen().ResolveInterfaceMethodTarget(interfaceMethod);
++
++                            System.Console.WriteLine($"[GVMDependencies::SearchDynamic]       SlotDecl: {slotDecl?.ToString() ?? "NULL"}");
+                             if (slotDecl == null)
+                             {
++                                System.Console.WriteLine($"[GVMDependencies::SearchDynamic]       SlotDecl is NULL, trying default implementation...");
+                                 // The method might be implemented through a default interface method
+                                 var result = potentialOverrideDefinition.InstantiateAsOpen().ResolveInterfaceMethodToDefaultImplementationOnType(interfaceMethod, out slotDecl);
++                                System.Console.WriteLine($"[GVMDependencies::SearchDynamic]       DefaultImpl result: {result}, SlotDecl: {slotDecl?.ToString() ?? "NULL"}");
+                                 if (result != DefaultInterfaceMethodResolution.DefaultImplementation)
+                                 {
+                                     slotDecl = null;
+@@ -145,19 +183,35 @@ public override IEnumerable<CombinedDependencyListEntry> SearchDynamicDependenci
+ 
+                             if (slotDecl != null)
+                             {
++                                System.Console.WriteLine($"[GVMDependencies::SearchDynamic]       Creating implementing method instantiation...");
++
+                                 TypeDesc[] openInstantiation = new TypeDesc[_method.Instantiation.Length];
+                                 for (int instArg = 0; instArg < openInstantiation.Length; instArg++)
+                                     openInstantiation[instArg] = context.GetSignatureVariable(instArg, method: true);
+                                 MethodDesc implementingMethodInstantiation = slotDecl.MakeInstantiatedMethod(openInstantiation).InstantiateSignature(potentialOverrideType.Instantiation, _method.Instantiation);
+ 
++                                System.Console.WriteLine($"[GVMDependencies::SearchDynamic]       ImplementingMethodInstantiation: {implementingMethodInstantiation}");
++
+                                 // Static virtuals cannot be further overridden so this is an impl use. Otherwise it's a virtual slot use.
+                                 if (implementingMethodInstantiation.Signature.IsStatic)
++                                {
++                                    System.Console.WriteLine($"[GVMDependencies::SearchDynamic]       Adding GenericVirtualMethodImpl (static)");
+                                     dynamicDependencies.Add(new CombinedDependencyListEntry(factory.GenericVirtualMethodImpl(implementingMethodInstantiation.GetCanonMethodTarget(CanonicalFormKind.Specific)), null, "ImplementingMethodInstantiation"));
++                                }
+                                 else
++                                {
++                                    System.Console.WriteLine($"[GVMDependencies::SearchDynamic]       Adding GVMDependencies (virtual)");
+                                     dynamicDependencies.Add(new CombinedDependencyListEntry(factory.GVMDependencies(implementingMethodInstantiation.GetCanonMethodTarget(CanonicalFormKind.Specific)), null, "ImplementingMethodInstantiation"));
++                                }
+ 
+                                 TypeSystemEntity origin = (implementingMethodInstantiation.OwningType != potentialOverrideType) ? potentialOverrideType : null;
+                                 factory.MetadataManager.NoteOverridingMethod(_method, implementingMethodInstantiation, origin);
++
++                                foundImpl = true;
++                            }
++                            else
++                            {
++                                System.Console.WriteLine($"[GVMDependencies::SearchDynamic]       SlotDecl is NULL, no implementation found");
+                             }
+ 
+                             foundImpl = true;
+@@ -219,9 +273,13 @@ public override IEnumerable<CombinedDependencyListEntry> SearchDynamicDependenci
+ 
+                 if (foundImpl)
+                 {
++                    System.Console.WriteLine($"[GVMDependencies::SearchDynamic]     Found implementation, adding TypeGVMEntries for type hierarchy");
+                     TypeDesc currentType = potentialOverrideType;
++                    int hierarchyLevel = 0;
+                     do
+                     {
++                        hierarchyLevel++;
++                        System.Console.WriteLine($"[GVMDependencies::SearchDynamic]       Level {hierarchyLevel}: Adding TypeGVMEntries for {currentType.GetTypeDefinition()}");
+                         dynamicDependencies.Add(new CombinedDependencyListEntry(factory.TypeGVMEntries(currentType.GetTypeDefinition()), null, "Resolution metadata"));
+                         currentType = currentType.BaseType;
+                     }
+@@ -229,6 +287,7 @@ public override IEnumerable<CombinedDependencyListEntry> SearchDynamicDependenci
+                 }
+             }
+ 
++            System.Console.WriteLine($"[GVMDependencies::SearchDynamic] EXIT: Found {dynamicDependencies.Count} dynamic dependencies");
+             return dynamicDependencies;
+         }
+     }
+diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/InterfaceGenericVirtualMethodTableNode.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/InterfaceGenericVirtualMethodTableNode.cs
+index e1f432af8ff..79f7d1369d0 100644
+--- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/InterfaceGenericVirtualMethodTableNode.cs
++++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/InterfaceGenericVirtualMethodTableNode.cs
+@@ -125,15 +125,34 @@ public override ObjectData GetData(NodeFactory factory, bool relocsOnly = false)
+             if (relocsOnly)
+                 return new ObjectData(Array.Empty<byte>(), Array.Empty<Relocation>(), 1, new ISymbolDefinitionNode[] { this });
+ 
++            Console.WriteLine("[InterfaceGVMTable] ====== Building Interface GVM Table ======");
++
+             // Build the GVM table entries from the list of interesting GVMTableEntryNodes
+-            foreach (var interestingEntry in factory.MetadataManager.GetTypeGVMEntries())
++            var typeGVMEntries = factory.MetadataManager.GetTypeGVMEntries();
++            Console.WriteLine($"[InterfaceGVMTable] Found {typeGVMEntries.Count()} TypeGVMEntry nodes to process");
++
++            int totalEntries = 0;
++            foreach (var interestingEntry in typeGVMEntries)
+             {
+-                foreach (var typeGVMEntryInfo in interestingEntry.ScanForInterfaceGenericVirtualMethodEntries())
++                Console.WriteLine($"[InterfaceGVMTable] Processing TypeGVMEntries for type: {interestingEntry.AssociatedType}");
++
++                var entries = interestingEntry.ScanForInterfaceGenericVirtualMethodEntries().ToArray();
++                Console.WriteLine($"[InterfaceGVMTable]   Found {entries.Length} interface GVM entries");
++
++                foreach (var typeGVMEntryInfo in entries)
+                 {
++                    totalEntries++;
++                    Console.WriteLine($"[InterfaceGVMTable]   Entry #{totalEntries}:");
++                    Console.WriteLine($"[InterfaceGVMTable]     CallingMethod: {typeGVMEntryInfo.CallingMethod}");
++                    Console.WriteLine($"[InterfaceGVMTable]     ImplementationType: {typeGVMEntryInfo.ImplementationType}");
++                    Console.WriteLine($"[InterfaceGVMTable]     ImplementationMethod: {typeGVMEntryInfo.ImplementationMethod}");
++
+                     AddGenericVirtualMethodImplementation(typeGVMEntryInfo.CallingMethod, typeGVMEntryInfo.ImplementationType, typeGVMEntryInfo.ImplementationMethod, typeGVMEntryInfo.DefaultResolution);
+                 }
+             }
+ 
++            Console.WriteLine($"[InterfaceGVMTable] Total GVM entries added: {totalEntries}");
++
+             // Ensure the native layout blob has been saved
+             factory.MetadataManager.NativeLayoutInfo.SaveNativeLayoutInfoWriter(factory);
+ 
+@@ -143,16 +162,28 @@ public override ObjectData GetData(NodeFactory factory, bool relocsOnly = false)
+             Section gvmHashtableSection = nativeFormatWriter.NewSection();
+             gvmHashtableSection.Place(gvmHashtable);
+ 
++            Console.WriteLine($"[InterfaceGVMTable] ====== Emitting GVM Hashtable ======");
++            Console.WriteLine($"[InterfaceGVMTable] _interfaceGvmSlots count: {_interfaceGvmSlots.Count}");
++
+             // Emit the interface slot resolution entries
++            int slotIndex = 0;
+             foreach (var gvmEntry in _interfaceGvmSlots)
+             {
++                slotIndex++;
+                 Debug.Assert(gvmEntry.Key.OwningType.IsInterface);
+ 
+                 MethodDesc callingMethod = gvmEntry.Key;
+ 
++                Console.WriteLine($"[InterfaceGVMTable] Slot #{slotIndex}: {callingMethod}");
++                Console.WriteLine($"[InterfaceGVMTable]   OwningType: {callingMethod.OwningType}");
++                Console.WriteLine($"[InterfaceGVMTable]   Implementations: {gvmEntry.Value.Count}");
++
+                 // Emit the method signature and containing type of the current interface method
+                 uint typeId = _externalReferences.GetIndex(factory.NecessaryTypeSymbol(callingMethod.OwningType));
+                 int callingMethodToken = factory.MetadataManager.GetMetadataHandleForMethod(factory, callingMethod);
++
++                Console.WriteLine($"[InterfaceGVMTable]   TypeId: {typeId}, Token: 0x{callingMethodToken:X}");
++
+                 Vertex vertex = nativeFormatWriter.GetTuple(
+                     nativeFormatWriter.GetUnsignedConstant(typeId),
+                     nativeFormatWriter.GetUnsignedConstant((uint)callingMethodToken));
+diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/TypeGVMEntriesNode.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/TypeGVMEntriesNode.cs
+index e3a0b4d38ab..62ac64553af 100644
+--- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/TypeGVMEntriesNode.cs
++++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/TypeGVMEntriesNode.cs
+@@ -63,13 +63,26 @@ public override IEnumerable<DependencyListEntry> GetStaticDependencies(NodeFacto
+         {
+             if (_staticDependencies == null)
+             {
++                Console.WriteLine($"[TypeGVMEntries] Computing static dependencies for type: {_associatedType}");
+                 _staticDependencies = new DependencyList();
+ 
++                int gvmCount = 0;
+                 foreach (var entry in ScanForGenericVirtualMethodEntries())
++                {
++                    gvmCount++;
++                    Console.WriteLine($"[TypeGVMEntries]   GVM Entry #{gvmCount}: {entry.CallingMethod} -> {entry.ImplementationMethod}");
+                     GenericVirtualMethodTableNode.GetGenericVirtualMethodImplementationDependencies(ref _staticDependencies, context, entry.CallingMethod, entry.ImplementationMethod);
++                }
+ 
++                int interfaceGvmCount = 0;
+                 foreach (var entry in ScanForInterfaceGenericVirtualMethodEntries())
++                {
++                    interfaceGvmCount++;
++                    Console.WriteLine($"[TypeGVMEntries]   Interface GVM Entry #{interfaceGvmCount}: {entry.CallingMethod} -> {entry.ImplementationMethod}");
+                     InterfaceGenericVirtualMethodTableNode.GetGenericVirtualMethodImplementationDependencies(ref _staticDependencies, context, entry.CallingMethod, entry.ImplementationType, entry.ImplementationMethod);
++                }
++
++                Console.WriteLine($"[TypeGVMEntries] Total: {gvmCount} GVM entries, {interfaceGvmCount} interface GVM entries");
+             }
+ 
+             return _staticDependencies;
+@@ -77,8 +90,13 @@ public override IEnumerable<DependencyListEntry> GetStaticDependencies(NodeFacto
+ 
+         public IEnumerable<TypeGVMEntryInfo> ScanForGenericVirtualMethodEntries()
+         {
++            Console.WriteLine($"[TypeGVMEntries::ScanForGenericVirtualMethods] Type: {_associatedType}");
++            int slotCount = 0;
++            int foundCount = 0;
++
+             foreach (MethodDesc decl in _associatedType.EnumAllVirtualSlots())
+             {
++                slotCount++;
+                 // Non-Generic virtual methods are tracked by an orthogonal mechanism.
+                 if (!decl.HasInstantiation)
+                     continue;
+@@ -86,25 +104,52 @@ public IEnumerable<TypeGVMEntryInfo> ScanForGenericVirtualMethodEntries()
+                 MethodDesc impl = _associatedType.FindVirtualFunctionTargetMethodOnObjectType(decl);
+ 
+                 if (impl.OwningType == _associatedType)
++                {
++                    foundCount++;
++                    Console.WriteLine($"[TypeGVMEntries::ScanForGenericVirtualMethods]   Found GVM: {decl} -> {impl}");
+                     yield return new TypeGVMEntryInfo(decl, impl);
++                }
+             }
++
++            Console.WriteLine($"[TypeGVMEntries::ScanForGenericVirtualMethods] Scanned {slotCount} slots, found {foundCount} GVM entries");
+         }
+ 
+         public IEnumerable<InterfaceGVMEntryInfo> ScanForInterfaceGenericVirtualMethodEntries()
+         {
++            Console.WriteLine($"[TypeGVMEntries::ScanForInterfaceGVMs] Type: {_associatedType}");
++            Console.WriteLine($"[TypeGVMEntries::ScanForInterfaceGVMs]   RuntimeInterfaces count: {_associatedType.RuntimeInterfaces.Length}");
++
++            int totalMethods = 0;
++            int foundEntries = 0;
++
+             foreach (var iface in _associatedType.RuntimeInterfaces)
+             {
++                Console.WriteLine($"[TypeGVMEntries::ScanForInterfaceGVMs]   Scanning interface: {iface}");
++
+                 foreach (var method in iface.GetVirtualMethods())
+                 {
++                    totalMethods++;
++
+                     if (!method.HasInstantiation)
++                    {
++                        Console.WriteLine($"[TypeGVMEntries::ScanForInterfaceGVMs]     Method {method.Name}: not generic, skipping");
+                         continue;
++                    }
++
++                    Console.WriteLine($"[TypeGVMEntries::ScanForInterfaceGVMs]     Method {method.Name}: IS GENERIC, resolving...");
++                    Console.WriteLine($"[TypeGVMEntries::ScanForInterfaceGVMs]       IsStatic={method.Signature.IsStatic}");
+ 
+                     DefaultInterfaceMethodResolution resolution = DefaultInterfaceMethodResolution.None;
+                     MethodDesc slotDecl = method.Signature.IsStatic ?
+                         _associatedType.ResolveInterfaceMethodToStaticVirtualMethodOnType(method) : _associatedType.ResolveInterfaceMethodTarget(method);
++
++                    Console.WriteLine($"[TypeGVMEntries::ScanForInterfaceGVMs]       SlotDecl={slotDecl?.ToString() ?? "NULL"}");
++
+                     if (slotDecl == null)
+                     {
++                        Console.WriteLine($"[TypeGVMEntries::ScanForInterfaceGVMs]       Trying default implementation...");
+                         resolution = _associatedType.ResolveInterfaceMethodToDefaultImplementationOnType(method, out slotDecl);
++                        Console.WriteLine($"[TypeGVMEntries::ScanForInterfaceGVMs]       Resolution={resolution}, SlotDecl={slotDecl?.ToString() ?? "NULL"}");
+                         if (resolution != DefaultInterfaceMethodResolution.DefaultImplementation)
+                             slotDecl = null;
+                     }
+@@ -113,10 +158,21 @@ public IEnumerable<InterfaceGVMEntryInfo> ScanForInterfaceGenericVirtualMethodEn
+                         || resolution == DefaultInterfaceMethodResolution.Diamond
+                         || resolution == DefaultInterfaceMethodResolution.Reabstraction)
+                     {
++                        foundEntries++;
++                        Console.WriteLine($"[TypeGVMEntries::ScanForInterfaceGVMs]     FOUND Entry #{foundEntries}:");
++                        Console.WriteLine($"[TypeGVMEntries::ScanForInterfaceGVMs]       CallingMethod={method}");
++                        Console.WriteLine($"[TypeGVMEntries::ScanForInterfaceGVMs]       ImplementationMethod={slotDecl?.ToString() ?? "NULL"}");
++                        Console.WriteLine($"[TypeGVMEntries::ScanForInterfaceGVMs]       Resolution={resolution}");
+                         yield return new InterfaceGVMEntryInfo(method, slotDecl, _associatedType, resolution);
+                     }
++                    else
++                    {
++                        Console.WriteLine($"[TypeGVMEntries::ScanForInterfaceGVMs]     NOT FOUND: slotDecl is NULL and no default resolution");
++                    }
+                 }
+             }
++
++            Console.WriteLine($"[TypeGVMEntries::ScanForInterfaceGVMs] Total: scanned {totalMethods} methods, found {foundEntries} interface GVM entries");
+         }
+     }
+ }
