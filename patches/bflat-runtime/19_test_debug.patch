@@ -681,6 +681,171 @@ index 4599d9ea5fa..711051a5e49 100644
      <Compile Include="Internal\Runtime\TypeLoader\CanonicallyEquivalentEntryLocator.cs" />
      <Compile Include="Internal\Runtime\TypeLoader\MethodTable.Runtime.cs" />
      <Compile Include="Internal\Runtime\TypeLoader\EETypeCreator.cs" />
+diff --git a/src/coreclr/nativeaot/System.Private.TypeLoader/src/System/Runtime/GvmDebugLog.cs b/src/coreclr/nativeaot/System.Private.TypeLoader/src/System/Runtime/GvmDebugLog.cs
+new file mode 100644
+index 00000000000..ec4fd0fd2e1
+--- /dev/null
++++ b/src/coreclr/nativeaot/System.Private.TypeLoader/src/System/Runtime/GvmDebugLog.cs
+@@ -0,0 +1,159 @@
++// Licensed to the .NET Foundation under one or more agreements.
++// The .NET Foundation licenses this file to you under the MIT license.
++
++using System.Runtime.InteropServices;
++using System.Runtime.CompilerServices;
++
++namespace System.Runtime
++{
++    /// <summary>
++    /// Reliable logging for GVM debugging that works in all build configurations.
++    /// Uses direct P/Invoke to fprintf from __Internal - guaranteed to never be optimized away.
++    /// </summary>
++    internal static class GvmDebugLog
++    {
++        // Direct P/Invoke to fprintf from __Internal
++        // __Internal is a special library name that refers to symbols in the current executable
++        // fprintf is provided by libc and linked into every binary
++        [DllImport("__Internal", EntryPoint = "fprintf", CallingConvention = CallingConvention.Cdecl)]
++        private static extern int fprintf(int fd, string format, string message);
++
++        // stderr file descriptor = 2
++        private const int STDERR_FILENO = 2;
++
++        /// <summary>
++        /// Log a simple message to stderr
++        /// </summary>
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        public static void Log(string message)
++        {
++            try
++            {
++                fprintf(STDERR_FILENO, "%s\n", message);
++            }
++            catch
++            {
++                // Ignore any errors - we're in a critical logging path
++            }
++        }
++
++        /// <summary>
++        /// Log a formatted message with one argument
++        /// </summary>
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        public static void Log(string format, object arg1)
++        {
++            try
++            {
++                string message = string.Format(format, arg1);
++                fprintf(STDERR_FILENO, "%s\n", message);
++            }
++            catch
++            {
++                // Ignore any errors
++            }
++        }
++
++        /// <summary>
++        /// Log a formatted message with two arguments
++        /// </summary>
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        public static void Log(string format, object arg1, object arg2)
++        {
++            try
++            {
++                string message = string.Format(format, arg1, arg2);
++                fprintf(STDERR_FILENO, "%s\n", message);
++            }
++            catch
++            {
++                // Ignore any errors
++            }
++        }
++
++        /// <summary>
++        /// Log a formatted message with three arguments
++        /// </summary>
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        public static void Log(string format, object arg1, object arg2, object arg3)
++        {
++            try
++            {
++                string message = string.Format(format, arg1, arg2, arg3);
++                fprintf(STDERR_FILENO, "%s\n", message);
++            }
++            catch
++            {
++                // Ignore any errors
++            }
++        }
++
++        /// <summary>
++        /// Log a formatted message with four arguments
++        /// </summary>
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        public static void Log(string format, object arg1, object arg2, object arg3, object arg4)
++        {
++            try
++            {
++                string message = string.Format(format, arg1, arg2, arg3, arg4);
++                fprintf(STDERR_FILENO, "%s\n", message);
++            }
++            catch
++            {
++                // Ignore any errors
++            }
++        }
++
++        /// <summary>
++        /// Log a formatted message with variable arguments
++        /// </summary>
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        public static void Log(string format, params object[] args)
++        {
++            try
++            {
++                string message = string.Format(format, args);
++                fprintf(STDERR_FILENO, "%s\n", message);
++            }
++            catch
++            {
++                // Ignore any errors
++            }
++        }
++
++        /// <summary>
++        /// Convenience method for logging with hex address
++        /// </summary>
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        public static void LogAddress(string prefix, IntPtr address)
++        {
++            try
++            {
++                string message = $"{prefix}0x{address.ToInt64():X}";
++                fprintf(STDERR_FILENO, "%s\n", message);
++            }
++            catch
++            {
++                // Ignore any errors
++            }
++        }
++
++        /// <summary>
++        /// Convenience method for logging with two hex addresses
++        /// </summary>
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        public static void LogAddresses(string prefix, IntPtr addr1, IntPtr addr2)
++        {
++            try
++            {
++                string message = $"{prefix}0x{addr1.ToInt64():X}, 0x{addr2.ToInt64():X}";
++                fprintf(STDERR_FILENO, "%s\n", message);
++            }
++            catch
++            {
++                // Ignore any errors
++            }
++        }
++    }
++}
 diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/GVMDependenciesNode.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/GVMDependenciesNode.cs
 index 531cdefffd5..aaafb08b879 100644
 --- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/GVMDependenciesNode.cs
