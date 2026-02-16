@@ -116,21 +116,10 @@ index edba0b2ed20..2b0e9604454 100644
      return nullptr;
  }
 diff --git a/src/coreclr/nativeaot/System.Private.CoreLib/src/System.Private.CoreLib.csproj b/src/coreclr/nativeaot/System.Private.CoreLib/src/System.Private.CoreLib.csproj
-index 39d9b041a18..1fb05002e65 100644
+index 39d9b041a18..fae6520261f 100644
 --- a/src/coreclr/nativeaot/System.Private.CoreLib/src/System.Private.CoreLib.csproj
 +++ b/src/coreclr/nativeaot/System.Private.CoreLib/src/System.Private.CoreLib.csproj
-@@ -3,6 +3,10 @@
-     <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
-   </PropertyGroup>
- 
-+  <ItemGroup>
-+    <InternalsVisibleTo Include="System.Private.TypeLoader" />
-+  </ItemGroup>
-+
-   <ItemGroup>
-     <ApiCompatSuppressionFile Include="$(MSBuildProjectDirectory)\CompatibilitySuppressions.xml" />
-   </ItemGroup>
-@@ -196,6 +200,7 @@
+@@ -196,6 +196,7 @@
      <Compile Include="System\Runtime\GCSettings.NativeAot.cs" />
      <Compile Include="System\Runtime\InteropServices\TypeMapLazyDictionary.NativeAot.cs" />
      <Compile Include="System\Runtime\TypeLoaderExports.cs" />
@@ -680,6 +669,18 @@ index 1b6d16fa3ff..166a9f0636d 100644
  #endif
  
              foreach (NativeFormatModuleInfo module in ModuleList.EnumerateModules(RuntimeAugments.GetModuleFromTypeHandle(openTargetTypeHandle)))
+diff --git a/src/coreclr/nativeaot/System.Private.TypeLoader/src/System.Private.TypeLoader.csproj b/src/coreclr/nativeaot/System.Private.TypeLoader/src/System.Private.TypeLoader.csproj
+index 4599d9ea5fa..711051a5e49 100644
+--- a/src/coreclr/nativeaot/System.Private.TypeLoader/src/System.Private.TypeLoader.csproj
++++ b/src/coreclr/nativeaot/System.Private.TypeLoader/src/System.Private.TypeLoader.csproj
+@@ -211,6 +211,7 @@
+       <Link>Internal\TypeSystem\WellKnownType.cs</Link>
+     </Compile>
+     <Compile Include="Internal\Runtime\CompilerHelpers\LibraryInitializer.cs" />
++    <Compile Include="System\Runtime\GvmDebugLog.cs" />
+     <Compile Include="Internal\Runtime\TypeLoader\CanonicallyEquivalentEntryLocator.cs" />
+     <Compile Include="Internal\Runtime\TypeLoader\MethodTable.Runtime.cs" />
+     <Compile Include="Internal\Runtime\TypeLoader\EETypeCreator.cs" />
 diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/GVMDependenciesNode.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/GVMDependenciesNode.cs
 index 531cdefffd5..aaafb08b879 100644
 --- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/GVMDependenciesNode.cs
