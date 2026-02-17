@@ -688,7 +688,7 @@ index 00000000000..ec4fd0fd2e1
 +    }
 +}
 diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/GVMDependenciesNode.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/GVMDependenciesNode.cs
-index 531cdefffd5..4e9371f0e47 100644
+index 531cdefffd5..fbf8ab05d79 100644
 --- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/GVMDependenciesNode.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/GVMDependenciesNode.cs
 @@ -1,6 +1,7 @@
@@ -804,7 +804,7 @@ index 531cdefffd5..4e9371f0e47 100644
                                  if (result != DefaultInterfaceMethodResolution.DefaultImplementation)
                                  {
                                      slotDecl = null;
-@@ -145,20 +184,34 @@ public override IEnumerable<CombinedDependencyListEntry> SearchDynamicDependenci
+@@ -145,22 +184,36 @@ public override IEnumerable<CombinedDependencyListEntry> SearchDynamicDependenci
  
                              if (slotDecl != null)
                              {
@@ -831,14 +831,18 @@ index 531cdefffd5..4e9371f0e47 100644
  
                                  TypeSystemEntity origin = (implementingMethodInstantiation.OwningType != potentialOverrideType) ? potentialOverrideType : null;
                                  factory.MetadataManager.NoteOverridingMethod(_method, implementingMethodInstantiation, origin);
-                             }
+-                            }
+ 
+-                            foundImpl = true;
++                                foundImpl = true;
++                            }
 +                            else
 +                            {
 +                                System.Console.WriteLine($"[GVMDependencies::SearchDynamic]       SlotDecl is NULL, no implementation found");
 +                            }
- 
-                             foundImpl = true;
                          }
+                     }
+                 }
 @@ -219,9 +272,13 @@ public override IEnumerable<CombinedDependencyListEntry> SearchDynamicDependenci
  
                  if (foundImpl)
