@@ -358,7 +358,7 @@ index 82065e8c510..6a4484dce81 100644
          }
  
 diff --git a/src/coreclr/nativeaot/System.Private.TypeLoader/src/Internal/Runtime/TypeLoader/TypeLoaderEnvironment.GVMResolution.cs b/src/coreclr/nativeaot/System.Private.TypeLoader/src/Internal/Runtime/TypeLoader/TypeLoaderEnvironment.GVMResolution.cs
-index 1b6d16fa3ff..bc25e5c793d 100644
+index 1b6d16fa3ff..908c24c2e96 100644
 --- a/src/coreclr/nativeaot/System.Private.TypeLoader/src/Internal/Runtime/TypeLoader/TypeLoaderEnvironment.GVMResolution.cs
 +++ b/src/coreclr/nativeaot/System.Private.TypeLoader/src/Internal/Runtime/TypeLoader/TypeLoaderEnvironment.GVMResolution.cs
 @@ -47,6 +47,8 @@ private static string GetTypeNameDebug(TypeDesc type)
@@ -425,7 +425,7 @@ index 1b6d16fa3ff..bc25e5c793d 100644
              TypeSystemContextFactory.Recycle(context);
              return FunctionPointerOps.GetGenericMethodFunctionPointer(methodPointer, dictionaryPointer);
          }
-@@ -311,18 +327,32 @@ private static InstantiatedMethod FindMatchingInterfaceSlot(NativeFormatModuleIn
+@@ -311,6 +327,7 @@ private static InstantiatedMethod FindMatchingInterfaceSlot(NativeFormatModuleIn
                                      Debug.Assert(interfaceImplType != null);
                                  }
  
@@ -433,20 +433,10 @@ index 1b6d16fa3ff..bc25e5c793d 100644
                                  return (InstantiatedMethod)context.ResolveGenericMethodInstantiation(false, interfaceImplType, targetMethodNameAndSignature, slotMethod.Instantiation);
                              }
                          }
-                     }
+@@ -318,11 +335,14 @@ private static InstantiatedMethod FindMatchingInterfaceSlot(NativeFormatModuleIn
                  }
-+
-+                if (entryCount == 0)
-+                {
-+                    GvmDebugLog.Log($"[ResolveInterfaceGVMSlot]   No entries found in GVM table for this hash");
-+                }
              }
  
-+            if (moduleCount == 0)
-+            {
-+                GvmDebugLog.Log($"[ResolveInterfaceGVMSlot] ERROR: No modules found to scan!");
-+            }
-+
 +            GvmDebugLog.Log($"[ResolveInterfaceGVMSlot] EXIT: No resolution found, returning NULL");
              return null;
          }
@@ -458,7 +448,7 @@ index 1b6d16fa3ff..bc25e5c793d 100644
              // Get the open type definition of the containing type of the generic virtual method being resolved
              RuntimeTypeHandle openCallingTypeHandle = slotMethod.OwningType.GetTypeDefinition().RuntimeTypeHandle;
  
-@@ -333,15 +363,29 @@ private static InstantiatedMethod ResolveInterfaceGenericVirtualMethodSlot(DefTy
+@@ -333,15 +353,29 @@ private static InstantiatedMethod ResolveInterfaceGenericVirtualMethodSlot(DefTy
              Debug.WriteLine("INTERFACE GVM call = " + GetTypeNameDebug(slotMethod.OwningType) + "." + slotMethod.Name);
  #endif
  
@@ -488,7 +478,7 @@ index 1b6d16fa3ff..bc25e5c793d 100644
  
                  NativeParser gvmTableParser = new NativeParser(gvmTableReader, 0);
                  NativeHashtable gvmHashtable = new NativeHashtable(gvmTableParser);
-@@ -352,17 +396,31 @@ private static InstantiatedMethod ResolveInterfaceGenericVirtualMethodSlot(DefTy
+@@ -352,17 +386,31 @@ private static InstantiatedMethod ResolveInterfaceGenericVirtualMethodSlot(DefTy
                  var lookup = gvmHashtable.Lookup(openCallingTypeHandle.GetHashCode());
  
                  NativeParser entryParser;
