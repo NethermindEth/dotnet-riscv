@@ -863,10 +863,18 @@ index 531cdefffd5..aaafb08b879 100644
          }
      }
 diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/InterfaceGenericVirtualMethodTableNode.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/InterfaceGenericVirtualMethodTableNode.cs
-index e1f432af8ff..79f7d1369d0 100644
+index e1f432af8ff..36cfc8d1230 100644
 --- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/InterfaceGenericVirtualMethodTableNode.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/InterfaceGenericVirtualMethodTableNode.cs
-@@ -125,15 +125,34 @@ public override ObjectData GetData(NodeFactory factory, bool relocsOnly = false)
+@@ -4,6 +4,7 @@
+ using System;
+ using System.Diagnostics;
+ using System.Collections.Generic;
++using System.Linq;
+ 
+ using Internal.Text;
+ using Internal.TypeSystem;
+@@ -125,15 +126,34 @@ public override ObjectData GetData(NodeFactory factory, bool relocsOnly = false)
              if (relocsOnly)
                  return new ObjectData(Array.Empty<byte>(), Array.Empty<Relocation>(), 1, new ISymbolDefinitionNode[] { this });
  
@@ -903,7 +911,7 @@ index e1f432af8ff..79f7d1369d0 100644
              // Ensure the native layout blob has been saved
              factory.MetadataManager.NativeLayoutInfo.SaveNativeLayoutInfoWriter(factory);
  
-@@ -143,16 +162,28 @@ public override ObjectData GetData(NodeFactory factory, bool relocsOnly = false)
+@@ -143,16 +163,28 @@ public override ObjectData GetData(NodeFactory factory, bool relocsOnly = false)
              Section gvmHashtableSection = nativeFormatWriter.NewSection();
              gvmHashtableSection.Place(gvmHashtable);
  
@@ -933,10 +941,21 @@ index e1f432af8ff..79f7d1369d0 100644
                      nativeFormatWriter.GetUnsignedConstant(typeId),
                      nativeFormatWriter.GetUnsignedConstant((uint)callingMethodToken));
 diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/TypeGVMEntriesNode.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/TypeGVMEntriesNode.cs
-index e3a0b4d38ab..62ac64553af 100644
+index e3a0b4d38ab..7c1837c696a 100644
 --- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/TypeGVMEntriesNode.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/TypeGVMEntriesNode.cs
-@@ -63,13 +63,26 @@ public override IEnumerable<DependencyListEntry> GetStaticDependencies(NodeFacto
+@@ -1,8 +1,10 @@
+ // Licensed to the .NET Foundation under one or more agreements.
+ // The .NET Foundation licenses this file to you under the MIT license.
+ 
++using System;
+ using System.Collections.Generic;
+ using System.Diagnostics;
++using System.Linq;
+ 
+ using Internal.TypeSystem;
+ using ILCompiler.DependencyAnalysisFramework;
+@@ -63,13 +65,26 @@ public override IEnumerable<DependencyListEntry> GetStaticDependencies(NodeFacto
          {
              if (_staticDependencies == null)
              {
@@ -963,7 +982,7 @@ index e3a0b4d38ab..62ac64553af 100644
              }
  
              return _staticDependencies;
-@@ -77,8 +90,13 @@ public override IEnumerable<DependencyListEntry> GetStaticDependencies(NodeFacto
+@@ -77,8 +92,13 @@ public override IEnumerable<DependencyListEntry> GetStaticDependencies(NodeFacto
  
          public IEnumerable<TypeGVMEntryInfo> ScanForGenericVirtualMethodEntries()
          {
@@ -977,7 +996,7 @@ index e3a0b4d38ab..62ac64553af 100644
                  // Non-Generic virtual methods are tracked by an orthogonal mechanism.
                  if (!decl.HasInstantiation)
                      continue;
-@@ -86,25 +104,52 @@ public IEnumerable<TypeGVMEntryInfo> ScanForGenericVirtualMethodEntries()
+@@ -86,25 +106,52 @@ public IEnumerable<TypeGVMEntryInfo> ScanForGenericVirtualMethodEntries()
                  MethodDesc impl = _associatedType.FindVirtualFunctionTargetMethodOnObjectType(decl);
  
                  if (impl.OwningType == _associatedType)
@@ -1030,7 +1049,7 @@ index e3a0b4d38ab..62ac64553af 100644
                          if (resolution != DefaultInterfaceMethodResolution.DefaultImplementation)
                              slotDecl = null;
                      }
-@@ -113,10 +158,21 @@ public IEnumerable<InterfaceGVMEntryInfo> ScanForInterfaceGenericVirtualMethodEn
+@@ -113,10 +160,21 @@ public IEnumerable<InterfaceGVMEntryInfo> ScanForInterfaceGenericVirtualMethodEn
                          || resolution == DefaultInterfaceMethodResolution.Diamond
                          || resolution == DefaultInterfaceMethodResolution.Reabstraction)
                      {
