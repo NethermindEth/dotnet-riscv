@@ -26,6 +26,10 @@ function build_compiler()
         export ROOTFS_DIR="$(pwd)/.tools/rootfs/riscv64-musl"
         patch -p1 < "${TOP_DIR}/patches/bflat-runtime/12_alpine_custom.patch"
         ./eng/common/cross/build-rootfs.sh riscv64 alpineedge --skipemulation --skipunmount --rootfsdir ${ROOTFS_DIR}
+        if [ "$?" != "0" ] ; then
+            echo "Build of rootfs failed"
+            exit 1
+        fi
         ./build.sh -s clr+clr.aot+clr.tools \
                    -c Release \
                    -rc Release \
@@ -34,6 +38,10 @@ function build_compiler()
                    -arch riscv64 \
                    -cross \
                    -p:StageOneBuild=true
+        if [ "$?" != "0" ] ; then
+            echo "Build of bflat compiler nupkg failed"
+            exit 1
+        fi
     popd
 }
 
