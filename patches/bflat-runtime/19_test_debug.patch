@@ -525,10 +525,10 @@ index 4599d9ea5fa..711051a5e49 100644
      <Compile Include="Internal\Runtime\TypeLoader\EETypeCreator.cs" />
 diff --git a/src/coreclr/nativeaot/System.Private.TypeLoader/src/System/Runtime/GvmDebugLog.cs b/src/coreclr/nativeaot/System.Private.TypeLoader/src/System/Runtime/GvmDebugLog.cs
 new file mode 100644
-index 00000000000..6089054f795
+index 00000000000..ec4fd0fd2e1
 --- /dev/null
 +++ b/src/coreclr/nativeaot/System.Private.TypeLoader/src/System/Runtime/GvmDebugLog.cs
-@@ -0,0 +1,160 @@
+@@ -0,0 +1,159 @@
 +// Licensed to the .NET Foundation under one or more agreements.
 +// The .NET Foundation licenses this file to you under the MIT license.
 +
@@ -541,14 +541,13 @@ index 00000000000..6089054f795
 +    /// Reliable logging for GVM debugging that works in all build configurations.
 +    /// Uses direct P/Invoke to fprintf from __Internal - guaranteed to never be optimized away.
 +    /// </summary>
-+    internal static partial class GvmDebugLog
++    internal static class GvmDebugLog
 +    {
 +        // Direct P/Invoke to fprintf from __Internal
 +        // __Internal is a special library name that refers to symbols in the current executable
 +        // fprintf is provided by libc and linked into every binary
-+        [LibraryImport("__Internal", EntryPoint = "fprintf", StringMarshalling = StringMarshalling.Utf8)]
-+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
-+        private static partial int fprintf(int fd, string format, string message);
++        [DllImport("__Internal", EntryPoint = "fprintf", CallingConvention = CallingConvention.Cdecl)]
++        private static extern int fprintf(int fd, string format, string message);
 +
 +        // stderr file descriptor = 2
 +        private const int STDERR_FILENO = 2;
