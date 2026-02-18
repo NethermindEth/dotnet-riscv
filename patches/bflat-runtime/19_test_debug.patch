@@ -129,7 +129,7 @@ index 39d9b041a18..fae6520261f 100644
      <Compile Include="System\Runtime\InteropServices\ComWrappers.NativeAot.cs" Condition="'$(FeatureComWrappers)' == 'true'" />
 diff --git a/src/coreclr/nativeaot/System.Private.CoreLib/src/System/Runtime/GvmDebugLog.cs b/src/coreclr/nativeaot/System.Private.CoreLib/src/System/Runtime/GvmDebugLog.cs
 new file mode 100644
-index 00000000000..366babd80ce
+index 00000000000..6089054f795
 --- /dev/null
 +++ b/src/coreclr/nativeaot/System.Private.CoreLib/src/System/Runtime/GvmDebugLog.cs
 @@ -0,0 +1,160 @@
@@ -145,7 +145,7 @@ index 00000000000..366babd80ce
 +    /// Reliable logging for GVM debugging that works in all build configurations.
 +    /// Uses direct P/Invoke to fprintf from __Internal - guaranteed to never be optimized away.
 +    /// </summary>
-+    internal static class GvmDebugLog
++    internal static partial class GvmDebugLog
 +    {
 +        // Direct P/Invoke to fprintf from __Internal
 +        // __Internal is a special library name that refers to symbols in the current executable
@@ -525,7 +525,7 @@ index 4599d9ea5fa..711051a5e49 100644
      <Compile Include="Internal\Runtime\TypeLoader\EETypeCreator.cs" />
 diff --git a/src/coreclr/nativeaot/System.Private.TypeLoader/src/System/Runtime/GvmDebugLog.cs b/src/coreclr/nativeaot/System.Private.TypeLoader/src/System/Runtime/GvmDebugLog.cs
 new file mode 100644
-index 00000000000..366babd80ce
+index 00000000000..6089054f795
 --- /dev/null
 +++ b/src/coreclr/nativeaot/System.Private.TypeLoader/src/System/Runtime/GvmDebugLog.cs
 @@ -0,0 +1,160 @@
@@ -541,7 +541,7 @@ index 00000000000..366babd80ce
 +    /// Reliable logging for GVM debugging that works in all build configurations.
 +    /// Uses direct P/Invoke to fprintf from __Internal - guaranteed to never be optimized away.
 +    /// </summary>
-+    internal static class GvmDebugLog
++    internal static partial class GvmDebugLog
 +    {
 +        // Direct P/Invoke to fprintf from __Internal
 +        // __Internal is a special library name that refers to symbols in the current executable
