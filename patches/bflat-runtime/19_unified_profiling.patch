@@ -1,0 +1,549 @@
+diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ILScanner.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ILScanner.cs
+index 18fdd2f6555..7c7c407b0d1 100644
+--- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ILScanner.cs
++++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ILScanner.cs
+@@ -27,6 +27,13 @@ namespace ILCompiler
+     /// </summary>
+     internal sealed class ILScanner : Compilation, IILScanner
+     {
++#if true
++        // Optional profiling to help diagnose IL scanning performance characteristics.
++        // Enable by setting the environment variable "DOTNET_ILSCANNER_TRACE_PROFILING" to "1".
++        private static readonly bool s_traceProfilingEnabled =
++            string.Equals(Environment.GetEnvironmentVariable("DOTNET_ILSCANNER_TRACE_PROFILING"), "1", StringComparison.Ordinal);
++#endif
++
+         private readonly int _parallelism;
+ 
+         internal ILScanner(
+@@ -56,6 +63,17 @@ protected override void ComputeDependencyNodeDependencies(List<DependencyNodeCor
+             var methodsToCompile = new List<ScannedMethodNode>();
+             var canonicalMethodsToCompile = new HashSet<MethodDesc>();
+ 
++#if true
++            // Optional profiling to help diagnose dependency node computation performance.
++            System.Diagnostics.Stopwatch depScanSw = null;
++            if (s_traceProfilingEnabled)
++            {
++                depScanSw = System.Diagnostics.Stopwatch.StartNew();
++                System.Diagnostics.Debug.WriteLine(
++                    $"[ILScanner] ComputeDependencyNodeDependencies: starting with obj.Count={obj.Count}");
++            }
++#endif
++
+             foreach (DependencyNodeCore<NodeFactory> dependency in obj)
+             {
+                 var methodCodeNodeNeedingCode = dependency as ScannedMethodNode;
+@@ -78,6 +96,24 @@ protected override void ComputeDependencyNodeDependencies(List<DependencyNodeCor
+                 methodsToCompile.Add(methodCodeNodeNeedingCode);
+             }
+ 
++#if true
++            if (s_traceProfilingEnabled && depScanSw != null)
++            {
++                depScanSw.Stop();
++                System.Diagnostics.Debug.WriteLine(
++                    $"[ILScanner] ComputeDependencyNodeDependencies: collected {methodsToCompile.Count} methods in {depScanSw.ElapsedMilliseconds} ms");
++            }
++
++            // Optional profiling to help diagnose batch compilation performance.
++            System.Diagnostics.Stopwatch batchSw = null;
++            if (s_traceProfilingEnabled)
++            {
++                batchSw = System.Diagnostics.Stopwatch.StartNew();
++                System.Diagnostics.Debug.WriteLine(
++                    $"[ILScanner] ComputeDependencyNodeDependencies: starting batch with {methodsToCompile.Count} methods (parallelism={_parallelism})");
++            }
++#endif
++
+             if (_parallelism == 1)
+             {
+                 CompileSingleThreaded(methodsToCompile);
+@@ -86,6 +122,15 @@ protected override void ComputeDependencyNodeDependencies(List<DependencyNodeCor
+             {
+                 CompileMultiThreaded(methodsToCompile);
+             }
++
++#if true
++            if (s_traceProfilingEnabled && batchSw != null)
++            {
++                batchSw.Stop();
++                System.Diagnostics.Debug.WriteLine(
++                    $"[ILScanner] ComputeDependencyNodeDependencies: batch compilation completed in {batchSw.ElapsedMilliseconds} ms");
++            }
++#endif
+         }
+ 
+         private void CompileMultiThreaded(List<ScannedMethodNode> methodsToCompile)
+@@ -118,6 +163,15 @@ private void CompileSingleMethod(ScannedMethodNode methodCodeNodeNeedingCode)
+         {
+             MethodDesc method = methodCodeNodeNeedingCode.Method;
+ 
++#if true
++            // Optional profiling to help diagnose slow method compilation.
++            System.Diagnostics.Stopwatch methodSw = null;
++            if (s_traceProfilingEnabled)
++            {
++                methodSw = System.Diagnostics.Stopwatch.StartNew();
++            }
++#endif
++
+             try
+             {
+                 var importer = new ILImporter(this, method);
+@@ -134,6 +188,15 @@ private void CompileSingleMethod(ScannedMethodNode methodCodeNodeNeedingCode)
+             {
+                 throw new CodeGenerationFailedException(method, ex);
+             }
++
++#if true
++            if (s_traceProfilingEnabled && methodSw != null)
++            {
++                methodSw.Stop();
++                System.Diagnostics.Debug.WriteLine(
++                    $"[ILScanner] CompileSingleMethod: {methodSw.ElapsedMilliseconds} ms  method={method}");
++            }
++#endif
+         }
+ 
+         ILScanResults IILScanner.Scan()
+@@ -152,8 +215,48 @@ ILScanResults IILScanner.Scan()
+             _dependencyGraph.AddRoot(GetHelperEntrypoint(ReadyToRunHelper.IsInstanceOfException), "Not tracked by scanner");
+             _dependencyGraph.AddRoot(_nodeFactory.MethodEntrypoint(_nodeFactory.TypeSystemContext.GetHelperEntryPoint("ThrowHelpers", "ThrowFeatureBodyRemoved")), "Substitution for methods removed based on scanning");
+ 
++#if true
++            // Optional profiling to help diagnose dependency graph marking performance.
++            // This tracks total marked nodes, phase transitions, and overall time spent in ComputeMarkedNodes.
++            int totalMarkedNodes = 0;
++            int currentPhase = 0;
++            System.Diagnostics.Stopwatch phaseSw = null;
++            System.Diagnostics.Stopwatch totalSw = null;
++
++            if (s_traceProfilingEnabled)
++            {
++                phaseSw = System.Diagnostics.Stopwatch.StartNew();
++                totalSw = System.Diagnostics.Stopwatch.StartNew();
++
++                _dependencyGraph.NewMarkedNode += _ => System.Threading.Interlocked.Increment(ref totalMarkedNodes);
++
++                _dependencyGraph.ComputingDependencyPhaseChange += phase =>
++                {
++                    if (phaseSw != null)
++                    {
++                        phaseSw.Stop();
++                        System.Diagnostics.Debug.WriteLine(
++                            $"[ILScanner] Scan: phase {currentPhase} finished in {phaseSw.ElapsedMilliseconds} ms, total nodes marked so far: {totalMarkedNodes}");
++                        currentPhase = phase;
++                        phaseSw.Restart();
++                    }
++                };
++
++                System.Diagnostics.Debug.WriteLine("[ILScanner] Scan: calling ComputeMarkedNodes...");
++            }
++#endif
++
+             _dependencyGraph.ComputeMarkedNodes();
+ 
++#if true
++            if (s_traceProfilingEnabled && totalSw != null)
++            {
++                totalSw.Stop();
++                System.Diagnostics.Debug.WriteLine(
++                    $"[ILScanner] Scan: ComputeMarkedNodes completed. Total nodes marked: {totalMarkedNodes}, total time: {totalSw.ElapsedMilliseconds} ms");
++            }
++#endif
++
+             _nodeFactory.SetMarkingComplete();
+ 
+             return new ILScanResults(_dependencyGraph, _nodeFactory);
+diff --git a/src/coreclr/tools/aot/ILCompiler.DependencyAnalysisFramework/DependencyAnalyzer.cs b/src/coreclr/tools/aot/ILCompiler.DependencyAnalysisFramework/DependencyAnalyzer.cs
+index e7f7503bb7d..83e6944a2d6 100644
+--- a/src/coreclr/tools/aot/ILCompiler.DependencyAnalysisFramework/DependencyAnalyzer.cs
++++ b/src/coreclr/tools/aot/ILCompiler.DependencyAnalysisFramework/DependencyAnalyzer.cs
+@@ -24,6 +24,13 @@ namespace ILCompiler.DependencyAnalysisFramework
+     /// </summary>
+     public sealed class DependencyAnalyzer<MarkStrategy, DependencyContextType> : DependencyAnalyzerBase<DependencyContextType> where MarkStrategy : struct, IDependencyAnalysisMarkStrategy<DependencyContextType>
+     {
++#if true
++        // Optional profiling to help diagnose dependency analysis performance characteristics.
++        // Enable by setting the environment variable "DOTNET_DEPANALYZER_TRACE_PROFILING" to "1".
++        private static readonly bool s_traceProfilingEnabled =
++            string.Equals(Environment.GetEnvironmentVariable("DOTNET_DEPANALYZER_TRACE_PROFILING"), "1", StringComparison.Ordinal);
++#endif
++
+ #pragma warning disable SA1129 // Do not use default value type constructor
+         private MarkStrategy _marker = new MarkStrategy();
+ #pragma warning restore SA1129 // Do not use default value type constructor
+@@ -176,10 +183,33 @@ private void ComputeDependencies(List<DependencyNodeCore<DependencyContextType>>
+             ComputeDependencyRoutine?.Invoke(deferredStaticDependencies);
+         }
+ 
++#if true
++        // Slow-node threshold in milliseconds: nodes whose GetStaticDependencies or
++        // GetConditionalStaticDependencies call exceeds this value are printed individually.
++        private const long SlowNodeThresholdMs = 50;
++#endif
++
+         // Internal details
+         private void GetStaticDependenciesImpl(DependencyNodeCore<DependencyContextType> node)
+         {
++#if true
++            // Optional profiling to help diagnose slow GetStaticDependencies calls.
++            long t0 = Stopwatch.GetTimestamp();
++#endif
++
+             IEnumerable<DependencyNodeCore<DependencyContextType>.DependencyListEntry> staticDependencies = node.GetStaticDependencies(_dependencyContext);
++
++#if true
++            if (s_traceProfilingEnabled)
++            {
++                long getStaticMs = ElapsedMs(t0);
++                if (getStaticMs >= SlowNodeThresholdMs)
++                {
++                    Debug.WriteLine(
++                        $"[DepAnalyzer] SLOW GetStaticDependencies: {getStaticMs} ms  node={node.GetType().Name}  \"{NodeName(node)}\"");
++                }
++            }
++#endif
+             if (staticDependencies != null)
+             {
+                 foreach (DependencyNodeCore<DependencyContextType>.DependencyListEntry dependency in staticDependencies)
+@@ -190,7 +220,27 @@ private void GetStaticDependenciesImpl(DependencyNodeCore<DependencyContextType>
+ 
+             if (node.HasConditionalStaticDependencies)
+             {
+-                foreach (DependencyNodeCore<DependencyContextType>.CombinedDependencyListEntry dependency in node.GetConditionalStaticDependencies(_dependencyContext))
++#if true
++                // Optional profiling to help diagnose slow GetConditionalStaticDependencies calls.
++                long t1 = Stopwatch.GetTimestamp();
++#endif
++
++                IEnumerable<DependencyNodeCore<DependencyContextType>.CombinedDependencyListEntry> conditionals =
++                    node.GetConditionalStaticDependencies(_dependencyContext);
++
++#if true
++                if (s_traceProfilingEnabled)
++                {
++                    long getCondMs = ElapsedMs(t1);
++                    if (getCondMs >= SlowNodeThresholdMs)
++                    {
++                        Debug.WriteLine(
++                            $"[DepAnalyzer] SLOW GetConditionalStaticDependencies: {getCondMs} ms  node={node.GetType().Name}  \"{NodeName(node)}\"");
++                    }
++                }
++#endif
++
++                foreach (DependencyNodeCore<DependencyContextType>.CombinedDependencyListEntry dependency in conditionals)
+                 {
+                     if (dependency.OtherReasonNode.Marked)
+                     {
+@@ -235,11 +285,33 @@ private void GetStaticDependencies(DependencyNodeCore<DependencyContextType> nod
+ 
+         private void ProcessMarkStack()
+         {
++#if true
++            // Optional profiling to help diagnose ProcessMarkStack performance.
++            Stopwatch sw = null;
++            long totalNodes = 0;
++            long ticksInGetStatic = 0;
++            long ticksInConditionalStore = 0;
++            long ticksInDynamic = 0;
++            int outerIterations = 0;
++
++            if (s_traceProfilingEnabled)
++            {
++                sw = Stopwatch.StartNew();
++            }
++#endif
++
+             do
+             {
++#if true
++                if (s_traceProfilingEnabled)
++                {
++                    outerIterations++;
++                }
++                long innerNodes = 0;
++#endif
++
+                 while (_markStack.Count > 0)
+                 {
+-                    // Pop the top node of the mark stack
+                     DependencyNodeCore<DependencyContextType> currentNode = _markStack.Pop();
+ 
+                     Debug.Assert(currentNode.Marked);
+@@ -254,8 +326,23 @@ private void ProcessMarkStack()
+                     }
+ 
+                     // Add all static dependencies to the mark stack
++#if true
++                    long t0 = 0;
++                    if (s_traceProfilingEnabled)
++                    {
++                        t0 = Stopwatch.GetTimestamp();
++                    }
++#endif
++
+                     GetStaticDependencies(currentNode);
+ 
++#if true
++                    if (s_traceProfilingEnabled)
++                    {
++                        ticksInGetStatic += Stopwatch.GetTimestamp() - t0;
++                    }
++#endif
++
+                     // If there are dynamic dependencies, note for later
+                     if (currentNode.HasDynamicDependencies)
+                     {
+@@ -265,6 +352,14 @@ private void ProcessMarkStack()
+ 
+                     // If this new node satisfies any stored conditional dependencies,
+                     // add them to the mark stack
++#if true
++                    long t1 = 0;
++                    if (s_traceProfilingEnabled)
++                    {
++                        t1 = Stopwatch.GetTimestamp();
++                    }
++#endif
++
+                     HashSet<DependencyNodeCore<DependencyContextType>.CombinedDependencyListEntry> storedDependencySet;
+                     if (_conditional_dependency_store.TryGetValue(currentNode, out storedDependencySet))
+                     {
+@@ -275,9 +370,38 @@ private void ProcessMarkStack()
+ 
+                         _conditional_dependency_store.Remove(currentNode);
+                     }
++
++#if true
++                    if (s_traceProfilingEnabled)
++                    {
++                        ticksInConditionalStore += Stopwatch.GetTimestamp() - t1;
++                        innerNodes++;
++                        totalNodes++;
++
++                        // Progress report every 5000 nodes
++                        if (totalNodes % 5000 == 0)
++                        {
++                            Debug.WriteLine(
++                                $"[DepAnalyzer] progress: {totalNodes} nodes processed | " +
++                                $"stack={_markStack.Count} | " +
++                                $"elapsed={sw.ElapsedMilliseconds} ms | " +
++                                $"getStatic={TicksToMs(ticksInGetStatic)} ms | " +
++                                $"conditionalStore={TicksToMs(ticksInConditionalStore)} ms | " +
++                                $"dynamic={TicksToMs(ticksInDynamic)} ms");
++                        }
++                    }
++#endif
+                 }
+ 
+                 // Find new dependencies introduced by dynamic dependencies
++#if true
++                long t2 = 0;
++                if (s_traceProfilingEnabled)
++                {
++                    t2 = Stopwatch.GetTimestamp();
++                }
++#endif
++
+                 if (_newDynamicDependenciesMayHaveAppeared)
+                 {
+                     _newDynamicDependenciesMayHaveAppeared = false;
+@@ -290,29 +414,113 @@ private void ProcessMarkStack()
+                         _markedNodesWithDynamicDependencies[i] = dynamicNode;
+                     }
+                 }
++
++#if true
++                if (s_traceProfilingEnabled)
++                {
++                    ticksInDynamic += Stopwatch.GetTimestamp() - t2;
++
++                    if (outerIterations > 1 || _markStack.Count > 0)
++                    {
++                        Debug.WriteLine(
++                            $"[DepAnalyzer] ProcessMarkStack outer iter={outerIterations}: " +
++                            $"innerNodes={innerNodes} | " +
++                            $"dynamicNodesTracked={_markedNodesWithDynamicDependencies.Count} | " +
++                            $"newStackSize={_markStack.Count}");
++                    }
++                }
++#endif
+             } while (_markStack.Count != 0);
++
++#if true
++            if (s_traceProfilingEnabled && sw != null)
++            {
++                Debug.WriteLine(
++                    $"[DepAnalyzer] ProcessMarkStack DONE: " +
++                    $"totalNodes={totalNodes} | " +
++                    $"outerIter={outerIterations} | " +
++                    $"elapsed={sw.ElapsedMilliseconds} ms | " +
++                    $"getStatic={TicksToMs(ticksInGetStatic)} ms | " +
++                    $"conditionalStore={TicksToMs(ticksInConditionalStore)} ms | " +
++                    $"dynamic={TicksToMs(ticksInDynamic)} ms");
++            }
++#endif
+         }
+ 
+         public override void ComputeMarkedNodes()
+         {
+             using (PerfEventSource.StartStopEvents.GraphProcessingEvents())
+             {
+-                if (_markingCompleted)
+-                    return;
++                lock (this)
++                {
++                    if (_markingCompleted)
++                        return;
++
++#if true
++                    // Optional profiling to help diagnose ComputeMarkedNodes performance.
++                    Stopwatch totalSw = null;
++                    int iteration = 0;
++
++                    if (s_traceProfilingEnabled)
++                    {
++                        totalSw = Stopwatch.StartNew();
++                    }
++#endif
+ 
+-                do
++                    do
+                 {
++#if true
++                    if (s_traceProfilingEnabled)
++                    {
++                        iteration++;
++                        Debug.WriteLine(
++                            $"[DepAnalyzer] ComputeMarkedNodes iteration={iteration} phase={_currentDependencyPhase} | " +
++                            $"stack={_markStack.Count} | " +
++                            $"deferredPhases={_deferredStaticDependencies.Count} | " +
++                            $"totalElapsed={totalSw.ElapsedMilliseconds} ms");
++                    }
++#endif
++
+                     // Run mark stack algorithm as much as possible
++#if true
++                    Stopwatch phaseSw = null;
++                    if (s_traceProfilingEnabled)
++                    {
++                        phaseSw = Stopwatch.StartNew();
++                    }
++#endif
++
+                     using (PerfEventSource.StartStopEvents.DependencyAnalysisEvents())
+                     {
+                         ProcessMarkStack();
+                     }
+ 
++#if true
++                    if (s_traceProfilingEnabled && phaseSw != null)
++                    {
++                        Debug.WriteLine(
++                            $"[DepAnalyzer] ProcessMarkStack returned in {phaseSw.ElapsedMilliseconds} ms (phase={_currentDependencyPhase})");
++                    }
++#endif
++
+                     // Compute all dependencies which were not ready during the ProcessMarkStack step
+                     _deferredStaticDependencies.TryGetValue(_currentDependencyPhase, out var deferredDependenciesInCurrentPhase);
+ 
+                     if (deferredDependenciesInCurrentPhase != null)
+                     {
++#if true
++                        if (s_traceProfilingEnabled)
++                        {
++                            Debug.WriteLine(
++                                $"[DepAnalyzer] ComputeDependencies: phase={_currentDependencyPhase} count={deferredDependenciesInCurrentPhase.Count}");
++                        }
++                        Stopwatch deferSw = null;
++                        if (s_traceProfilingEnabled)
++                        {
++                            deferSw = Stopwatch.StartNew();
++                        }
++#endif
++
+                         ComputeDependencies(deferredDependenciesInCurrentPhase);
+                         foreach (DependencyNodeCore<DependencyContextType> node in deferredDependenciesInCurrentPhase)
+                         {
+@@ -321,6 +529,14 @@ public override void ComputeMarkedNodes()
+                         }
+ 
+                         deferredDependenciesInCurrentPhase.Clear();
++
++#if true
++                        if (s_traceProfilingEnabled && deferSw != null)
++                        {
++                            Debug.WriteLine(
++                                $"[DepAnalyzer] ComputeDependencies done in {deferSw.ElapsedMilliseconds} ms (phase={_currentDependencyPhase})");
++                        }
++#endif
+                     }
+ 
+                     if (_markStack.Count == 0)
+@@ -336,17 +552,37 @@ public override void ComputeMarkedNodes()
+                         // 2. Increment current dependency phase
+                         _currentDependencyPhase++;
+ 
++#if true
++                        if (s_traceProfilingEnabled)
++                        {
++                            Debug.WriteLine(
++                                $"[DepAnalyzer] Advancing to dependency phase={_currentDependencyPhase} | " +
++                                $"remainingDeferredPhases={_deferredStaticDependencies.Count}");
++                        }
++#endif
++
+                         // 3. Notify that new dependency phase has been entered
+                         ComputingDependencyPhaseChange?.Invoke(_currentDependencyPhase);
+                     }
+                 } while ((_markStack.Count != 0) || (_deferredStaticDependencies.Count != 0));
+ 
+-                if (_resultSorter != null)
+-                    _markedNodes.MergeSortAllowDuplicates(_resultSorter);
++#if true
++                    if (s_traceProfilingEnabled && totalSw != null)
++                    {
++                        Debug.WriteLine(
++                            $"[DepAnalyzer] ComputeMarkedNodes complete: " +
++                            $"markedNodes={_markedNodes.Count} | " +
++                            $"totalElapsed={totalSw.ElapsedMilliseconds} ms");
++                    }
++#endif
++
++                    if (_resultSorter != null)
++                        _markedNodes.MergeSortAllowDuplicates(_resultSorter);
+ 
+-                _markedNodesFinal = _markedNodes.ToImmutableArray();
+-                _markedNodes = null;
+-                _markingCompleted = true;
++                    _markedNodesFinal = _markedNodes.ToImmutableArray();
++                    _markedNodes = null;
++                    _markingCompleted = true;
++                }
+             }
+         }
+ 
+@@ -369,5 +605,21 @@ private bool AddToMarkStack(DependencyNodeCore<DependencyContextType> node, stri
+ 
+             return false;
+         }
++
++#if true
++        // ── Helper methods for profiling ─────────────────────────────────────────────
++
++        private static long ElapsedMs(long startTick) =>
++            (Stopwatch.GetTimestamp() - startTick) * 1000 / Stopwatch.Frequency;
++
++        private static long TicksToMs(long ticks) =>
++            ticks * 1000 / Stopwatch.Frequency;
++
++        private static string NodeName(DependencyNodeCore<DependencyContextType> node)
++        {
++            try { return node.ToString() ?? string.Empty; }
++            catch { return "<ToString threw>"; }
++        }
++#endif
+     }
+ }
