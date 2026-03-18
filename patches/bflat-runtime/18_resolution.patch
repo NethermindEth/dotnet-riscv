@@ -23,7 +23,7 @@ index f0eae5441d0..996d3ca5c7d 100644
 +                // Enable by setting the environment variable "DOTNET_TYPELOADER_TRACE_INTERFACE_RESOLUTION" to "1".
 +                if (s_traceInterfaceResolution)
 +                {
-+                    Debug.WriteLine(
++                    System.Console.WriteLine(
 +                        $"[TypeSystem] ResolveInterfaceMethodToVirtualMethodOnTypeRecursive: ifaceMethod={interfaceMethod} ifaceType={interfaceType} onType={currentType}");
 +                }
 +#endif
@@ -34,7 +34,7 @@ index f0eae5441d0..996d3ca5c7d 100644
 +#if true
 +                    if (s_traceInterfaceResolution)
 +                    {
-+                        Debug.WriteLine(
++                        System.Console.WriteLine(
 +                            $"[TypeSystem] ResolveInterfaceMethodToVirtualMethodOnTypeRecursive: resolvedTo={currentTypeInterfaceResolution} (onType={currentType})");
 +                    }
 +#endif

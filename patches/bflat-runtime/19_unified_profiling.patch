@@ -26,7 +26,7 @@ index 18fdd2f6555..7c7c407b0d1 100644
 +            if (s_traceProfilingEnabled)
 +            {
 +                depScanSw = System.Diagnostics.Stopwatch.StartNew();
-+                System.Diagnostics.Debug.WriteLine(
++                System.Console.WriteLine(
 +                    $"[ILScanner] ComputeDependencyNodeDependencies: starting with obj.Count={obj.Count}");
 +            }
 +#endif
@@ -42,7 +42,7 @@ index 18fdd2f6555..7c7c407b0d1 100644
 +            if (s_traceProfilingEnabled && depScanSw != null)
 +            {
 +                depScanSw.Stop();
-+                System.Diagnostics.Debug.WriteLine(
++                System.Console.WriteLine(
 +                    $"[ILScanner] ComputeDependencyNodeDependencies: collected {methodsToCompile.Count} methods in {depScanSw.ElapsedMilliseconds} ms");
 +            }
 +
@@ -51,7 +51,7 @@ index 18fdd2f6555..7c7c407b0d1 100644
 +            if (s_traceProfilingEnabled)
 +            {
 +                batchSw = System.Diagnostics.Stopwatch.StartNew();
-+                System.Diagnostics.Debug.WriteLine(
++                System.Console.WriteLine(
 +                    $"[ILScanner] ComputeDependencyNodeDependencies: starting batch with {methodsToCompile.Count} methods (parallelism={_parallelism})");
 +            }
 +#endif
@@ -68,7 +68,7 @@ index 18fdd2f6555..7c7c407b0d1 100644
 +            if (s_traceProfilingEnabled && batchSw != null)
 +            {
 +                batchSw.Stop();
-+                System.Diagnostics.Debug.WriteLine(
++                System.Console.WriteLine(
 +                    $"[ILScanner] ComputeDependencyNodeDependencies: batch compilation completed in {batchSw.ElapsedMilliseconds} ms");
 +            }
 +#endif
@@ -100,7 +100,7 @@ index 18fdd2f6555..7c7c407b0d1 100644
 +            if (s_traceProfilingEnabled && methodSw != null)
 +            {
 +                methodSw.Stop();
-+                System.Diagnostics.Debug.WriteLine(
++                System.Console.WriteLine(
 +                    $"[ILScanner] CompileSingleMethod: {methodSw.ElapsedMilliseconds} ms  method={method}");
 +            }
 +#endif
@@ -131,14 +131,14 @@ index 18fdd2f6555..7c7c407b0d1 100644
 +                    if (phaseSw != null)
 +                    {
 +                        phaseSw.Stop();
-+                        System.Diagnostics.Debug.WriteLine(
++                        System.Console.WriteLine(
 +                            $"[ILScanner] Scan: phase {currentPhase} finished in {phaseSw.ElapsedMilliseconds} ms, total nodes marked so far: {totalMarkedNodes}");
 +                        currentPhase = phase;
 +                        phaseSw.Restart();
 +                    }
 +                };
 +
-+                System.Diagnostics.Debug.WriteLine("[ILScanner] Scan: calling ComputeMarkedNodes...");
++                System.Console.WriteLine("[ILScanner] Scan: calling ComputeMarkedNodes...");
 +            }
 +#endif
 +
@@ -148,7 +148,7 @@ index 18fdd2f6555..7c7c407b0d1 100644
 +            if (s_traceProfilingEnabled && totalSw != null)
 +            {
 +                totalSw.Stop();
-+                System.Diagnostics.Debug.WriteLine(
++                System.Console.WriteLine(
 +                    $"[ILScanner] Scan: ComputeMarkedNodes completed. Total nodes marked: {totalMarkedNodes}, total time: {totalSw.ElapsedMilliseconds} ms");
 +            }
 +#endif
@@ -200,7 +200,7 @@ index e7f7503bb7d..83e6944a2d6 100644
 +                long getStaticMs = ElapsedMs(t0);
 +                if (getStaticMs >= SlowNodeThresholdMs)
 +                {
-+                    Debug.WriteLine(
++                    System.Console.WriteLine(
 +                        $"[DepAnalyzer] SLOW GetStaticDependencies: {getStaticMs} ms  node={node.GetType().Name}  \"{NodeName(node)}\"");
 +                }
 +            }
@@ -227,7 +227,7 @@ index e7f7503bb7d..83e6944a2d6 100644
 +                    long getCondMs = ElapsedMs(t1);
 +                    if (getCondMs >= SlowNodeThresholdMs)
 +                    {
-+                        Debug.WriteLine(
++                        System.Console.WriteLine(
 +                            $"[DepAnalyzer] SLOW GetConditionalStaticDependencies: {getCondMs} ms  node={node.GetType().Name}  \"{NodeName(node)}\"");
 +                    }
 +                }
@@ -326,7 +326,7 @@ index e7f7503bb7d..83e6944a2d6 100644
 +                        // Progress report every 5000 nodes
 +                        if (totalNodes % 5000 == 0)
 +                        {
-+                            Debug.WriteLine(
++                            System.Console.WriteLine(
 +                                $"[DepAnalyzer] progress: {totalNodes} nodes processed | " +
 +                                $"stack={_markStack.Count} | " +
 +                                $"elapsed={sw.ElapsedMilliseconds} ms | " +
@@ -362,7 +362,7 @@ index e7f7503bb7d..83e6944a2d6 100644
 +
 +                    if (outerIterations > 1 || _markStack.Count > 0)
 +                    {
-+                        Debug.WriteLine(
++                        System.Console.WriteLine(
 +                            $"[DepAnalyzer] ProcessMarkStack outer iter={outerIterations}: " +
 +                            $"innerNodes={innerNodes} | " +
 +                            $"dynamicNodesTracked={_markedNodesWithDynamicDependencies.Count} | " +
@@ -375,7 +375,7 @@ index e7f7503bb7d..83e6944a2d6 100644
 +#if true
 +            if (s_traceProfilingEnabled && sw != null)
 +            {
-+                Debug.WriteLine(
++                System.Console.WriteLine(
 +                    $"[DepAnalyzer] ProcessMarkStack DONE: " +
 +                    $"totalNodes={totalNodes} | " +
 +                    $"outerIter={outerIterations} | " +
@@ -416,7 +416,7 @@ index e7f7503bb7d..83e6944a2d6 100644
 +                    if (s_traceProfilingEnabled)
 +                    {
 +                        iteration++;
-+                        Debug.WriteLine(
++                        System.Console.WriteLine(
 +                            $"[DepAnalyzer] ComputeMarkedNodes iteration={iteration} phase={_currentDependencyPhase} | " +
 +                            $"stack={_markStack.Count} | " +
 +                            $"deferredPhases={_deferredStaticDependencies.Count} | " +
@@ -441,7 +441,7 @@ index e7f7503bb7d..83e6944a2d6 100644
 +#if true
 +                    if (s_traceProfilingEnabled && phaseSw != null)
 +                    {
-+                        Debug.WriteLine(
++                        System.Console.WriteLine(
 +                            $"[DepAnalyzer] ProcessMarkStack returned in {phaseSw.ElapsedMilliseconds} ms (phase={_currentDependencyPhase})");
 +                    }
 +#endif
@@ -454,7 +454,7 @@ index e7f7503bb7d..83e6944a2d6 100644
 +#if true
 +                        if (s_traceProfilingEnabled)
 +                        {
-+                            Debug.WriteLine(
++                            System.Console.WriteLine(
 +                                $"[DepAnalyzer] ComputeDependencies: phase={_currentDependencyPhase} count={deferredDependenciesInCurrentPhase.Count}");
 +                        }
 +                        Stopwatch deferSw = null;
@@ -475,7 +475,7 @@ index e7f7503bb7d..83e6944a2d6 100644
 +#if true
 +                        if (s_traceProfilingEnabled && deferSw != null)
 +                        {
-+                            Debug.WriteLine(
++                            System.Console.WriteLine(
 +                                $"[DepAnalyzer] ComputeDependencies done in {deferSw.ElapsedMilliseconds} ms (phase={_currentDependencyPhase})");
 +                        }
 +#endif
@@ -489,7 +489,7 @@ index e7f7503bb7d..83e6944a2d6 100644
 +#if true
 +                        if (s_traceProfilingEnabled)
 +                        {
-+                            Debug.WriteLine(
++                            System.Console.WriteLine(
 +                                $"[DepAnalyzer] Advancing to dependency phase={_currentDependencyPhase} | " +
 +                                $"remainingDeferredPhases={_deferredStaticDependencies.Count}");
 +                        }
@@ -505,7 +505,7 @@ index e7f7503bb7d..83e6944a2d6 100644
 +#if true
 +                    if (s_traceProfilingEnabled && totalSw != null)
 +                    {
-+                        Debug.WriteLine(
++                        System.Console.WriteLine(
 +                            $"[DepAnalyzer] ComputeMarkedNodes complete: " +
 +                            $"markedNodes={_markedNodes.Count} | " +
 +                            $"totalElapsed={totalSw.ElapsedMilliseconds} ms");
