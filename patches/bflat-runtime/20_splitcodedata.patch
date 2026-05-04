@@ -1,0 +1,337 @@
+diff --git a/src/coreclr/inc/corinfo.h b/src/coreclr/inc/corinfo.h
+index b0d0108a31d..e39b0a6a571 100644
+--- a/src/coreclr/inc/corinfo.h
++++ b/src/coreclr/inc/corinfo.h
+@@ -3407,6 +3407,12 @@ public:
+ // RISCV64 relocation types
+ //
+ #define IMAGE_REL_RISCV64_PC            0x0003
++// Paired pc-relative relocations for an auipc + addi/ld sequence that
++// loads the address of (or value at) a data symbol. Required when the
++// target lives in a separate section from the code (e.g. method roData
++// in .rodata) so the linker, not the JIT, supplies the displacement.
++#define IMAGE_REL_RISCV64_PCREL_HI20    0x0004
++#define IMAGE_REL_RISCV64_PCREL_LO12_I  0x0005
+ 
+ /**********************************************************************************/
+ #ifdef TARGET_64BIT
+diff --git a/src/coreclr/jit/ee_il_dll.cpp b/src/coreclr/jit/ee_il_dll.cpp
+index 9df0a0c29e5..b05bfbe99c6 100644
+--- a/src/coreclr/jit/ee_il_dll.cpp
++++ b/src/coreclr/jit/ee_il_dll.cpp
+@@ -1140,7 +1140,13 @@ void Compiler::eeAllocMem(AllocMemArgs* args, const UNATIVE_OFFSET roDataSection
+ 
+ #endif // DEBUG
+ 
+-#if defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
++// RISCV64 intentionally excluded: keeping JIT roData adjacent to hot code
++// causes jump tables and constants to land inside the .text section in
++// the final ELF (because the AOT object writer sees one contiguous code
++// blob), which breaks Zisk's RomData prover constraints. By NOT inlining
++// the roData block here, the AOT pipeline emits roData as a separate
++// MethodReadOnlyDataNode that lands in .rodata as expected.
++#if defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64)
+ 
+     // For arm64/LoongArch64/RISCV64, we want to allocate JIT data always adjacent to code similar to what native
+     // compiler does.
+@@ -1157,7 +1163,7 @@ void Compiler::eeAllocMem(AllocMemArgs* args, const UNATIVE_OFFSET roDataSection
+     args->hotCodeSize                 = roDataOffset + args->roDataSize;
+     args->roDataSize                  = 0;
+ 
+-#endif // defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
++#endif // defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64)
+ 
+     info.compCompHnd->allocMem(args);
+ 
+@@ -1174,7 +1180,13 @@ void Compiler::eeAllocMem(AllocMemArgs* args, const UNATIVE_OFFSET roDataSection
+ 
+ #endif // DEBUG
+ 
+-#if defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
++// RISCV64 intentionally excluded: keeping JIT roData adjacent to hot code
++// causes jump tables and constants to land inside the .text section in
++// the final ELF (because the AOT object writer sees one contiguous code
++// blob), which breaks Zisk's RomData prover constraints. By NOT inlining
++// the roData block here, the AOT pipeline emits roData as a separate
++// MethodReadOnlyDataNode that lands in .rodata as expected.
++#if defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64)
+ 
+     // Fix up data section pointers.
+     assert(args->roDataBlock == nullptr);
+@@ -1182,7 +1194,7 @@ void Compiler::eeAllocMem(AllocMemArgs* args, const UNATIVE_OFFSET roDataSection
+     args->roDataBlock   = ((BYTE*)args->hotCodeBlock) + roDataOffset;
+     args->roDataBlockRW = ((BYTE*)args->hotCodeBlockRW) + roDataOffset;
+ 
+-#endif // defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
++#endif // defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64)
+ }
+ 
+ void Compiler::eeReserveUnwindInfo(bool isFunclet, bool isColdCode, ULONG unwindSize)
+diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
+index c0c80413a33..5b676db1a48 100644
+--- a/src/coreclr/jit/emitriscv64.cpp
++++ b/src/coreclr/jit/emitriscv64.cpp
+@@ -1045,9 +1045,13 @@ void emitter::emitIns_R_C(
+         id->idOpSize(EA_PTRSIZE);
+     }
+ 
+-    // TODO-RISCV64: this maybe deleted.
+-    id->idSetIsBound(); // We won't patch address since we will know the exact distance
+-                        // once JIT code and data are allocated together.
++    // RISC-V64 used to allocate JIT code and roData adjacent (see
++    // eeAllocMem) and therefore knew the exact code→roData distance at
++    // emit time. We now keep roData as a separate AOT blob (.rodata
++    // section) so the distance is only resolved at link time. Do NOT mark
++    // the instr as bound — emitOutputInstr_OptsRc will leave the auipc
++    // immediate at zero and record an IMAGE_REL_RISCV64_PC relocation
++    // against the roData symbol.
+ 
+     assert(addrReg == REG_NA); // NOTE: for RISV64, not support addrReg != REG_NA.
+ 
+@@ -3008,13 +3012,21 @@ BYTE* emitter::emitOutputInstr_OptsRc(BYTE* dst, const instrDesc* id, instructio
+     const regNumber reg1 = id->idReg1();
+     assert(reg1 != REG_ZERO);
+     assert(id->idCodeSize() == 2 * sizeof(code_t));
+-    const ssize_t immediate = (emitConsBlock - dst) + offset;
+-    assert((immediate > 0) && ((immediate & 0x03) == 0));
+-    assert(isValidSimm32(immediate));
+ 
++    // Emit auipc + (ld/addi) with zero immediates and record a paired
++    // PC-relative relocation: HI20 on the auipc and LO12_I on the
++    // following load/add. The linker substitutes the actual displacement
++    // between the auipc PC and the roData symbol once the .text and
++    // .rodata sections are laid out.
++    BYTE* const     dstBase = dst;
+     const regNumber tempReg = isFloatReg(reg1) ? codeGen->rsGetRsvdReg() : reg1;
+-    dst += emitOutput_UTypeInstr(dst, INS_auipc, tempReg, UpperNBitsOfWordSignExtend<20>(immediate));
+-    dst += emitOutput_ITypeInstr(dst, *ins, reg1, tempReg, LowerNBitsOfWord<12>(immediate));
++    dst += emitOutput_UTypeInstr(dst, INS_auipc, tempReg, 0);
++    dst += emitOutput_ITypeInstr(dst, *ins, reg1, tempReg, 0);
++
++    BYTE* const target = emitConsBlock + offset;
++    emitRecordRelocation(dstBase,     target, IMAGE_REL_RISCV64_PCREL_HI20);
++    emitRecordRelocation(dstBase + 4, target, IMAGE_REL_RISCV64_PCREL_LO12_I);
++
+     return dst;
+ }
+ 
+diff --git a/src/coreclr/tools/Common/Compiler/DependencyAnalysis/ObjectDataBuilder.cs b/src/coreclr/tools/Common/Compiler/DependencyAnalysis/ObjectDataBuilder.cs
+index 53e4671b57a..84ab0407493 100644
+--- a/src/coreclr/tools/Common/Compiler/DependencyAnalysis/ObjectDataBuilder.cs
++++ b/src/coreclr/tools/Common/Compiler/DependencyAnalysis/ObjectDataBuilder.cs
+@@ -301,6 +301,8 @@ public void EmitReloc(ISymbolNode symbol, RelocType relocType, int delta = 0)
+                 case RelocType.IMAGE_REL_BASED_LOONGARCH64_JIR:
+ 
+                 case RelocType.IMAGE_REL_BASED_RISCV64_PC:
++                case RelocType.IMAGE_REL_BASED_RISCV64_PCREL_HI20:
++                case RelocType.IMAGE_REL_BASED_RISCV64_PCREL_LO12_I:
+                     Debug.Assert(delta == 0);
+                     // Do not vacate space for this kind of relocation, because
+                     // the space is embedded in the instruction.
+diff --git a/src/coreclr/tools/Common/Compiler/DependencyAnalysis/Relocation.cs b/src/coreclr/tools/Common/Compiler/DependencyAnalysis/Relocation.cs
+index 91991a6882e..37755f42fd6 100644
+--- a/src/coreclr/tools/Common/Compiler/DependencyAnalysis/Relocation.cs
++++ b/src/coreclr/tools/Common/Compiler/DependencyAnalysis/Relocation.cs
+@@ -30,6 +30,14 @@ public enum RelocType
+         IMAGE_REL_BASED_ARM64_PAGEOFFSET_12A = 0x82,   // ADD/ADDS (immediate) with zero shift, for page offset
+         IMAGE_REL_BASED_ARM64_PAGEOFFSET_12L = 0x83,   // LDR (indexed, unsigned immediate), for page offset
+ 
++        // RISC-V PC-relative paired relocations for data references.
++        // Used for auipc + addi/ld pair where the destination is a data
++        // symbol (e.g. a per-method roData blob in .rodata) that is *not*
++        // adjacent to the code at link time. The HI20 reloc is recorded on
++        // the auipc and LO12_I on the following addi/ld.
++        IMAGE_REL_BASED_RISCV64_PCREL_HI20   = 0x84,   // RISC-V: auipc (HI20 of pc-relative)
++        IMAGE_REL_BASED_RISCV64_PCREL_LO12_I = 0x85,   // RISC-V: addi/ld (LO12 of pc-relative)
++
+         //
+         // Relocation operators related to TLS access
+         //
+@@ -488,6 +496,58 @@ private static unsafe void PutRiscV64PC(uint* pCode, long imm32)
+             Debug.Assert(GetRiscV64PC(pCode) == imm32);
+         }
+ 
++        // Patch the HI20 of a single auipc with the upper 20 bits of imm32
++        // (after rounding for the sign of the LO12 part). The lower 12 bits
++        // are emitted by the matching IMAGE_REL_BASED_RISCV64_PCREL_LO12_I
++        // relocation on the following instruction.
++        private static unsafe void PutRiscV64PcrelHi20(uint* pCode, long imm32)
++        {
++            Debug.Assert((imm32 >= (long)-0x80000000 - 0x800) && (imm32 < (long)0x80000000 - 0x800));
++
++            uint auipcInstr = *pCode;
++            Debug.Assert((auipcInstr & 0x7f) == 0x00000017); // auipc opcode
++            auipcInstr = (auipcInstr & 0x00000fff) | (uint)((imm32 + 0x800) & 0xfffff000);
++            *pCode = auipcInstr;
++        }
++
++        private static unsafe int GetRiscV64PcrelHi20(uint* pCode)
++        {
++            uint auipcInstr = *pCode;
++            Debug.Assert((auipcInstr & 0x7f) == 0x00000017);
++            return (int)(auipcInstr & 0xfffff000);
++        }
++
++        // Patch the LO12 of a single I-type instruction. Accepts the same
++        // forms as PutRiscV64PC (addi/jalr/ld) plus flw/fld since FP
++        // constants also flow through emitOutputInstr_OptsRc.
++        private static unsafe bool IsValidRiscV64Lo12Instr(uint instr)
++        {
++            uint masked = instr & 0x707f;
++            return masked == 0x00000013    // addi
++                || masked == 0x00000067    // jalr
++                || masked == 0x00003003    // ld
++                || masked == 0x00002007    // flw
++                || masked == 0x00003007;   // fld
++        }
++
++        private static unsafe void PutRiscV64PcrelLo12(uint* pCode, long imm32)
++        {
++            Debug.Assert((imm32 >= (long)-0x80000000 - 0x800) && (imm32 < (long)0x80000000 - 0x800));
++
++            int doff = (int)(imm32 & 0xfff);
++            uint instr = *pCode;
++            Debug.Assert(IsValidRiscV64Lo12Instr(instr));
++            instr = (instr & 0x000fffff) | (uint)((doff & 0xfff) << 20);
++            *pCode = instr;
++        }
++
++        private static unsafe int GetRiscV64PcrelLo12(uint* pCode)
++        {
++            uint instr = *pCode;
++            Debug.Assert(IsValidRiscV64Lo12Instr(instr));
++            return ((int)instr) >> 20;
++        }
++
+         public Relocation(RelocType relocType, int offset, ISymbolNode target)
+         {
+             RelocType = relocType;
+@@ -548,6 +608,12 @@ public static unsafe void WriteValue(RelocType relocType, void* location, long v
+                 case RelocType.IMAGE_REL_BASED_RISCV64_PC:
+                     PutRiscV64PC((uint*)location, value);
+                     break;
++                case RelocType.IMAGE_REL_BASED_RISCV64_PCREL_HI20:
++                    PutRiscV64PcrelHi20((uint*)location, value);
++                    break;
++                case RelocType.IMAGE_REL_BASED_RISCV64_PCREL_LO12_I:
++                    PutRiscV64PcrelLo12((uint*)location, value);
++                    break;
+                 default:
+                     Debug.Fail("Invalid RelocType: " + relocType);
+                     break;
+@@ -615,6 +681,10 @@ public static unsafe long ReadValue(RelocType relocType, void* location)
+                     return (long)GetLoongArch64JIR((uint*)location);
+                 case RelocType.IMAGE_REL_BASED_RISCV64_PC:
+                     return (long)GetRiscV64PC((uint*)location);
++                case RelocType.IMAGE_REL_BASED_RISCV64_PCREL_HI20:
++                    return (long)GetRiscV64PcrelHi20((uint*)location);
++                case RelocType.IMAGE_REL_BASED_RISCV64_PCREL_LO12_I:
++                    return (long)GetRiscV64PcrelLo12((uint*)location);
+                 default:
+                     Debug.Fail("Invalid RelocType: " + relocType);
+                     return 0;
+diff --git a/src/coreclr/tools/Common/Compiler/DependencyAnalysis/Target_RiscV64/RiscV64Emitter.cs b/src/coreclr/tools/Common/Compiler/DependencyAnalysis/Target_RiscV64/RiscV64Emitter.cs
+index 380163ed2fb..b89e07fc3b8 100644
+--- a/src/coreclr/tools/Common/Compiler/DependencyAnalysis/Target_RiscV64/RiscV64Emitter.cs
++++ b/src/coreclr/tools/Common/Compiler/DependencyAnalysis/Target_RiscV64/RiscV64Emitter.cs
+@@ -43,10 +43,17 @@ public void EmitMOV(Register regDst, Register regSrc)
+ 
+         public void EmitMOV(Register regDst, ISymbolNode symbol)
+         {
+-            Builder.EmitReloc(symbol, RelocType.IMAGE_REL_BASED_RISCV64_PC);
+-            //auipc reg, off-hi-20bits
++            // Loading the address of a data symbol via auipc + addi. We
++            // emit a paired PC-relative relocation (HI20 on the auipc,
++            // LO12_I on the addi) so the linker resolves the immediate
++            // when .text and the symbol's section are placed; using
++            // IMAGE_REL_BASED_RISCV64_PC (which maps to R_RISCV_CALL_PLT)
++            // here would route data references through the PLT.
++            Builder.EmitReloc(symbol, RelocType.IMAGE_REL_BASED_RISCV64_PCREL_HI20);
++            // auipc reg, off-hi-20bits
+             EmitPC(regDst);
+-            //addi reg, reg, off-lo-12bits
++            Builder.EmitReloc(symbol, RelocType.IMAGE_REL_BASED_RISCV64_PCREL_LO12_I);
++            // addi reg, reg, off-lo-12bits
+             EmitADDI(regDst, regDst, 0);
+         }
+ 
+diff --git a/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs b/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
+index e6fd0d4f7f8..b4d486a2727 100644
+--- a/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
++++ b/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
+@@ -4050,11 +4050,17 @@ private static RelocType GetRelocType(TargetArchitecture targetArchitecture, ush
+                 case TargetArchitecture.RiscV64:
+                 {
+                     const ushort IMAGE_REL_RISCV64_PC = 3;
++                    const ushort IMAGE_REL_RISCV64_PCREL_HI20 = 4;
++                    const ushort IMAGE_REL_RISCV64_PCREL_LO12_I = 5;
+ 
+                     switch (fRelocType)
+                     {
+                         case IMAGE_REL_RISCV64_PC:
+                             return RelocType.IMAGE_REL_BASED_RISCV64_PC;
++                        case IMAGE_REL_RISCV64_PCREL_HI20:
++                            return RelocType.IMAGE_REL_BASED_RISCV64_PCREL_HI20;
++                        case IMAGE_REL_RISCV64_PCREL_LO12_I:
++                            return RelocType.IMAGE_REL_BASED_RISCV64_PCREL_LO12_I;
+                         default:
+                             Debug.Fail("Invalid RelocType: " + fRelocType);
+                             return 0;
+diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/ElfObjectWriter.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/ElfObjectWriter.cs
+index 5204eb587c6..cc0b7943f7f 100644
+--- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/ElfObjectWriter.cs
++++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/ElfObjectWriter.cs
+@@ -561,6 +561,8 @@ private void EmitRelocationsRiscV64(int sectionIndex, List<SymbolicRelocation> r
+                         IMAGE_REL_BASED_HIGHLOW => R_RISCV_32,
+                         IMAGE_REL_BASED_RELPTR32 => R_RISCV_32_PCREL,
+                         IMAGE_REL_BASED_RISCV64_PC => R_RISCV_CALL_PLT,
++                        IMAGE_REL_BASED_RISCV64_PCREL_HI20 => R_RISCV_PCREL_HI20,
++                        IMAGE_REL_BASED_RISCV64_PCREL_LO12_I => R_RISCV_PCREL_LO12_I,
+                         _ => throw new NotSupportedException("Unknown relocation type: " + symbolicRelocation.Type)
+                     };
+ 
+diff --git a/src/coreclr/tools/superpmi/superpmi-shared/compileresult.cpp b/src/coreclr/tools/superpmi/superpmi-shared/compileresult.cpp
+index e878cd59d82..8f51e019435 100644
+--- a/src/coreclr/tools/superpmi/superpmi-shared/compileresult.cpp
++++ b/src/coreclr/tools/superpmi/superpmi-shared/compileresult.cpp
+@@ -926,6 +926,18 @@ void CompileResult::applyRelocs(RelocContext* rc, unsigned char* block1, ULONG b
+                 }
+                 break;
+ 
++                case IMAGE_REL_RISCV64_PCREL_HI20:
++                case IMAGE_REL_RISCV64_PCREL_LO12_I:
++                {
++                    // Paired pc-relative data load relocs are resolved at
++                    // link time by the host's ObjectWriter. SuperPMI does
++                    // not link, so we can leave the immediates at zero
++                    // here — what matters for SPMI replay is the JIT
++                    // emission, not the final patched bytes.
++                    wasRelocHandled = true;
++                }
++                break;
++
+                 default:
+                     break;
+             }
+diff --git a/src/coreclr/vm/jitinterface.cpp b/src/coreclr/vm/jitinterface.cpp
+index 74bab557b44..b6de7b09843 100644
+--- a/src/coreclr/vm/jitinterface.cpp
++++ b/src/coreclr/vm/jitinterface.cpp
+@@ -11930,6 +11930,17 @@ void CEEJitInfo::recordRelocation(void * location,
+         }
+         break;
+ 
++    case IMAGE_REL_RISCV64_PCREL_HI20:
++    case IMAGE_REL_RISCV64_PCREL_LO12_I:
++        {
++            // Paired pc-relative relocs are only used by the AOT compiler,
++            // where they are resolved at link time. The runtime JIT keeps
++            // code+roData adjacent, so it never needs to patch a partial
++            // half here. Treat as no-op so VM doesn't assert.
++            _ASSERTE(addlDelta == 0);
++        }
++        break;
++
+ #endif // TARGET_RISCV64
+ 
+     default:
