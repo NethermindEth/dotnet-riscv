@@ -291,7 +291,7 @@ index 5204eb587c6..cc0b7943f7f 100644
                      };
  
 diff --git a/src/coreclr/tools/aot/ILCompiler.ReadyToRun/ObjectWriter/RelocationHelper.cs b/src/coreclr/tools/aot/ILCompiler.ReadyToRun/ObjectWriter/RelocationHelper.cs
-index 6a2501482ab..1d45561ee69 100644
+index 6a2501482ab..1c1e48fbe37 100644
 --- a/src/coreclr/tools/aot/ILCompiler.ReadyToRun/ObjectWriter/RelocationHelper.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.ReadyToRun/ObjectWriter/RelocationHelper.cs
 @@ -240,6 +240,27 @@ public void ProcessRelocation(RelocType relocationType, int sourceRVA, int targe
@@ -322,17 +322,20 @@ index 6a2501482ab..1d45561ee69 100644
                  default:
                      throw new NotSupportedException();
              }
-@@ -257,7 +278,9 @@ public void ProcessRelocation(RelocType relocationType, int sourceRVA, int targe
+@@ -253,6 +274,13 @@ public void ProcessRelocation(RelocType relocationType, int sourceRVA, int targe
+                     {
+                         long value = Relocation.ReadValue(relocationType, bufferContent);
+                         // Supporting non-zero values for ARM64 would require refactoring this function
++                        // Non-zero addends carried in the instruction
++                        // immediate are fine for the RISC-V PCREL_HI20 /
++                        // PCREL_LO12_I pair: each helper patches only its
++                        // own instruction, and value+delta produces the
++                        // full target-relative displacement (target -
++                        // auipc_PC). The other entries in this guard list
++                        // do not have this property and still throw.
+                         if (((relocationType == RelocType.IMAGE_REL_BASED_ARM64_PAGEBASE_REL21) ||
                               (relocationType == RelocType.IMAGE_REL_BASED_ARM64_PAGEOFFSET_12A) ||
                               (relocationType == RelocType.IMAGE_REL_BASED_LOONGARCH64_PC) ||
-                              (relocationType == RelocType.IMAGE_REL_BASED_LOONGARCH64_JIR) ||
--                             (relocationType == RelocType.IMAGE_REL_BASED_RISCV64_PC)
-+                             (relocationType == RelocType.IMAGE_REL_BASED_RISCV64_PC) ||
-+                             (relocationType == RelocType.IMAGE_REL_BASED_RISCV64_PCREL_HI20) ||
-+                             (relocationType == RelocType.IMAGE_REL_BASED_RISCV64_PCREL_LO12_I)
-                              ) && (value != 0))
-                         {
-                             throw new NotSupportedException();
 diff --git a/src/coreclr/tools/superpmi/superpmi-shared/compileresult.cpp b/src/coreclr/tools/superpmi/superpmi-shared/compileresult.cpp
 index e878cd59d82..8f51e019435 100644
 --- a/src/coreclr/tools/superpmi/superpmi-shared/compileresult.cpp
