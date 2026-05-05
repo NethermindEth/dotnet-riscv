@@ -68,7 +68,7 @@ index 9df0a0c29e5..b05bfbe99c6 100644
  
  void Compiler::eeReserveUnwindInfo(bool isFunclet, bool isColdCode, ULONG unwindSize)
 diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
-index c0c80413a33..5b676db1a48 100644
+index c0c80413a33..6fe308d3993 100644
 --- a/src/coreclr/jit/emitriscv64.cpp
 +++ b/src/coreclr/jit/emitriscv64.cpp
 @@ -1045,9 +1045,13 @@ void emitter::emitIns_R_C(
@@ -88,7 +88,26 @@ index c0c80413a33..5b676db1a48 100644
  
      assert(addrReg == REG_NA); // NOTE: for RISV64, not support addrReg != REG_NA.
  
-@@ -3008,13 +3012,21 @@ BYTE* emitter::emitOutputInstr_OptsRc(BYTE* dst, const instrDesc* id, instructio
+@@ -2990,7 +2994,17 @@ BYTE* emitter::emitOutputInstr_OptsReloc(BYTE* dst, const instrDesc* id, instruc
+ 
+     dst += emitOutput_ITypeInstr(dst, *ins, reg1, reg1, 0);
+ 
+-    emitRecordRelocation(dstBase, id->idAddr()->iiaAddr, IMAGE_REL_RISCV64_PC);
++    // Use paired PC-relative relocations against the data target so the
++    // linker resolves auipc+addi (take address of) / auipc+ld (load value
++    // at address) cross-section. Emitting a single
++    // IMAGE_REL_BASED_RISCV64_PC (R_RISCV_CALL_PLT) here would force the
++    // linker to keep the target adjacent to the auipc — which causes
++    // helper-pointer slots, jump-table entries and other AOT data nodes
++    // to bleed into .text. HI20/LO12_I lets each side patch its own
++    // immediate independently and lets the target live in .rodata/.data.
++    BYTE* const target = id->idAddr()->iiaAddr;
++    emitRecordRelocation(dstBase,     target, IMAGE_REL_RISCV64_PCREL_HI20);
++    emitRecordRelocation(dstBase + 4, target, IMAGE_REL_RISCV64_PCREL_LO12_I);
+ 
+     return dst;
+ }
+@@ -3008,13 +3022,21 @@ BYTE* emitter::emitOutputInstr_OptsRc(BYTE* dst, const instrDesc* id, instructio
      const regNumber reg1 = id->idReg1();
      assert(reg1 != REG_ZERO);
      assert(id->idCodeSize() == 2 * sizeof(code_t));
