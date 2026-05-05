@@ -68,10 +68,10 @@ index 9df0a0c29e5..b05bfbe99c6 100644
  
  void Compiler::eeReserveUnwindInfo(bool isFunclet, bool isColdCode, ULONG unwindSize)
 diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
-index c0c80413a33..6fe308d3993 100644
+index c0c80413a33..95c29054bbb 100644
 --- a/src/coreclr/jit/emitriscv64.cpp
 +++ b/src/coreclr/jit/emitriscv64.cpp
-@@ -1045,9 +1045,13 @@ void emitter::emitIns_R_C(
+@@ -1045,9 +1045,14 @@ void emitter::emitIns_R_C(
          id->idOpSize(EA_PTRSIZE);
      }
  
@@ -82,13 +82,14 @@ index c0c80413a33..6fe308d3993 100644
 +    // eeAllocMem) and therefore knew the exact code→roData distance at
 +    // emit time. We now keep roData as a separate AOT blob (.rodata
 +    // section) so the distance is only resolved at link time. Do NOT mark
-+    // the instr as bound — emitOutputInstr_OptsRc will leave the auipc
-+    // immediate at zero and record an IMAGE_REL_RISCV64_PC relocation
-+    // against the roData symbol.
++    // the instr as bound — emitOutputInstr_OptsRc will leave both the
++    // auipc and addi/ld immediates at zero and record paired
++    // IMAGE_REL_RISCV64_PCREL_HI20 / IMAGE_REL_RISCV64_PCREL_LO12_I
++    // relocations against the roData symbol.
  
      assert(addrReg == REG_NA); // NOTE: for RISV64, not support addrReg != REG_NA.
  
-@@ -2990,7 +2994,17 @@ BYTE* emitter::emitOutputInstr_OptsReloc(BYTE* dst, const instrDesc* id, instruc
+@@ -2990,7 +2995,17 @@ BYTE* emitter::emitOutputInstr_OptsReloc(BYTE* dst, const instrDesc* id, instruc
  
      dst += emitOutput_ITypeInstr(dst, *ins, reg1, reg1, 0);
  
@@ -107,7 +108,7 @@ index c0c80413a33..6fe308d3993 100644
  
      return dst;
  }
-@@ -3008,13 +3022,21 @@ BYTE* emitter::emitOutputInstr_OptsRc(BYTE* dst, const instrDesc* id, instructio
+@@ -3008,13 +3023,21 @@ BYTE* emitter::emitOutputInstr_OptsRc(BYTE* dst, const instrDesc* id, instructio
      const regNumber reg1 = id->idReg1();
      assert(reg1 != REG_ZERO);
      assert(id->idCodeSize() == 2 * sizeof(code_t));
@@ -297,10 +298,15 @@ index e6fd0d4f7f8..b4d486a2727 100644
                              Debug.Fail("Invalid RelocType: " + fRelocType);
                              return 0;
 diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/ElfObjectWriter.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/ElfObjectWriter.cs
-index 5204eb587c6..cc0b7943f7f 100644
+index 5204eb587c6..033f8841da0 100644
 --- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/ElfObjectWriter.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/ElfObjectWriter.cs
-@@ -561,6 +561,8 @@ private void EmitRelocationsRiscV64(int sectionIndex, List<SymbolicRelocation> r
+@@ -557,10 +557,13 @@ private void EmitRelocationsRiscV64(int sectionIndex, List<SymbolicRelocation> r
+                     uint symbolIndex = _symbolNameToIndex[symbolicRelocation.SymbolName];
+                     uint type = symbolicRelocation.Type switch
+                     {
++                        IMAGE_REL_BASED_ABSOLUTE => R_RISCV_NONE,
+                         IMAGE_REL_BASED_DIR64 => R_RISCV_64,
                          IMAGE_REL_BASED_HIGHLOW => R_RISCV_32,
                          IMAGE_REL_BASED_RELPTR32 => R_RISCV_32_PCREL,
                          IMAGE_REL_BASED_RISCV64_PC => R_RISCV_CALL_PLT,
@@ -379,21 +385,36 @@ index e878cd59d82..8f51e019435 100644
                      break;
              }
 diff --git a/src/coreclr/vm/jitinterface.cpp b/src/coreclr/vm/jitinterface.cpp
-index 74bab557b44..b6de7b09843 100644
+index 74bab557b44..9e20e17ca96 100644
 --- a/src/coreclr/vm/jitinterface.cpp
 +++ b/src/coreclr/vm/jitinterface.cpp
-@@ -11930,6 +11930,17 @@ void CEEJitInfo::recordRelocation(void * location,
+@@ -11930,6 +11930,32 @@ void CEEJitInfo::recordRelocation(void * location,
          }
          break;
  
 +    case IMAGE_REL_RISCV64_PCREL_HI20:
++        {
++            // Patch the auipc upper-20 immediate. The matching LO12_I
++            // reloc patches the following addi/ld independently. The
++            // displacement (target - auipc_PC) is rounded by +0x800 so
++            // that the signed 12-bit LO12 immediate produces the correct
++            // sum after auipc sign-extends the upper 20.
++            _ASSERTE(addlDelta == 0);
++            INT64 offset = (INT64)target - (INT64)location;
++            UINT32 *p = (UINT32 *)locationRW;
++            *p = (*p & 0x00000fffu) | (UINT32)((offset + 0x800) & 0xfffff000u);
++        }
++        break;
++
 +    case IMAGE_REL_RISCV64_PCREL_LO12_I:
 +        {
-+            // Paired pc-relative relocs are only used by the AOT compiler,
-+            // where they are resolved at link time. The runtime JIT keeps
-+            // code+roData adjacent, so it never needs to patch a partial
-+            // half here. Treat as no-op so VM doesn't assert.
++            // Patch the addi/ld imm[11:0]. The auipc is 4 bytes before
++            // this location; recompute the displacement from there so it
++            // matches the auipc's HI20 calculation exactly.
 +            _ASSERTE(addlDelta == 0);
++            INT64 offset = (INT64)target - (INT64)((BYTE*)location - 4);
++            UINT32 *p = (UINT32 *)locationRW;
++            *p = (*p & 0x000fffffu) | (UINT32)((offset & 0xfff) << 20);
 +        }
 +        break;
 +
