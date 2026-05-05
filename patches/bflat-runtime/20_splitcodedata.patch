@@ -1,8 +1,7 @@
 diff --git a/src/coreclr/inc/corinfo.h b/src/coreclr/inc/corinfo.h
-index b0d0108a31d..e39b0a6a571 100644
 --- a/src/coreclr/inc/corinfo.h
 +++ b/src/coreclr/inc/corinfo.h
-@@ -3407,6 +3407,12 @@ public:
+@@ -3407,6 +3407,12 @@
  // RISCV64 relocation types
  //
  #define IMAGE_REL_RISCV64_PC            0x0003
@@ -16,10 +15,9 @@ index b0d0108a31d..e39b0a6a571 100644
  /**********************************************************************************/
  #ifdef TARGET_64BIT
 diff --git a/src/coreclr/jit/ee_il_dll.cpp b/src/coreclr/jit/ee_il_dll.cpp
-index 9df0a0c29e5..b05bfbe99c6 100644
 --- a/src/coreclr/jit/ee_il_dll.cpp
 +++ b/src/coreclr/jit/ee_il_dll.cpp
-@@ -1140,7 +1140,13 @@ void Compiler::eeAllocMem(AllocMemArgs* args, const UNATIVE_OFFSET roDataSection
+@@ -1140,7 +1140,13 @@
  
  #endif // DEBUG
  
@@ -34,7 +32,7 @@ index 9df0a0c29e5..b05bfbe99c6 100644
  
      // For arm64/LoongArch64/RISCV64, we want to allocate JIT data always adjacent to code similar to what native
      // compiler does.
-@@ -1157,7 +1163,7 @@ void Compiler::eeAllocMem(AllocMemArgs* args, const UNATIVE_OFFSET roDataSection
+@@ -1157,7 +1163,7 @@
      args->hotCodeSize                 = roDataOffset + args->roDataSize;
      args->roDataSize                  = 0;
  
@@ -43,7 +41,7 @@ index 9df0a0c29e5..b05bfbe99c6 100644
  
      info.compCompHnd->allocMem(args);
  
-@@ -1174,7 +1180,13 @@ void Compiler::eeAllocMem(AllocMemArgs* args, const UNATIVE_OFFSET roDataSection
+@@ -1174,7 +1180,13 @@
  
  #endif // DEBUG
  
@@ -58,7 +56,7 @@ index 9df0a0c29e5..b05bfbe99c6 100644
  
      // Fix up data section pointers.
      assert(args->roDataBlock == nullptr);
-@@ -1182,7 +1194,7 @@ void Compiler::eeAllocMem(AllocMemArgs* args, const UNATIVE_OFFSET roDataSection
+@@ -1182,7 +1194,7 @@
      args->roDataBlock   = ((BYTE*)args->hotCodeBlock) + roDataOffset;
      args->roDataBlockRW = ((BYTE*)args->hotCodeBlockRW) + roDataOffset;
  
@@ -68,10 +66,9 @@ index 9df0a0c29e5..b05bfbe99c6 100644
  
  void Compiler::eeReserveUnwindInfo(bool isFunclet, bool isColdCode, ULONG unwindSize)
 diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
-index c0c80413a33..95c29054bbb 100644
 --- a/src/coreclr/jit/emitriscv64.cpp
 +++ b/src/coreclr/jit/emitriscv64.cpp
-@@ -1045,9 +1045,14 @@ void emitter::emitIns_R_C(
+@@ -1045,9 +1045,14 @@
          id->idOpSize(EA_PTRSIZE);
      }
  
@@ -89,7 +86,7 @@ index c0c80413a33..95c29054bbb 100644
  
      assert(addrReg == REG_NA); // NOTE: for RISV64, not support addrReg != REG_NA.
  
-@@ -2990,7 +2995,17 @@ BYTE* emitter::emitOutputInstr_OptsReloc(BYTE* dst, const instrDesc* id, instruc
+@@ -3016,7 +3021,17 @@
  
      dst += emitOutput_ITypeInstr(dst, *ins, reg1, reg1, 0);
  
@@ -108,7 +105,7 @@ index c0c80413a33..95c29054bbb 100644
  
      return dst;
  }
-@@ -3008,13 +3023,21 @@ BYTE* emitter::emitOutputInstr_OptsRc(BYTE* dst, const instrDesc* id, instructio
+@@ -3034,13 +3049,21 @@
      const regNumber reg1 = id->idReg1();
      assert(reg1 != REG_ZERO);
      assert(id->idCodeSize() == 2 * sizeof(code_t));
@@ -136,10 +133,9 @@ index c0c80413a33..95c29054bbb 100644
  }
  
 diff --git a/src/coreclr/tools/Common/Compiler/DependencyAnalysis/ObjectDataBuilder.cs b/src/coreclr/tools/Common/Compiler/DependencyAnalysis/ObjectDataBuilder.cs
-index 53e4671b57a..84ab0407493 100644
 --- a/src/coreclr/tools/Common/Compiler/DependencyAnalysis/ObjectDataBuilder.cs
 +++ b/src/coreclr/tools/Common/Compiler/DependencyAnalysis/ObjectDataBuilder.cs
-@@ -301,6 +301,8 @@ public void EmitReloc(ISymbolNode symbol, RelocType relocType, int delta = 0)
+@@ -301,6 +301,8 @@
                  case RelocType.IMAGE_REL_BASED_LOONGARCH64_JIR:
  
                  case RelocType.IMAGE_REL_BASED_RISCV64_PC:
@@ -149,10 +145,9 @@ index 53e4671b57a..84ab0407493 100644
                      // Do not vacate space for this kind of relocation, because
                      // the space is embedded in the instruction.
 diff --git a/src/coreclr/tools/Common/Compiler/DependencyAnalysis/Relocation.cs b/src/coreclr/tools/Common/Compiler/DependencyAnalysis/Relocation.cs
-index 91991a6882e..37755f42fd6 100644
 --- a/src/coreclr/tools/Common/Compiler/DependencyAnalysis/Relocation.cs
 +++ b/src/coreclr/tools/Common/Compiler/DependencyAnalysis/Relocation.cs
-@@ -30,6 +30,14 @@ public enum RelocType
+@@ -30,6 +30,14 @@
          IMAGE_REL_BASED_ARM64_PAGEOFFSET_12A = 0x82,   // ADD/ADDS (immediate) with zero shift, for page offset
          IMAGE_REL_BASED_ARM64_PAGEOFFSET_12L = 0x83,   // LDR (indexed, unsigned immediate), for page offset
  
@@ -167,7 +162,7 @@ index 91991a6882e..37755f42fd6 100644
          //
          // Relocation operators related to TLS access
          //
-@@ -488,6 +496,58 @@ private static unsafe void PutRiscV64PC(uint* pCode, long imm32)
+@@ -488,6 +496,58 @@
              Debug.Assert(GetRiscV64PC(pCode) == imm32);
          }
  
@@ -226,7 +221,7 @@ index 91991a6882e..37755f42fd6 100644
          public Relocation(RelocType relocType, int offset, ISymbolNode target)
          {
              RelocType = relocType;
-@@ -548,6 +608,12 @@ public static unsafe void WriteValue(RelocType relocType, void* location, long v
+@@ -548,6 +608,12 @@
                  case RelocType.IMAGE_REL_BASED_RISCV64_PC:
                      PutRiscV64PC((uint*)location, value);
                      break;
@@ -239,7 +234,7 @@ index 91991a6882e..37755f42fd6 100644
                  default:
                      Debug.Fail("Invalid RelocType: " + relocType);
                      break;
-@@ -615,6 +681,10 @@ public static unsafe long ReadValue(RelocType relocType, void* location)
+@@ -615,6 +681,10 @@
                      return (long)GetLoongArch64JIR((uint*)location);
                  case RelocType.IMAGE_REL_BASED_RISCV64_PC:
                      return (long)GetRiscV64PC((uint*)location);
@@ -251,10 +246,9 @@ index 91991a6882e..37755f42fd6 100644
                      Debug.Fail("Invalid RelocType: " + relocType);
                      return 0;
 diff --git a/src/coreclr/tools/Common/Compiler/DependencyAnalysis/Target_RiscV64/RiscV64Emitter.cs b/src/coreclr/tools/Common/Compiler/DependencyAnalysis/Target_RiscV64/RiscV64Emitter.cs
-index 380163ed2fb..b89e07fc3b8 100644
 --- a/src/coreclr/tools/Common/Compiler/DependencyAnalysis/Target_RiscV64/RiscV64Emitter.cs
 +++ b/src/coreclr/tools/Common/Compiler/DependencyAnalysis/Target_RiscV64/RiscV64Emitter.cs
-@@ -43,10 +43,17 @@ public void EmitMOV(Register regDst, Register regSrc)
+@@ -43,10 +43,17 @@
  
          public void EmitMOV(Register regDst, ISymbolNode symbol)
          {
@@ -276,10 +270,9 @@ index 380163ed2fb..b89e07fc3b8 100644
          }
  
 diff --git a/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs b/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
-index e6fd0d4f7f8..b4d486a2727 100644
 --- a/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
 +++ b/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
-@@ -4050,11 +4050,17 @@ private static RelocType GetRelocType(TargetArchitecture targetArchitecture, ush
+@@ -4050,11 +4050,17 @@
                  case TargetArchitecture.RiscV64:
                  {
                      const ushort IMAGE_REL_RISCV64_PC = 3;
@@ -298,10 +291,57 @@ index e6fd0d4f7f8..b4d486a2727 100644
                              Debug.Fail("Invalid RelocType: " + fRelocType);
                              return 0;
 diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/ElfObjectWriter.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/ElfObjectWriter.cs
-index 5204eb587c6..033f8841da0 100644
 --- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/ElfObjectWriter.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/ElfObjectWriter.cs
-@@ -557,10 +557,13 @@ private void EmitRelocationsRiscV64(int sectionIndex, List<SymbolicRelocation> r
+@@ -45,6 +45,14 @@
+         // Symbol table
+         private readonly Dictionary<string, uint> _symbolNameToIndex = new();
+ 
++        // Local labels emitted at every R_RISCV_PCREL_HI20 site so the matching
++        // R_RISCV_PCREL_LO12_I can reference them. lld and GNU ld implement the
++        // RISC-V psABI's "the LO12 reloc's symbol must point at the auipc that
++        // owns the matching HI20" rule strictly; targeting the data symbol
++        // directly with the LO12 reloc produces "without an associated
++        // R_RISCV_PCREL_HI20" link errors.
++        private readonly HashSet<string> _riscv64PcrelHiLabels = new(StringComparer.Ordinal);
++
+         private Dictionary<int, (SectionWriter ExidxSectionWriter, SectionWriter ExtabSectionWriter)> _armUnwindSections;
+         private static readonly ObjectNodeSection ArmUnwindIndexSection = new ObjectNodeSection(".ARM.exidx", SectionType.UnwindData);
+         private static readonly ObjectNodeSection ArmUnwindTableSection = new ObjectNodeSection(".ARM.extab", SectionType.ReadOnly);
+@@ -250,6 +258,32 @@
+                 }
+             }
+ 
++            if (_machine == EM_RISCV)
++            {
++                if (relocType == IMAGE_REL_BASED_RISCV64_PCREL_HI20)
++                {
++                    // Emit a local STT_NOTYPE label at this auipc PC. The
++                    // matching LO12_I reloc will reference this label rather
++                    // than the data target, satisfying the linker's pairing
++                    // requirement.
++                    string label = $".LRISCVPCRELHI_{sectionIndex}_{offset:x}";
++                    if (_riscv64PcrelHiLabels.Add(label))
++                    {
++                        EmitSymbolDefinition(sectionIndex, label, offset);
++                    }
++                }
++                else if (relocType == IMAGE_REL_BASED_RISCV64_PCREL_LO12_I)
++                {
++                    // Retarget the LO12_I to the local label at the matching
++                    // auipc (4 bytes earlier in the same section). The linker
++                    // walks back to that label to find the HI20 reloc whose
++                    // S+A-P determines the displacement; LO12 is then the
++                    // lower 12 bits of that displacement.
++                    symbolName = $".LRISCVPCRELHI_{sectionIndex}_{(offset - 4):x}";
++                    addend = 0;
++                }
++            }
++
+             base.EmitRelocation(sectionIndex, offset, data, relocType, symbolName, addend);
+         }
+ 
+@@ -557,10 +591,13 @@
                      uint symbolIndex = _symbolNameToIndex[symbolicRelocation.SymbolName];
                      uint type = symbolicRelocation.Type switch
                      {
@@ -316,10 +356,9 @@ index 5204eb587c6..033f8841da0 100644
                      };
  
 diff --git a/src/coreclr/tools/aot/ILCompiler.ReadyToRun/ObjectWriter/RelocationHelper.cs b/src/coreclr/tools/aot/ILCompiler.ReadyToRun/ObjectWriter/RelocationHelper.cs
-index 6a2501482ab..1c1e48fbe37 100644
 --- a/src/coreclr/tools/aot/ILCompiler.ReadyToRun/ObjectWriter/RelocationHelper.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.ReadyToRun/ObjectWriter/RelocationHelper.cs
-@@ -240,6 +240,27 @@ public void ProcessRelocation(RelocType relocationType, int sourceRVA, int targe
+@@ -240,6 +240,27 @@
                          break;
                      }
  
@@ -347,7 +386,7 @@ index 6a2501482ab..1c1e48fbe37 100644
                  default:
                      throw new NotSupportedException();
              }
-@@ -253,6 +274,13 @@ public void ProcessRelocation(RelocType relocationType, int sourceRVA, int targe
+@@ -253,6 +274,13 @@
                      {
                          long value = Relocation.ReadValue(relocationType, bufferContent);
                          // Supporting non-zero values for ARM64 would require refactoring this function
@@ -362,10 +401,9 @@ index 6a2501482ab..1c1e48fbe37 100644
                               (relocationType == RelocType.IMAGE_REL_BASED_ARM64_PAGEOFFSET_12A) ||
                               (relocationType == RelocType.IMAGE_REL_BASED_LOONGARCH64_PC) ||
 diff --git a/src/coreclr/tools/superpmi/superpmi-shared/compileresult.cpp b/src/coreclr/tools/superpmi/superpmi-shared/compileresult.cpp
-index e878cd59d82..8f51e019435 100644
 --- a/src/coreclr/tools/superpmi/superpmi-shared/compileresult.cpp
 +++ b/src/coreclr/tools/superpmi/superpmi-shared/compileresult.cpp
-@@ -926,6 +926,18 @@ void CompileResult::applyRelocs(RelocContext* rc, unsigned char* block1, ULONG b
+@@ -926,6 +926,18 @@
                  }
                  break;
  
@@ -385,10 +423,9 @@ index e878cd59d82..8f51e019435 100644
                      break;
              }
 diff --git a/src/coreclr/vm/jitinterface.cpp b/src/coreclr/vm/jitinterface.cpp
-index 74bab557b44..9e20e17ca96 100644
 --- a/src/coreclr/vm/jitinterface.cpp
 +++ b/src/coreclr/vm/jitinterface.cpp
-@@ -11930,6 +11930,32 @@ void CEEJitInfo::recordRelocation(void * location,
+@@ -11930,6 +11930,32 @@
          }
          break;
  
