@@ -1,14 +1,14 @@
 diff --git a/src/coreclr/runtime/riscv64/StubDispatch.S b/src/coreclr/runtime/riscv64/StubDispatch.S
-index 01ddd05a0fe..265b6d2cbd1 100644
+index 4dafc370c95..c855e20f244 100644
 --- a/src/coreclr/runtime/riscv64/StubDispatch.S
 +++ b/src/coreclr/runtime/riscv64/StubDispatch.S
 @@ -107,7 +107,9 @@
          //  t1: parameter of the thunk's target
          PREPARE_EXTERNAL_VAR RhpCidResolve, t0
          mv t1, t5
--        tail       C_FUNC(RhpUniversalTransitionTailCall)
+-        tail       C_FUNC(RhpUniversalTransition_DebugStepTailCall)
 +1:
-+        auipc t2, %pcrel_hi(C_FUNC(RhpUniversalTransitionTailCall))
++        auipc t2, %pcrel_hi(C_FUNC(RhpUniversalTransition_DebugStepTailCall))
 +        jalr  x0, t2, %pcrel_lo(1b)
      LEAF_END RhpInterfaceDispatchSlow, _TEXT
  
