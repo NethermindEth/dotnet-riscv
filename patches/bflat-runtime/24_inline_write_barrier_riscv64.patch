@@ -1,27 +1,23 @@
-diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
-index 6e36a55a67a..688db223f6a 100644
 --- a/src/coreclr/jit/jitconfigvalues.h
 +++ b/src/coreclr/jit/jitconfigvalues.h
-@@ -35,6 +35,14 @@ CONFIG_INTEGER(AltJitLimit, "AltJitLimit", 0)
- // If AltJit hits an assert, fall back to the fallback JIT. Useful in conjunction with DOTNET_ContinueOnAssert=1
- CONFIG_INTEGER(AltJitSkipOnAssert, "AltJitSkipOnAssert", 0)
- 
+@@ -516,6 +516,14 @@
+ CONFIG_INTEGER(JitInlinePolicyProfile, W("JitInlinePolicyProfile"), 0)
+ CONFIG_INTEGER(JitInlinePolicyProfileThreshold, W("JitInlinePolicyProfileThreshold"), 40)
+ CONFIG_INTEGER(JitObjectStackAllocation, W("JitObjectStackAllocation"), 0)
++
 +// zkVM/RISC-V64: uGC is non-moving, non-generational and single-threaded, so a
 +// managed reference store needs no card mark or checked write barrier - it is a
 +// plain store. When set (default), the RISC-V64 codegen emits ref stores inline
 +// instead of calling the (already barrier-free) RhpAssignRef* / ASSIGN_BYREF
-+// helpers, saving the t3/t4 arg marshalling, the call/ret and the helper body.
++// helpers. Kept in the release-visible section so it applies in the shipped JIT.
 +// Set DOTNET_JitRiscV64InlineWriteBarrier=0 to restore the out-of-line helper call.
-+CONFIG_INTEGER(RiscV64InlineWriteBarrier, "JitRiscV64InlineWriteBarrier", 1)
-+
- // Breaks when using internal logging on a particular token value.
- CONFIG_INTEGER(BreakOnDumpToken, "BreakOnDumpToken", 0xffffffff)
++CONFIG_INTEGER(RiscV64InlineWriteBarrier, W("JitRiscV64InlineWriteBarrier"), 1)
  
-diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
-index 540d92a9060..b33ad238dc6 100644
+ CONFIG_INTEGER(JitEECallTimingInfo, W("JitEECallTimingInfo"), 0)
+ 
 --- a/src/coreclr/jit/codegenriscv64.cpp
 +++ b/src/coreclr/jit/codegenriscv64.cpp
-@@ -2230,8 +2232,24 @@ void CodeGen::genCodeForCpObj(GenTreeBlk* cpObjNode)
+@@ -2527,8 +2527,24 @@
              }
              else
              {
@@ -48,7 +44,7 @@ index 540d92a9060..b33ad238dc6 100644
                  gcPtrCount--;
              }
              ++i;
-@@ -2908,6 +2926,16 @@ void CodeGen::genCodeForStoreInd(GenTreeStoreInd* tree)
+@@ -3040,6 +3056,16 @@
      GenTree* addr = tree->Addr();
  
      GCInfo::WriteBarrierForm writeBarrierForm = gcInfo.gcIsWriteBarrierCandidate(tree);
@@ -65,21 +61,19 @@ index 540d92a9060..b33ad238dc6 100644
      if (writeBarrierForm != GCInfo::WBF_NoBarrier)
      {
          // data and addr must be in registers.
-diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
-index 54d2b2f399f..cdbaf86905a 100644
 --- a/src/coreclr/jit/lsrariscv64.cpp
 +++ b/src/coreclr/jit/lsrariscv64.cpp
-@@ -706,7 +706,12 @@ int LinearScan::BuildNode(GenTree* tree)
+@@ -552,7 +552,12 @@
          {
              assert(dstCount == 0);
  
--            if (m_compiler->codeGen->gcInfo.gcIsWriteBarrierStoreIndNode(tree->AsStoreInd()))
+-            if (compiler->codeGen->gcInfo.gcIsWriteBarrierStoreIndNode(tree->AsStoreInd()))
 +            // zkVM: when ref stores are inlined (see JitRiscV64InlineWriteBarrier
 +            // / genCodeForStoreInd), do NOT pin addr/data to t3/t4 - treat the
 +            // store as an ordinary indir so the operands stay in whatever
 +            // registers LSRA picks and the t3/t4 copies disappear.
 +            if ((JitConfig.RiscV64InlineWriteBarrier() == 0) &&
-+                m_compiler->codeGen->gcInfo.gcIsWriteBarrierStoreIndNode(tree->AsStoreInd()))
++                compiler->codeGen->gcInfo.gcIsWriteBarrierStoreIndNode(tree->AsStoreInd()))
              {
                  srcCount = BuildGCWriteBarrier(tree);
                  break;
