@@ -1,8 +1,8 @@
 diff --git a/src/coreclr/jit/objectalloc.cpp b/src/coreclr/jit/objectalloc.cpp
-index 012248266bf..aaf31c90c5f 100644
+index 012248266bf..50358db60ce 100644
 --- a/src/coreclr/jit/objectalloc.cpp
 +++ b/src/coreclr/jit/objectalloc.cpp
-@@ -1626,6 +1626,75 @@ GenTree* ObjectAllocator::MorphAllocObjNodeIntoHelperCall(GenTreeAllocObj* alloc
+@@ -1626,6 +1626,79 @@ GenTree* ObjectAllocator::MorphAllocObjNodeIntoHelperCall(GenTreeAllocObj* alloc
      }
  #endif
  
@@ -23,7 +23,11 @@ index 012248266bf..aaf31c90c5f 100644
 +    //   (3) getHeapClassSize vs the runtime MT.BaseSize the helper uses.
 +#define ZKVM_INLINE_ALLOC 1
 +#if ZKVM_INLINE_ALLOC
-+    if ((helper == CORINFO_HELP_NEWFAST) && (allocObj->gtAllocObjClsHnd != NO_CLASS_HANDLE) &&
++    // NativeAOT's getNewHelper returns CORINFO_HELP_NEWSFAST for a plain fixed-size
++    // reference class (no finalizer, no align8) - it maps to RhpNewFast, whose bump
++    // protocol this inline mirrors. (CORINFO_HELP_NEWFAST is NOT used for newobj here;
++    // the _FINALIZE / _ALIGN8 / _VC variants map to other helpers and are left alone.)
++    if ((helper == CORINFO_HELP_NEWSFAST) && (allocObj->gtAllocObjClsHnd != NO_CLASS_HANDLE) &&
 +        (arg != nullptr))
 +    {
 +        const ssize_t  ZK_BUMP_ADDR = (ssize_t)0xbffefff8;
