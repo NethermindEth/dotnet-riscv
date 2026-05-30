@@ -1,35 +1,22 @@
 --- a/src/coreclr/jit/objectalloc.cpp
 +++ b/src/coreclr/jit/objectalloc.cpp
-@@ -349,7 +349,6 @@
-     for (BasicBlock* const block : comp->Blocks())
-     {
-         const bool basicBlockHasNewObj       = (block->bbFlags & BBF_HAS_NEWOBJ) == BBF_HAS_NEWOBJ;
--        const bool basicBlockHasBackwardJump = (block->bbFlags & BBF_BACKWARD_JUMP) == BBF_BACKWARD_JUMP;
- #ifndef DEBUG
-         if (!basicBlockHasNewObj)
-         {
-@@ -389,8 +388,11 @@
-                 unsigned int         lclNum     = stmtExpr->AsLclVar()->GetLclNum();
-                 CORINFO_CLASS_HANDLE clsHnd     = data->AsAllocObj()->gtAllocObjClsHnd;
+@@ -1361,13 +1361,12 @@
+         return false;
+     }
  
--                // Don't attempt to do stack allocations inside basic blocks that may be in a loop.
--                if (IsObjectStackAllocationEnabled() && !basicBlockHasBackwardJump &&
-+                // zkVM: allow stack allocation inside loop blocks too. A
-+                // non-escaping object reuses a single stack slot per iteration
-+                // (no per-iteration growth), and escape analysis already proves
-+                // it is dead before the next iteration overwrites the local.
-+                if (IsObjectStackAllocationEnabled() &&
-                     CanAllocateLclVarOnStack(lclNum, clsHnd))
-                 {
-                     JITDUMP("Allocating local variable V%02u on the stack\n", lclNum);
---- a/src/coreclr/jit/objectalloc.h
-+++ b/src/coreclr/jit/objectalloc.h
-@@ -67,7 +67,7 @@
-     bool CanLclVarEscapeViaParentStack(ArrayStack<GenTree*>* parentStack, unsigned int lclNum);
-     void UpdateAncestorTypes(GenTree* tree, ArrayStack<GenTree*>* parentStack, var_types newType);
+-    // Don't attempt to do stack allocations inside basic blocks that may be in a loop.
+-    //
+-    if (candidate.m_block->HasFlag(BBF_BACKWARD_JUMP))
+-    {
+-        candidate.m_onHeapReason = "[alloc in loop]";
+-        return false;
+-    }
++    // zkVM: allow stack allocation inside loop blocks. A non-escaping object
++    // reuses a single stack slot per iteration (no per-iteration growth),
++    // the escape analysis (conn-graph + conditional-escape + field tracking)
++    // keeps it sound, and the per-site zero-init below already handles the
++    // in-loop case. The original "[alloc in loop]" guard is removed so hot
++    // EVM-loop allocations can stack-allocate.
  
--    static const unsigned int s_StackAllocMaxSize = 0x2000U;
-+    static const unsigned int s_StackAllocMaxSize = 0x8000U; // zkVM: raised from 0x2000 (8 KiB)
- };
- 
- //===============================================================================
+     // Don't stack allocate at sites that were cloned or are clones. These sites now violate
+     // the single assignment assumption used by the escape analysis.
