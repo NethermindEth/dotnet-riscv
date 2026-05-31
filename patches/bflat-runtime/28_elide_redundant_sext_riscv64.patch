@@ -1,8 +1,8 @@
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
-index b2fece675..27dfaba73 100644
+index b2fece675..5c1631d55 100644
 --- a/src/coreclr/jit/codegenriscv64.cpp
 +++ b/src/coreclr/jit/codegenriscv64.cpp
-@@ -3124,6 +3124,40 @@ void CodeGen::genCkfinite(GenTree* treeNode)
+@@ -3124,6 +3124,52 @@ void CodeGen::genCkfinite(GenTree* treeNode)
      genProduceReg(treeNode);
  }
  
@@ -24,9 +24,21 @@ index b2fece675..27dfaba73 100644
 +    {
 +        return false;
 +    }
-+    if (node->OperIs(GT_ADD, GT_SUB, GT_MUL, GT_DIV, GT_MOD, GT_UDIV, GT_UMOD, GT_LSH, GT_RSH, GT_RSZ, GT_NEG))
++    // Producers whose 32-bit result is already sign-extended into bits [63:32]:
++    //  - W-form arithmetic/shifts (addw/subw/mulw/divw/sllw/srlw/sraw/...) always sext;
++    //  - GT_AND/OR/XOR of sign-extended int32 operands stay sign-extended on RV64;
++    //  - a GT_CALL int return is sign-extended by the ABI, like incoming params;
++    //  - a TYP_INT constant is materialized sign-extended; an array length is a
++    //    non-negative, sign-extending load.
++    if (node->OperIs(GT_ADD, GT_SUB, GT_MUL, GT_DIV, GT_MOD, GT_UDIV, GT_UMOD, GT_LSH, GT_RSH, GT_RSZ, GT_NEG,
++                     GT_AND, GT_OR, GT_XOR, GT_CALL, GT_CNS_INT, GT_ARR_LENGTH))
 +    {
 +        return true;
++    }
++    if (node->OperIs(GT_CAST))
++    {
++        // A signed cast sign-extends its result; an unsigned (zero-extending) cast does not.
++        return !node->IsUnsigned();
 +    }
 +    if (node->OperIs(GT_IND, GT_LCL_FLD))
 +    {
@@ -43,7 +55,7 @@ index b2fece675..27dfaba73 100644
  //------------------------------------------------------------------------
  // genCodeForCompare: Produce code for a GT_EQ/GT_NE/GT_LT/GT_LE/GT_GE/GT_GT node.
  //
-@@ -3210,8 +3244,12 @@ void CodeGen::genCodeForCompare(GenTreeOp* tree)
+@@ -3210,8 +3256,12 @@ void CodeGen::genCodeForCompare(GenTreeOp* tree)
                      regNumber tmpRegOp1 = internalRegisters.GetSingle(tree);
                      assert(regOp1 != tmpRegOp1);
                      imm = static_cast<int32_t>(imm);
@@ -58,7 +70,7 @@ index b2fece675..27dfaba73 100644
                  }
              }
  
-@@ -3303,10 +3341,16 @@ void CodeGen::genCodeForCompare(GenTreeOp* tree)
+@@ -3303,10 +3353,16 @@ void CodeGen::genCodeForCompare(GenTreeOp* tree)
                      regNumber tmpRegOp2 = internalRegisters.GetSingle(tree);
                      assert(regOp1 != tmpRegOp2);
                      assert(regOp2 != tmpRegOp2);
@@ -79,7 +91,7 @@ index b2fece675..27dfaba73 100644
                  }
  
                  instruction slt = isUnsigned ? INS_sltu : INS_slt;
-@@ -3376,11 +3420,14 @@ void CodeGen::genCodeForJumpCompare(GenTreeOpCC* tree)
+@@ -3376,11 +3432,14 @@ void CodeGen::genCodeForJumpCompare(GenTreeOpCC* tree)
              {
                  case EA_4BYTE:
                  {
@@ -98,7 +110,7 @@ index b2fece675..27dfaba73 100644
                      break;
                  }
                  case EA_8BYTE:
-@@ -3411,7 +3458,7 @@ void CodeGen::genCodeForJumpCompare(GenTreeOpCC* tree)
+@@ -3411,7 +3470,7 @@ void CodeGen::genCodeForJumpCompare(GenTreeOpCC* tree)
          }
          else
          {
@@ -107,7 +119,7 @@ index b2fece675..27dfaba73 100644
              {
                  regNumber tmpRegOp1 = rsGetRsvdReg();
                  assert(regOp1 != tmpRegOp1);
-@@ -3464,10 +3511,16 @@ void CodeGen::genCodeForJumpCompare(GenTreeOpCC* tree)
+@@ -3464,10 +3523,16 @@ void CodeGen::genCodeForJumpCompare(GenTreeOpCC* tree)
              regNumber tmpRegOp2 = rsGetRsvdReg();
              assert(regOp1 != tmpRegOp2);
              assert(regOp2 != tmpRegOp2);
@@ -128,6 +140,31 @@ index b2fece675..27dfaba73 100644
          }
  
          switch (cond.GetCode())
+@@ -4876,14 +4941,20 @@ void CodeGen::genRangeCheck(GenTree* oper)
+     if (genActualType(length) == TYP_INT)
+     {
+         regNumber tempReg = internalRegisters.Extract(oper);
+-        GetEmitter()->emitIns_R_R(INS_sext_w, EA_4BYTE, tempReg, lengthReg);
+-        lengthReg = tempReg;
++        if (!RiscV64ValueIsSignExtendedInt32(length))
++        {
++            GetEmitter()->emitIns_R_R(INS_sext_w, EA_4BYTE, tempReg, lengthReg);
++            lengthReg = tempReg;
++        }
+     }
+     if (genActualType(index) == TYP_INT)
+     {
+         regNumber tempReg = internalRegisters.GetSingle(oper);
+-        GetEmitter()->emitIns_R_R(INS_sext_w, EA_4BYTE, tempReg, indexReg);
+-        indexReg = tempReg;
++        if (!RiscV64ValueIsSignExtendedInt32(index))
++        {
++            GetEmitter()->emitIns_R_R(INS_sext_w, EA_4BYTE, tempReg, indexReg);
++            indexReg = tempReg;
++        }
+     }
+ 
+ #ifdef DEBUG
 diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
 index 3608c4217..3bf81adaa 100644
 --- a/src/coreclr/jit/emitriscv64.cpp
@@ -166,10 +203,10 @@ index 3608c4217..3bf81adaa 100644
      {
          assert(isGeneralRegisterOrR0(reg1));
 diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
-index 3ba77e822..72df0dc60 100644
+index 3ba77e822..5d4053b9c 100644
 --- a/src/coreclr/jit/lower.cpp
 +++ b/src/coreclr/jit/lower.cpp
-@@ -9547,6 +9547,73 @@ bool Lowering::TryRemoveCast(GenTreeCast* node)
+@@ -9547,6 +9547,80 @@ bool Lowering::TryRemoveCast(GenTreeCast* node)
          return false;
      }
  
@@ -195,11 +232,18 @@ index 3ba77e822..72df0dc60 100644
 +        if (genActualType(op1->TypeGet()) == TYP_INT)
 +        {
 +            if (op1->OperIs(GT_ADD, GT_SUB, GT_MUL, GT_DIV, GT_MOD, GT_UDIV, GT_UMOD, GT_LSH, GT_RSH,
-+                            GT_RSZ, GT_NEG))
++                            GT_RSZ, GT_NEG, GT_AND, GT_OR, GT_XOR, GT_CALL, GT_CNS_INT, GT_ARR_LENGTH))
 +            {
-+                // W-form ops (addw/subw/mulw/divw/sllw/...) sign-extend their 32-bit result
-+                // regardless of operand contents.
++                // W-form ops sign-extend their 32-bit result; AND/OR/XOR of sign-extended int32
++                // operands stay sign-extended; an int GT_CALL return is sign-extended by the ABI;
++                // a TYP_INT constant is materialized sign-extended; an array length is a
++                // non-negative sign-extending load.
 +                op1IsSignExtended = true;
++            }
++            else if (op1->OperIs(GT_CAST))
++            {
++                // A signed cast sign-extends its result; an unsigned (zero-extending) cast does not.
++                op1IsSignExtended = !op1->IsUnsigned();
 +            }
 +            else if (op1->OperIs(GT_IND, GT_LCL_FLD))
 +            {
