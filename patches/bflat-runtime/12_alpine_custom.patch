@@ -1,8 +1,7 @@
 diff --git a/eng/common/cross/build-rootfs.sh b/eng/common/cross/build-rootfs.sh
-index 8abfb71f727..8341304b63f 100755
 --- a/eng/common/cross/build-rootfs.sh
 +++ b/eng/common/cross/build-rootfs.sh
-@@ -42,8 +42,8 @@ __UbuntuPackages="build-essential"
+@@ -45,8 +45,8 @@
  __AlpinePackages="alpine-base"
  __AlpinePackages+=" build-base"
  __AlpinePackages+=" linux-headers"
@@ -13,7 +12,7 @@ index 8abfb71f727..8341304b63f 100755
  __AlpinePackages+=" libedit"
  
  # symlinks fixer
-@@ -57,8 +57,8 @@ __UbuntuPackages+=" libunwind8-dev"
+@@ -60,8 +60,8 @@
  __AlpinePackages+=" gettext-dev"
  __AlpinePackages+=" icu-dev"
  __AlpinePackages+=" libunwind-dev"
@@ -24,7 +23,7 @@ index 8abfb71f727..8341304b63f 100755
  
  # runtime libraries' dependencies
  __UbuntuPackages+=" libcurl4-openssl-dev"
-@@ -68,7 +68,7 @@ __UbuntuPackages+=" zlib1g-dev"
+@@ -71,7 +71,7 @@
  __UbuntuPackages+=" libbrotli-dev"
  
  __AlpinePackages+=" curl-dev"
@@ -33,48 +32,48 @@ index 8abfb71f727..8341304b63f 100755
  __AlpinePackages+=" openssl-dev"
  __AlpinePackages+=" zlib-dev"
  
-@@ -132,7 +132,7 @@ __AlpineKeys='
+@@ -141,7 +141,7 @@
+ 66ba20fe:MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAtfB12w4ZgqsXWZDfUAV/\n6Y4aHUKIu3q4SXrNZ7CXF9nXoAVYrS7NAxJdAodsY3vPCN0g5O8DFXR+390LdOuQ\n+HsGKCc1k5tX5ZXld37EZNTNSbR0k+NKhd9h6X3u6wqPOx7SIKxwAQR8qeeFq4pP\nrt9GAGlxtuYgzIIcKJPwE0dZlcBCg+GnptCUZXp/38BP1eYC+xTXSL6Muq1etYfg\nodXdb7Yl+2h1IHuOwo5rjgY5kpY7GcAs8AjGk3lDD/av60OTYccknH0NCVSmPoXK\nvrxDBOn0LQRNBLcAfnTKgHrzy0Q5h4TNkkyTgxkoQw5ObDk9nnabTxql732yy9BY\ns+hM9+dSFO1HKeVXreYSA2n1ndF18YAvAumzgyqzB7I4pMHXq1kC/8bONMJxwSkS\nYm6CoXKyavp7RqGMyeVpRC7tV+blkrrUml0BwNkxE+XnwDRB3xDV6hqgWe0XrifD\nYTfvd9ScZQP83ip0r4IKlq4GMv/R5shcCRJSkSZ6QSGshH40JYSoiwJf5FHbj9ND\n7do0UAqebWo4yNx63j/wb2ULorW3AClv0BCFSdPsIrCStiGdpgJDBR2P2NZOCob3\nG9uMj+wJD6JJg2nWqNJxkANXX37Qf8plgzssrhrgOvB0fjjS7GYhfkfmZTJ0wPOw\nA8+KzFseBh4UFGgue78KwgkCAwEAAQ==
  '
- __Keyring=
  __KeyringFile="/usr/share/keyrings/ubuntu-archive-keyring.gpg"
 -__SkipSigCheck=0
 +__SkipSigCheck=1
  __SkipEmulation=0
  __UseMirror=0
  
-@@ -532,7 +532,7 @@ if [[ "$__CodeName" == "alpine" ]]; then
+@@ -518,7 +518,7 @@
      done
-
+ 
      if [[ "$__SkipSigCheck" == "1" ]]; then
 -        __ApkSignatureArg="--allow-untrusted"
 +        __ApkSignatureArg="--allow-untrusted --no-check-certificate"
      else
          __ApkSignatureArg="--keys-dir $__ApkKeysDir"
      fi
-@@ -544,15 +544,13 @@ if [[ "$__CodeName" == "alpine" ]]; then
+@@ -530,15 +530,13 @@
      # initialize DB
      # shellcheck disable=SC2086
      "$__ApkToolsDir/apk.static" \
--        -X "http://dl-cdn.alpinelinux.org/alpine/$version/main" \
--        -X "http://dl-cdn.alpinelinux.org/alpine/$version/community" \
+-        -X "https://dl-cdn.alpinelinux.org/alpine/$version/main" \
+-        -X "https://dl-cdn.alpinelinux.org/alpine/$version/community" \
 +        -X "https://opensource.interpretica.io/bflat/alpine/b8/main" \
          -U $__ApkSignatureArg --root "$__RootfsDir" --arch "$__AlpineArch" --initdb add
  
      if [[ "$__AlpineLlvmLibsLookup" == 1 ]]; then
          # shellcheck disable=SC2086
          __AlpinePackages+=" $("$__ApkToolsDir/apk.static" \
--            -X "http://dl-cdn.alpinelinux.org/alpine/$version/main" \
--            -X "http://dl-cdn.alpinelinux.org/alpine/$version/community" \
+-            -X "https://dl-cdn.alpinelinux.org/alpine/$version/main" \
+-            -X "https://dl-cdn.alpinelinux.org/alpine/$version/community" \
 +            -X "https://opensource.interpretica.io/bflat/alpine/b8/main" \
              -U $__ApkSignatureArg --root "$__RootfsDir" --arch "$__AlpineArch" \
              search 'llvm*-libs' | grep -E '^llvm' | sort | tail -1 | sed 's/-[^-]*//2g')"
      fi
-@@ -560,8 +558,7 @@ if [[ "$__CodeName" == "alpine" ]]; then
+@@ -546,8 +544,7 @@
      # install all packages in one go
      # shellcheck disable=SC2086
      "$__ApkToolsDir/apk.static" \
--        -X "http://dl-cdn.alpinelinux.org/alpine/$version/main" \
--        -X "http://dl-cdn.alpinelinux.org/alpine/$version/community" \
+-        -X "https://dl-cdn.alpinelinux.org/alpine/$version/main" \
+-        -X "https://dl-cdn.alpinelinux.org/alpine/$version/community" \
 +        -X "https://opensource.interpretica.io/bflat/alpine/b8/main" \
          -U $__ApkSignatureArg --root "$__RootfsDir" --arch "$__AlpineArch" $__NoEmulationArg \
          add $__AlpinePackages
