@@ -8,9 +8,9 @@
 +// asserts addr % width == 0). When 1, the riscv64 JIT never emits a wide load/store
 +// for an access the front end flagged unaligned (Unsafe.Read/WriteUnaligned, the
 +// `unaligned.` IL prefix, unrolled cpblk/initblk); it expands them into byte-wise
-+// sequences instead. Off by default so targets that tolerate unaligned access keep
-+// the faster wide accesses.
-+RELEASE_CONFIG_INTEGER(JitNoUnalignedAccess,        "JitNoUnalignedAccess",      0)
++// sequences instead. On by default; set 0 on targets that tolerate unaligned access
++// to keep the faster wide accesses.
++RELEASE_CONFIG_INTEGER(JitNoUnalignedAccess,        "JitNoUnalignedAccess",      1)
  #endif
  
  RELEASE_CONFIG_INTEGER(EnableEmbeddedBroadcast,     "EnableEmbeddedBroadcast",   1) // Allows embedded broadcasts to be disabled
