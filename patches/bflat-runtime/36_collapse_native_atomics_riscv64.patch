@@ -1,0 +1,157 @@
+diff --git a/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S b/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S
+index 09dc50e5a..cb65337f0 100644
+--- a/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S
++++ b/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S
+@@ -493,7 +493,14 @@ LOCAL_LABEL(NotHijacked):
+         addi  t3, a5, OFFSETOF__Thread__m_ThreadStateFlags
+ 
+         addiw  a6, zero, -17  // Mask value (0xFFFFFFEF)
++#ifdef RISCV64_USE_REAL_ATOMICS
+         amoand.w  a4, a6, (t3)
++#else
++        // Patch 36: single-threaded zkVM — plain *flags &= mask.
++        lw   a4, 0(t3)
++        and  a4, a4, a6
++        sw   a4, 0(t3)
++#endif
+ 
+         // Set preserved regs to the values expected by the funclet
+         RESTORE_PRESERVED_REGISTERS a2
+@@ -623,7 +630,14 @@ LOCAL_LABEL(NoAbort):
+         // Set the DoNotTriggerGc flag
+         addi  t3, a2, OFFSETOF__Thread__m_ThreadStateFlags
+         addiw  a3, zero, -17  // Mask value (0xFFFFFFEF)
++#ifdef RISCV64_USE_REAL_ATOMICS
+         amoand.w  a4, a3, (t3)
++#else
++        // Patch 36: single-threaded zkVM — plain *flags &= mask.
++        lw   a4, 0(t3)
++        and  a4, a4, a3
++        sw   a4, 0(t3)
++#endif
+ 
+         // Restore preserved registers
+         RESTORE_PRESERVED_REGISTERS a1
+@@ -646,7 +660,14 @@ LOCAL_LABEL(NoAbort):
+ 
+         addi  t3, a2, OFFSETOF__Thread__m_ThreadStateFlags
+         addiw  a3, zero, 16  // Mask value (0x10)
++#ifdef RISCV64_USE_REAL_ATOMICS
+         amoor.w  a1, a3, (t3)
++#else
++        // Patch 36: single-threaded zkVM — plain *flags |= mask.
++        lw   a1, 0(t3)
++        or   a1, a1, a3
++        sw   a1, 0(t3)
++#endif
+ 
+         // Restore floating-point registers
+         fld  fs0,  0x00(sp)
+@@ -774,7 +795,14 @@ LOCAL_LABEL(NoAbort):
+         addi  t3, a5, OFFSETOF__Thread__m_ThreadStateFlags
+ 
+         addiw  a6, zero, -17  // Mask value (0xFFFFFFEF)
++#ifdef RISCV64_USE_REAL_ATOMICS
+         amoand.w  a4, t3, a6
++#else
++        // Patch 36: single-threaded zkVM — plain *flags &= mask (addr=t3, mask=a6).
++        lw   a4, 0(t3)
++        and  a4, a4, a6
++        sw   a4, 0(t3)
++#endif
+ 
+         // set preserved regs to the values expected by the funclet
+         RESTORE_PRESERVED_REGISTERS a2
+diff --git a/src/coreclr/nativeaot/Runtime/unix/PalInline.h b/src/coreclr/nativeaot/Runtime/unix/PalInline.h
+index 7d64c1e1c..4ee719231 100644
+--- a/src/coreclr/nativeaot/Runtime/unix/PalInline.h
++++ b/src/coreclr/nativeaot/Runtime/unix/PalInline.h
+@@ -5,6 +5,26 @@
+ 
+ #include <errno.h>
+ 
++#if defined(HOST_RISCV64) && !defined(RISCV64_USE_REAL_ATOMICS)
++// Patch 36 (zkVM): the RISC-V A-extension is pure overhead on the single-
++// threaded, deterministic zkVM and is unsupported by some zkVM targets, so the
++// PalInterlocked* helpers below collapse to plain load/modify/store. Analog of
++// the JIT-side RiscV64NoAtomics knob (patch 34). These macros are scoped to
++// this header's inline helpers and #undef'd right after, so nothing else in the
++// translation unit is affected. Define RISCV64_USE_REAL_ATOMICS to restore
++// stock atomics (required on real multi-hart hardware).
++template<typename T> FORCEINLINE T BflatNoAtomicSwap(T volatile* p, T v) { T o = *p; *p = v; return o; }
++template<typename T, typename U> FORCEINLINE T BflatNoAtomicCas(T volatile* p, U c, T v) { T o = *p; if (o == (T)c) *p = v; return o; }
++#define __sync_synchronize()                  ((void)0)
++#define __sync_add_and_fetch(p, v)            (*(p) += (v))
++#define __sync_sub_and_fetch(p, v)            (*(p) -= (v))
++#define __sync_or_and_fetch(p, v)             (*(p) |= (v))
++#define __sync_and_and_fetch(p, v)            (*(p) &= (v))
++#define __sync_swap(p, v)                     BflatNoAtomicSwap((p), (v))
++#define __atomic_exchange_n(p, v, m)          BflatNoAtomicSwap((p), (v))
++#define __sync_val_compare_and_swap(p, c, v)  BflatNoAtomicCas((p), (c), (v))
++#endif // HOST_RISCV64 && !RISCV64_USE_REAL_ATOMICS
++
+ FORCEINLINE void PalInterlockedOperationBarrier()
+ {
+ #if (defined(HOST_ARM64) && !defined(LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT) && !defined(__clang__)) || defined(HOST_LOONGARCH64) || defined(HOST_RISCV64)
+@@ -117,6 +137,18 @@ FORCEINLINE uint8_t PalInterlockedCompareExchange128(_Inout_ int64_t volatile *p
+ }
+ #endif // HOST_64BIT
+ 
++#if defined(HOST_RISCV64) && !defined(RISCV64_USE_REAL_ATOMICS)
++// Patch 36: end of the collapsed-atomics scope (see top of file).
++#undef __sync_synchronize
++#undef __sync_add_and_fetch
++#undef __sync_sub_and_fetch
++#undef __sync_or_and_fetch
++#undef __sync_and_and_fetch
++#undef __sync_swap
++#undef __atomic_exchange_n
++#undef __sync_val_compare_and_swap
++#endif // HOST_RISCV64 && !RISCV64_USE_REAL_ATOMICS
++
+ #ifdef HOST_64BIT
+ 
+ #define PalInterlockedExchangePointer(_pDst, _pValue) \
+diff --git a/src/coreclr/runtime/riscv64/WriteBarriers.S b/src/coreclr/runtime/riscv64/WriteBarriers.S
+index 469908665..82ea2b2c4 100644
+--- a/src/coreclr/runtime/riscv64/WriteBarriers.S
++++ b/src/coreclr/runtime/riscv64/WriteBarriers.S
+@@ -305,6 +305,7 @@ LEAF_END RhpAssignRef, _TEXT
+ //
+ LEAF_ENTRY RhpCheckedLockCmpXchg
+ 
++#ifdef RISCV64_USE_REAL_ATOMICS
+ LOCAL_LABEL(CmpXchgRetry):
+         // Load the current value at the destination address.
+         lr.d.aqrl    t0, (a0)       // t0 = *dest (load with acquire-release ordering)
+@@ -318,6 +319,12 @@ LOCAL_LABEL(CmpXchgRetry):
+         // See comment at the top of PalInterlockedOperationBarrier method for explanation why this memory
+         // barrier is necessary.
+         fence   rw, rw
++#else
++        // Patch 36: single-threaded zkVM — plain compare-and-store, no LR/SC/fence.
++        ld      t0, (a0)       // t0 = *dest
++        bne     t0, a2, LOCAL_LABEL(CmpXchgNoUpdate) // if (*dest != comparand) skip
++        sd      a1, (a0)       // *dest = value
++#endif
+ 
+ LOCAL_LABEL(DoCardsCmpXchg):
+         // We have successfully updated the value of the objectref so now we need a GC write barrier.
+@@ -350,11 +357,17 @@ LEAF_END RhpCheckedLockCmpXchg
+ //  t1, t6: trashed
+ //
+ LEAF_ENTRY RhpCheckedXchg
++#ifdef RISCV64_USE_REAL_ATOMICS
+         amoswap.d.aqrl t1, a1, (a0)
+ 
+         // See comment at the top of PalInterlockedOperationBarrier method for explanation why this memory
+         // barrier is necessary.
+         fence rw, rw
++#else
++        // Patch 36: single-threaded zkVM — plain load-old then store, no AMO/fence.
++        ld   t1, (a0)       // t1 = *dest (original)
++        sd   a1, (a0)       // *dest = value
++#endif
+ 
+ DoCardsXchg:
+         // We have successfully updated the value of the objectref so now we need a GC write barrier.
