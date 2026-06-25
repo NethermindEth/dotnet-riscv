@@ -12,7 +12,7 @@ on:
         description: 'dotnet VMR branch name'
         required: true
         type: string
-        default: release/10.0.2xx
+        default: release/10.0.1xx
       release:
         description: 'publish release'
         type: boolean
@@ -46,7 +46,7 @@ jobs:
     - name: Build own rootfs
       run: |
         cd ${{ github.workspace }}
-        sudo ./00_build_rootfs.sh
+        sudo ROOTFS_FORK="${{ inputs.fork }}" ROOTFS_BRANCH="${{ inputs.branch }}" ./00_build_rootfs.sh
 
     - name: Clone repository
       run: |
