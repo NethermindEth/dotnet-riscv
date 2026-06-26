@@ -7,7 +7,7 @@ export TOP_DIR="$(cd "$(dirname "$(which "$0")")" ; pwd -P)"
 # drift in arcade's build-rootfs.sh across VMR bumps. Idempotent.
 substitute_alpine_mirror() {
     sed -i -E \
-        -e 's#-X "https?://dl-cdn\.alpinelinux\.org/alpine/\$version/main"#-X "https://opensource.interpretica.io/bflat/alpine/b8/main"#g' \
+        -e 's#-X "https?://dl-cdn\.alpinelinux\.org/alpine/\$version/main"#-X "https://opensource.interpretica.io/bflat/alpine/a1/main"#g' \
         -e '\#-X "https?://dl-cdn\.alpinelinux\.org/alpine/\$version/community"#d' \
         "$1"
 }
