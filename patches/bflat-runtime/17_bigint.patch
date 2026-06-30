@@ -11,8 +11,8 @@ index 2ec19b8d824..af3c72aa4cd 100644
 +            // Estimate required uint length using integer math only.
 +            // We need ceil(number.Scale * log2(10) / 32) + a small safety margin.
 +            // log2(10) ~= 3.321928094887362. We approximate ceil(x * log2(10) / 32) as:
-+            // ceil(x * 3321928095 / (1<<30) / 32) == ceil(x * 3321928095 / (1<<35)).
-+            const long Log2_10_Q30 = 3321928095L; // round(log2(10) * 2^30)
++            // ceil(x * 3566893132 / (1<<30) / 32) == ceil(x * 3566893132 / (1<<35)).
++            const long Log2_10_Q30 = 3566893132L; // round(log2(10) * 2^30)
 +            long scale = number.Scale;
 +            long estimatedWords = checked((scale * Log2_10_Q30 + ((1L << 35) - 1)) >> 35);
 +            int resultLength = checked((int)estimatedWords + 3); // +3 provides slack for carry/rounding
@@ -27,7 +27,7 @@ index 2ec19b8d824..af3c72aa4cd 100644
 +                    // Estimate required uint length using integer math only.
 +                    // digitCount ~= MaxPartialDigits * base1E9.Length
 +                    // words ~= ceil(digitCount * log2(10) / 32) with a small safety margin.
-+                    const long Log2_10_Q30 = 3321928095L; // round(log2(10) * 2^30)
++                    const long Log2_10_Q30 = 3566893132L; // round(log2(10) * 2^30)
 +                    long digitCount = checked((long)PowersOf1e9.MaxPartialDigits * base1E9.Length);
 +                    long estimatedWords = checked((digitCount * Log2_10_Q30 + ((1L << 35) - 1)) >> 35);
 +                    int leadingLength = checked((int)estimatedWords + 3);
@@ -43,7 +43,7 @@ index 2ec19b8d824..af3c72aa4cd 100644
 +                // Estimate required uint length using integer math only.
 +                // digitCount ~= MaxPartialDigits * multiplier1E9Length
 +                // words ~= ceil(digitCount * log2(10) / 32) with a small safety margin.
-+                const long Log2_10_Q30 = 3321928095L; // round(log2(10) * 2^30)
++                const long Log2_10_Q30 = 3566893132L; // round(log2(10) * 2^30)
 +                long digitCount = checked((long)PowersOf1e9.MaxPartialDigits * multiplier1E9Length);
 +                long estimatedWords = checked((digitCount * Log2_10_Q30 + ((1L << 35) - 1)) >> 35);
 +                int bufferLength = checked((int)estimatedWords + 3);
