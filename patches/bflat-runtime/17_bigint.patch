@@ -20,7 +20,7 @@ index 2ec19b8d824..af3c72aa4cd 100644
                  {
 -                    int leadingLength = checked((int)(digitRatio * PowersOf1e9.MaxPartialDigits * base1E9.Length) + 3);
 +                    // base1E9.Length base-10^9 limbs need at most that many uint words.
-+                    int leadingLength = base1E9.Length + 3;
++                    int leadingLength = checked(base1E9.Length + 3);
                      uint[]? leadingFromPool = null;
                      Span<uint> leading = (
                          leadingLength <= BigIntegerCalculator.StackAllocThreshold
@@ -30,7 +30,7 @@ index 2ec19b8d824..af3c72aa4cd 100644
  
 -                int bufferLength = checked((int)(digitRatio * PowersOf1e9.MaxPartialDigits * multiplier1E9Length) + 1 + 2);
 +                // multiplier1E9Length base-10^9 limbs need at most that many uint words.
-+                int bufferLength = multiplier1E9Length + 1 + 2;
++                int bufferLength = checked(multiplier1E9Length + 1 + 2);
                  uint[]? bufferFromPool = null;
                  scoped Span<uint> buffer = (
                      bufferLength <= BigIntegerCalculator.StackAllocThreshold
