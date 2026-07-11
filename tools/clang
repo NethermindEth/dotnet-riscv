@@ -1,0 +1,32 @@
+#!/bin/sh
+# Pins the RISC-V ISA and ABI for target compilations.
+#
+# The Alpine rootfs we build against is compiled for rv64ima/lp64 (no F, D or C
+# extension), while clang defaults to rv64gc/lp64d for the
+# riscv64-alpine-linux-musl triple. Without these flags every link against the
+# rootfs CRT fails with "cannot link object files with different floating-point
+# ABI from Scrt1.o".
+#
+# They cannot be added from CMake: cmake links a test program at project() time,
+# before any of the repo's compile options are applied. They have to be part of
+# the compiler command itself, hence CLR_CC/CLR_CXX pointing here.
+#
+# The same CLR_CC is used for the host-arch cross components (the riscv64 JIT
+# that runs on x64), so the flags are only injected when a riscv64 target is
+# actually requested. --target= is emitted by eng/common/cross/toolchain.cmake
+# and only for cross builds.
+
+name=${0##*/}
+dir=${CLANG_DIR:-/usr/local/bin}
+real=$dir/$name-${CLANG_VERSION:-20}
+[ -x "$real" ] || real=$dir/$name
+
+for arg in "$@"; do
+    case $arg in
+    --target=riscv64*)
+        exec "$real" "$@" -march=rv64ima -mabi=lp64 -mno-relax -gdwarf-4 -fno-jump-tables
+        ;;
+    esac
+done
+
+exec "$real" "$@"
