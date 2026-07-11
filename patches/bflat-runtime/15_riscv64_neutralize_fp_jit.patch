@@ -38,18 +38,19 @@ index c0c80413a33..eeecde93822 100644
      return sizeof(code_t);
  }
 diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
-index f5d05b2a95a..21d71279f09 100644
+index f5d05b2a95a..c19638801b4 100644
 --- a/src/coreclr/jit/jitconfigvalues.h
 +++ b/src/coreclr/jit/jitconfigvalues.h
-@@ -53,6 +53,11 @@ CONFIG_INTEGER(DisplayLsraStats, "JitLsraStats", 0)
+@@ -53,6 +53,12 @@ CONFIG_INTEGER(DisplayLsraStats, "JitLsraStats", 0)
  CONFIG_STRING(JitLsraOrdering, "JitLsraOrdering")        // LSRA heuristics ordering
  CONFIG_INTEGER(EnablePCRelAddr, "JitEnablePCRelAddr", 1) // Whether absolute addr be encoded as PC-rel offset by
                                                           // RyuJIT where possible
 +// RISC-V soft-float target (rv64ima, no F/D extension). When set, the JIT neutralizes
-+// the hardware floating-point instructions it emits (see emitOutput_Instr) and the
-+// object writer tags output with the soft-float ABI. Off by default, so hard-float
-+// targets are unaffected. Set via ILC "--codegenopt RiscVSoftFloat=1".
-+CONFIG_INTEGER(RiscVSoftFloat, "RiscVSoftFloat", 0)
++// the hardware floating-point instructions it emits (see emitOutput_Instr). Off by
++// default, so hard-float targets are unaffected. Set via ILC "--codegenopt
++// RiscVSoftFloat=1". RELEASE_CONFIG so it exists in the Release JIT (plain
++// CONFIG_INTEGER is compiled out unless DEBUG).
++RELEASE_CONFIG_INTEGER(RiscVSoftFloat, "RiscVSoftFloat", 0)
  CONFIG_INTEGER(JitAssertOnMaxRAPasses, "JitAssertOnMaxRAPasses", 0)
  CONFIG_INTEGER(JitBreakEmitOutputInstr, "JitBreakEmitOutputInstr", -1)
  CONFIG_INTEGER(JitBreakMorphTree, "JitBreakMorphTree", 0xffffffff)
