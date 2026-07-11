@@ -89,8 +89,11 @@ jobs:
         docker run --platform linux/amd64 --rm \
           -v${{ github.workspace }}/dotnet:/dotnet \
           -v${{ github.workspace }}/crossrootfs:/crossrootfs \
+          -v${{ github.workspace }}/tools:/tools:ro \
           -w /dotnet \
           -e ROOTFS_DIR=/crossrootfs/riscv64 \
+          -e CLR_CC=/tools/clang \
+          -e CLR_CXX=/tools/clang++ \
           mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-riscv64-musl \
             ./build.sh --clean-while-building --prep -sb \
                        --os linux-musl \

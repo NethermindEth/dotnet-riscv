@@ -1,0 +1,51 @@
+diff --git a/src/native/external/libunwind/include/libunwind-riscv.h b/src/native/external/libunwind/include/libunwind-riscv.h
+index 55605fe779a..1887d0a6e65 100644
+--- a/src/native/external/libunwind/include/libunwind-riscv.h
++++ b/src/native/external/libunwind/include/libunwind-riscv.h
+@@ -68,6 +68,9 @@ typedef int64_t unw_sword_t;
+ typedef double unw_tdep_fpreg_t;
+ #elif __riscv_flen == 32
+ typedef float unw_tdep_fpreg_t;
++#elif __riscv_flen == 0
++/* Soft-float: no FP registers, slot is never accessed. */
++typedef uint64_t unw_tdep_fpreg_t;
+ #else
+ # error "Unsupported RISC-V floating-point size"
+ #endif
+diff --git a/src/native/external/libunwind/include/tdep-riscv/libunwind_i.h b/src/native/external/libunwind/include/tdep-riscv/libunwind_i.h
+index b0aebc35801..39a3e8a2c9f 100644
+--- a/src/native/external/libunwind/include/tdep-riscv/libunwind_i.h
++++ b/src/native/external/libunwind/include/tdep-riscv/libunwind_i.h
+@@ -174,7 +174,7 @@ dwarf_getfp (struct dwarf_cursor *c, dwarf_loc_t loc, unw_fpreg_t *val)
+ 
+   /* FIXME: unw_word_t may not be equal to FLEN */
+   addr = DWARF_GET_MEM_LOC (loc);
+-#if __riscv_xlen == __riscv_flen
++#if __riscv_xlen == __riscv_flen || __riscv_flen == 0
+   return (*c->as->acc.access_mem) (c->as, addr, (unw_word_t *) valp,
+                                        0, c->as_arg);
+ #else
+@@ -197,7 +197,7 @@ dwarf_putfp (struct dwarf_cursor *c, dwarf_loc_t loc, unw_fpreg_t val)
+ 
+   /* FIXME: unw_word_t may not be equal to FLEN */
+   addr = DWARF_GET_MEM_LOC (loc);
+-#if __riscv_xlen == __riscv_flen
++#if __riscv_xlen == __riscv_flen || __riscv_flen == 0
+   return (*c->as->acc.access_mem) (c->as, addr, (unw_word_t *) valp,
+                                        1, c->as_arg);
+ #else
+diff --git a/src/native/external/libunwind/src/riscv/asm.h b/src/native/external/libunwind/src/riscv/asm.h
+index 7f7b444f931..5e45d651d1d 100644
+--- a/src/native/external/libunwind/src/riscv/asm.h
++++ b/src/native/external/libunwind/src/riscv/asm.h
+@@ -40,6 +40,10 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.  */
+ # define SZFREG 4
+ # define STORE_FP fsw
+ # define LOAD_FP flw
++#elif __riscv_flen == 0
++/* Soft-float: no FP registers. Leave STORE_FP/LOAD_FP undefined so the
++   context save/restore skips them. */
++# define SZFREG 0
+ #else
+ # error "Unsupported RISC-V floating-point length"
+ #endif
