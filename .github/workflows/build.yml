@@ -84,6 +84,16 @@ jobs:
                                                --skipunmount \
                                                --rootfsdir /crossrootfs/riscv64
 
+    - name: Provision GSSAPI stub into rootfs
+      run: |
+        docker run --platform linux/amd64 --rm \
+          -v${{ github.workspace }}:/work \
+          -v${{ github.workspace }}/crossrootfs:/crossrootfs \
+          -w /work \
+          -e ROOTFS_DIR=/crossrootfs/riscv64 \
+          mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-riscv64-musl \
+            ./provision_gss_stub.sh
+
     - name: Build
       run: |
         docker run --platform linux/amd64 --rm \
