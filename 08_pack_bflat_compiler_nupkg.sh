@@ -31,8 +31,10 @@ function build_compiler()
         # produced them locally; point this stage-one restore at that output so the
         # self-contained ILCompiler/crossgen2 publishes resolve instead of hitting
         # NU1101 against the remote feeds.
+        # %3B is an escaped ';' — MSBuild otherwise reads the ';' as a property
+        # separator (turning the second path into an invalid property, MSB1006).
         local local_packs="${TOP_DIR}/dotnet/artifacts/packages/Release/Shipping/runtime"
-        local_packs+=";${TOP_DIR}/dotnet/artifacts/packages/Release/Shipping/aspnetcore"
+        local_packs+="%3B${TOP_DIR}/dotnet/artifacts/packages/Release/Shipping/aspnetcore"
         ./build.sh -s clr+clr.aot+clr.tools \
                    -c Release \
                    -rc Release \
