@@ -1,0 +1,434 @@
+diff --git a/src/coreclr/debug/di/riscv64/floatconversion.S b/src/coreclr/debug/di/riscv64/floatconversion.S
+index 138db0bc9dd..6ea7f4f954f 100644
+--- a/src/coreclr/debug/di/riscv64/floatconversion.S
++++ b/src/coreclr/debug/di/riscv64/floatconversion.S
+@@ -7,6 +7,8 @@
+ //     input: (in A0) the address of the ULONGLONG to be converted to a double
+ //     output: the double corresponding to the ULONGLONG input value
+ LEAF_ENTRY FPFillR8, .TEXT
++#if __riscv_flen != 0
+         fld  fa0, 0(a0)
++#endif
+         ret
+ LEAF_END FPFillR8, .TEXT
+diff --git a/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S b/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S
+index 09dc50e5ad6..d1d4f06246a 100644
+--- a/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S
++++ b/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S
+@@ -31,6 +31,7 @@
+     .endif
+ 
+     // Safely using available registers for floating-point saves
++#if __riscv_flen != 0
+     fsd  fs0, 0x10(sp)
+     fsd  fs1, 0x18(sp)
+     fsd  fs2, 0x20(sp)
+@@ -43,6 +44,7 @@
+     fsd  fs9, 0x58(sp)
+     fsd  fs10, 0x60(sp)
+     fsd  fs11, 0x68(sp)
++#endif
+ 
+     PROLOG_SAVE_REG_PAIR_INDEXED  fp, ra, 0x78
+ 
+@@ -140,6 +142,7 @@
+         // Load FP preserved registers
+         //
+         addi t3, \regdisplayReg, OFFSETOF__REGDISPLAY__F   // Base address of floating-point registers
++#if __riscv_flen != 0
+         fld  fs0,  0x40(t3)                                // Load fs0
+         fld  fs1,  0x48(t3)                                // Load fs1
+         fld  fs2,  0x90(t3)                                // Load fs2
+@@ -152,6 +155,7 @@
+         fld  fs9,  0xc8(t3)                                // Load fs9
+         fld  fs10, 0xd0(t3)                                // Load fs10
+         fld  fs11, 0xd8(t3)                                // Load fs11
++#endif
+ 
+     .endm
+ 
+@@ -188,6 +192,7 @@
+ 
+         // Save floating-point registers
+         addi  t3, \regdisplayReg, OFFSETOF__REGDISPLAY__F
++#if __riscv_flen != 0
+         fsd  fs0,  0x40(t3)
+         fsd  fs1,  0x48(t3)
+         fsd  fs2,  0x90(t3)
+@@ -200,6 +205,7 @@
+         fsd  fs9,  0xc8(t3)
+         fsd  fs10, 0xd0(t3)
+         fsd  fs11, 0xd8(t3)
++#endif
+ 
+ .endm
+ 
+@@ -450,6 +456,7 @@ LOCAL_LABEL(NotHijacked):
+         ALLOC_CALL_FUNCLET_FRAME 0x90
+ 
+         // Save floating-point registers
++#if __riscv_flen != 0
+         fsd  fs0,  0x00(sp)
+         fsd  fs1,  0x08(sp)
+         fsd  fs2,  0x10(sp)
+@@ -462,6 +469,7 @@ LOCAL_LABEL(NotHijacked):
+         fsd  fs9,  0x48(sp)
+         fsd  fs10, 0x50(sp)
+         fsd  fs11, 0x58(sp)
++#endif
+ 
+         // Save integer registers
+         sd  a0, 0x60(sp)    // Save a0 to a3
+@@ -593,6 +601,7 @@ LOCAL_LABEL(NoAbort):
+         ALLOC_CALL_FUNCLET_FRAME 0x80
+ 
+         // Save floating-point registers
++#if __riscv_flen != 0
+         fsd  fs0,  0x00(sp)
+         fsd  fs1,  0x08(sp)
+         fsd  fs2,  0x10(sp)
+@@ -605,6 +614,7 @@ LOCAL_LABEL(NoAbort):
+         fsd  fs9,  0x48(sp)
+         fsd  fs10, 0x50(sp)
+         fsd  fs11, 0x58(sp)
++#endif
+ 
+         // Save integer registers
+         sd a0, 0x60(sp)  // Save a0 to 0x60
+@@ -649,6 +659,7 @@ LOCAL_LABEL(NoAbort):
+         amoor.w  a1, a3, (t3)
+ 
+         // Restore floating-point registers
++#if __riscv_flen != 0
+         fld  fs0,  0x00(sp)
+         fld  fs1,  0x08(sp)
+         fld  fs2,  0x10(sp)
+@@ -661,6 +672,7 @@ LOCAL_LABEL(NoAbort):
+         fld  fs9,  0x48(sp)
+         fld  fs10, 0x50(sp)
+         fld  fs11, 0x58(sp)
++#endif
+ 
+         // Free call funclet frame
+         FREE_CALL_FUNCLET_FRAME 0x80
+@@ -685,6 +697,7 @@ LOCAL_LABEL(NoAbort):
+ 
+     NESTED_ENTRY RhpCallFilterFunclet, _TEXT, NoHandler
+         ALLOC_CALL_FUNCLET_FRAME 0x60
++#if __riscv_flen != 0
+         fsd  fs0,  0x00(sp)
+         fsd  fs1,  0x08(sp)
+         fsd  fs2,  0x10(sp)
+@@ -697,6 +710,7 @@ LOCAL_LABEL(NoAbort):
+         fsd  fs9,  0x48(sp)
+         fsd  fs10, 0x50(sp)
+         fsd  fs11, 0x58(sp)
++#endif
+ 
+         ld  t3, OFFSETOF__REGDISPLAY__pFP(a2)
+         ld  fp, 0(t3)
+@@ -709,6 +723,7 @@ LOCAL_LABEL(NoAbort):
+ 
+     ALTERNATE_ENTRY RhpCallFilterFunclet2
+ 
++#if __riscv_flen != 0
+         fld  fs0,  0x00(sp)
+         fld  fs1,  0x08(sp)
+         fld  fs2,  0x10(sp)
+@@ -721,6 +736,7 @@ LOCAL_LABEL(NoAbort):
+         fld  fs9,  0x48(sp)
+         fld  fs10, 0x50(sp)
+         fld  fs11, 0x58(sp)
++#endif
+ 
+         FREE_CALL_FUNCLET_FRAME 0x60
+         EPILOG_RETURN
+diff --git a/src/coreclr/nativeaot/Runtime/riscv64/GcProbe.S b/src/coreclr/nativeaot/Runtime/riscv64/GcProbe.S
+index d7989f2f669..e02aed203cd 100644
+--- a/src/coreclr/nativeaot/Runtime/riscv64/GcProbe.S
++++ b/src/coreclr/nativeaot/Runtime/riscv64/GcProbe.S
+@@ -37,10 +37,12 @@
+     sd  a1, 0x88(sp)
+ 
+     # Save the FP return registers
++#if __riscv_flen != 0
+     fsd  fa0, 0x90(sp)
+     fsd  fa1, 0x98(sp)
+     fsd  fa2, 0xa0(sp)
+     fsd  fa3, 0xa8(sp)
++#endif
+ 
+     # Perform the rest of the PInvokeTransitionFrame initialization.
+     sd  \threadReg, OFFSETOF__PInvokeTransitionFrame__m_pThread(sp)        # Thread * (unused by stackwalker)
+@@ -62,10 +64,12 @@
+     ld  a1, 0x88(sp)
+ 
+     // Restore the FP return registers
++#if __riscv_flen != 0
+     fld  fa0, 0x90(sp)
+     fld  fa1, 0x98(sp)
+     fld  fa2, 0xa0(sp)
+     fld  fa3, 0xa8(sp)
++#endif
+ 
+     // Restore callee saved registers
+     EPILOG_RESTORE_REG_PAIR s1, s2,  0x20
+diff --git a/src/coreclr/nativeaot/Runtime/riscv64/UniversalTransition.S b/src/coreclr/nativeaot/Runtime/riscv64/UniversalTransition.S
+index 234e6b46357..3a89371f71d 100644
+--- a/src/coreclr/nativeaot/Runtime/riscv64/UniversalTransition.S
++++ b/src/coreclr/nativeaot/Runtime/riscv64/UniversalTransition.S
+@@ -89,6 +89,7 @@
+         PROLOG_SAVE_REG_PAIR_INDEXED fp, ra, STACK_SIZE
+ 
+         # Floating point registers
++#if __riscv_flen != 0
+         fsd         fa0, FLOAT_ARG_OFFSET(sp)
+         fsd         fa1, FLOAT_ARG_OFFSET + 0x08(sp)
+         fsd         fa2, FLOAT_ARG_OFFSET + 0x10(sp)
+@@ -97,6 +98,7 @@
+         fsd         fa5, FLOAT_ARG_OFFSET + 0x28(sp)
+         fsd         fa6, FLOAT_ARG_OFFSET + 0x30(sp)
+         fsd         fa7, FLOAT_ARG_OFFSET + 0x38(sp)
++#endif
+ 
+         # Space for return block data (0x10 bytes)
+ 
+@@ -113,6 +115,7 @@
+ #ifdef TRASH_SAVED_ARGUMENT_REGISTERS
+         PREPARE_EXTERNAL_VAR RhpFpTrashValues, a1
+ 
++#if __riscv_flen != 0
+         fld fa0, 0x00(a1)
+         fld fa1, 0x08(a1)
+         fld fa2, 0x10(a1)
+@@ -121,6 +124,7 @@
+         fld fa5, 0x28(a1)
+         fld fa6, 0x30(a1)
+         fld fa7, 0x38(a1)
++#endif
+ 
+         PREPARE_EXTERNAL_VAR RhpIntegerTrashValues, a1
+ 
+@@ -143,6 +147,7 @@ ALTERNATE_ENTRY ReturnFrom\FunctionName
+         mv          t2, a0
+ 
+         # Restore floating point registers
++#if __riscv_flen != 0
+         fld         fa0, FLOAT_ARG_OFFSET(sp)
+         fld         fa1, FLOAT_ARG_OFFSET + 0x08(sp)
+         fld         fa2, FLOAT_ARG_OFFSET + 0x10(sp)
+@@ -151,6 +156,7 @@ ALTERNATE_ENTRY ReturnFrom\FunctionName
+         fld         fa5, FLOAT_ARG_OFFSET + 0x28(sp)
+         fld         fa6, FLOAT_ARG_OFFSET + 0x30(sp)
+         fld         fa7, FLOAT_ARG_OFFSET + 0x38(sp)
++#endif
+ 
+         # Restore the argument registers
+         ld          a0, ARGUMENT_REGISTERS_OFFSET(sp)
+diff --git a/src/coreclr/pal/inc/unixasmmacrosriscv64.inc b/src/coreclr/pal/inc/unixasmmacrosriscv64.inc
+index 8201a03817f..783699af3b4 100644
+--- a/src/coreclr/pal/inc/unixasmmacrosriscv64.inc
++++ b/src/coreclr/pal/inc/unixasmmacrosriscv64.inc
+@@ -161,6 +161,11 @@ C_FUNC(\Name):
+ 
+ // Reserve 64 bytes of memory before calling  SAVE_FLOAT_ARGUMENT_REGISTERS
+ .macro SAVE_FLOAT_ARGUMENT_REGISTERS reg, ofs
++    // Honor the compiler's -march: emit the FP register saves only when the
++    // target has a floating-point unit (__riscv_flen != 0). On a soft-float /
++    // no-FPU build (e.g. -march=rv64ima) these become no-ops; the caller still
++    // reserves the 64-byte slot so frame offsets are unaffected.
++#if __riscv_flen != 0
+     fsd  fa0, (\ofs)(\reg)
+     fsd  fa1, (\ofs + 8)(\reg)
+     fsd  fa2, (\ofs + 16)(\reg)
+@@ -169,6 +174,7 @@ C_FUNC(\Name):
+     fsd  fa5, (\ofs + 40)(\reg)
+     fsd  fa6, (\ofs + 48)(\reg)
+     fsd  fa7, (\ofs + 56)(\reg)
++#endif
+ .endm
+ 
+ // Reserve 64 bytes of memory before calling  SAVE_FLOAT_CALLEESAVED_REGISTERS
+@@ -199,6 +205,9 @@ C_FUNC(\Name):
+ .endm
+ 
+ .macro RESTORE_FLOAT_ARGUMENT_REGISTERS reg, ofs
++    // Honor -march: restore FP argument registers only on an FP-capable target
++    // (see SAVE_FLOAT_ARGUMENT_REGISTERS). No-op on soft-float builds.
++#if __riscv_flen != 0
+     fld  fa0, (\ofs)(\reg)
+     fld  fa1, (\ofs + 8)(\reg)
+     fld  fa2, (\ofs + 16)(\reg)
+@@ -207,6 +216,7 @@ C_FUNC(\Name):
+     fld  fa5, (\ofs + 40)(\reg)
+     fld  fa6, (\ofs + 48)(\reg)
+     fld  fa7, (\ofs + 56)(\reg)
++#endif
+ .endm
+ 
+ .macro RESTORE_FLOAT_CALLEESAVED_REGISTERS reg, ofs
+diff --git a/src/coreclr/pal/src/arch/riscv64/context2.S b/src/coreclr/pal/src/arch/riscv64/context2.S
+index 5bb06b0ecea..fc4fae1bcef 100644
+--- a/src/coreclr/pal/src/arch/riscv64/context2.S
++++ b/src/coreclr/pal/src/arch/riscv64/context2.S
+@@ -26,6 +26,7 @@ LEAF_ENTRY RtlRestoreContext, _TEXT
+     //64-bits FPR.
+     addi t0, t4, CONTEXT_FPU_OFFSET
+ 
++#if __riscv_flen != 0
+     fld  f0, (CONTEXT_F0)(t0)
+     fld  f1, (CONTEXT_F1)(t0)
+     fld  f2, (CONTEXT_F2)(t0)
+@@ -58,9 +59,12 @@ LEAF_ENTRY RtlRestoreContext, _TEXT
+     fld  f29, (CONTEXT_F29)(t0)
+     fld  f30, (CONTEXT_F30)(t0)
+     fld  f31, (CONTEXT_F31)(t0)
++#endif
+ 
+     lw t1, (CONTEXT_FLOAT_CONTROL_OFFSET)(t0)
++#if __riscv_flen != 0
+     fscsr x0, t1
++#endif
+ 
+ LOCAL_LABEL(No_Restore_CONTEXT_FLOATING_POINT):
+ 
+@@ -205,6 +209,7 @@ LOCAL_LABEL(Done_CONTEXT_INTEGER):
+ 
+     addi  a0, a0, CONTEXT_FPU_OFFSET
+ 
++#if __riscv_flen != 0
+     fsd  f0, (CONTEXT_F0)(a0)
+     fsd  f1, (CONTEXT_F1)(a0)
+     fsd  f2, (CONTEXT_F2)(a0)
+@@ -237,8 +242,11 @@ LOCAL_LABEL(Done_CONTEXT_INTEGER):
+     fsd  f29, (CONTEXT_F29)(a0)
+     fsd  f30, (CONTEXT_F30)(a0)
+     fsd  f31, (CONTEXT_F31)(a0)
++#endif
+ 
++#if __riscv_flen != 0
+     frcsr t0
++#endif
+     sd  t0, (CONTEXT_FLOAT_CONTROL_OFFSET)(a0)
+ 
+ LOCAL_LABEL(Done_CONTEXT_FLOATING_POINT):
+diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhelpers.S
+index 1c03436880c..fc8abf0cc37 100644
+--- a/src/coreclr/vm/riscv64/asmhelpers.S
++++ b/src/coreclr/vm/riscv64/asmhelpers.S
+@@ -517,8 +517,10 @@ NESTED_ENTRY OnHijackTripThread, _TEXT, NoHandler
+     sd  a1, 128(sp)
+ 
+     // save any FP/HFA return value(s)
++#if __riscv_flen != 0
+     fsd  f0, 136(sp)
+     fsd  f1, 144(sp)
++#endif
+ 
+     addi  a0, sp, 0
+     call  C_FUNC(OnHijackWorker)
+@@ -530,8 +532,10 @@ NESTED_ENTRY OnHijackTripThread, _TEXT, NoHandler
+     ld  a1, 128(sp)
+ 
+     // restore any FP/HFA return value(s)
++#if __riscv_flen != 0
+     fld  f0, 136(sp)
+     fld  f1, 144(sp)
++#endif
+ 
+     EPILOG_RESTORE_REG_PAIR   s1, s2, 16
+     EPILOG_RESTORE_REG_PAIR   s3, s4, 32
+@@ -651,7 +655,9 @@ NESTED_END CallEHFilterFunclet, _TEXT
+ //   buffer pointed to by a1 on entry contains the float or double argument as appropriate
+ //
+ LEAF_ENTRY getFPReturn, _TEXT
++#if __riscv_flen != 0
+     fsd  f0, 0(a1)
++#endif
+ LEAF_END getFPReturn, _TEXT
+ 
+ // ------------------------------------------------------------------
+@@ -659,7 +665,9 @@ LEAF_END getFPReturn, _TEXT
+ // register(s) as non-floating point values).
+ //
+ LEAF_ENTRY setFPReturn, _TEXT
++#if __riscv_flen != 0
+     fmv.d.x f0, a1
++#endif
+ LEAF_END setFPReturn, _TEXT
+ 
+ #endif // FEATURE_COMINTEROP
+diff --git a/src/coreclr/vm/riscv64/calldescrworkerriscv64.S b/src/coreclr/vm/riscv64/calldescrworkerriscv64.S
+index 54725758b41..52ad4f52128 100644
+--- a/src/coreclr/vm/riscv64/calldescrworkerriscv64.S
++++ b/src/coreclr/vm/riscv64/calldescrworkerriscv64.S
+@@ -44,6 +44,7 @@ LOCAL_LABEL(donestack):
+     ld t4, CallDescrData__pFloatArgumentRegisters(s1)
+     beq t4, zero, LOCAL_LABEL(NoFloatingPoint)
+ 
++#if __riscv_flen != 0
+     fld fa0, 0(t4)
+     fld fa1, 8(t4)
+     fld fa2, 16(t4)
+@@ -52,6 +53,7 @@ LOCAL_LABEL(donestack):
+     fld fa5, 40(t4)
+     fld fa6, 48(t4)
+     fld fa7, 56(t4)
++#endif
+ 
+ LOCAL_LABEL(NoFloatingPoint):
+     // Copy [pArgumentRegisters, ..., pArgumentRegisters + 56]
+@@ -80,7 +82,9 @@ LOCAL_LABEL(CallDescrWorkerInternalReturnAddress):
+     // Just save the returned registers (fa0, fa1/a0) and let CopyReturnedFpStructFromRegisters worry about placing
+     // the fields as they were originally laid out in memory.
+ 
++#if __riscv_flen != 0
+     fsd fa0, CallDescrData__returnValue(s1) // fa0 is always occupied; we have at least one floating field
++#endif
+ 
+     andi a3, a3, FpStruct__BothFloat
+     bne  a3, zero, LOCAL_LABEL(SecondFieldFloatReturn)
+@@ -91,7 +95,9 @@ LOCAL_LABEL(CallDescrWorkerInternalReturnAddress):
+     j  LOCAL_LABEL(ReturnDone)
+ 
+ LOCAL_LABEL(SecondFieldFloatReturn):
++#if __riscv_flen != 0
+     fsd fa1, (CallDescrData__returnValue + 8)(s1)
++#endif
+     j  LOCAL_LABEL(ReturnDone)
+ 
+ LOCAL_LABEL(IntReturn):
+diff --git a/src/coreclr/vm/riscv64/thunktemplates.S b/src/coreclr/vm/riscv64/thunktemplates.S
+index e2990d44c57..bc13e737414 100644
+--- a/src/coreclr/vm/riscv64/thunktemplates.S
++++ b/src/coreclr/vm/riscv64/thunktemplates.S
+@@ -14,6 +14,13 @@ LEAF_END_MARKED StubPrecodeCode
+ LEAF_ENTRY FixupPrecodeCode
+     auipc t2, 0x4
+     ld t2, (FixupPrecodeData__Target)(t2)
++    // Honor the compiler's -march: with the C extension the tail jump is the
++    // 2-byte c.jr, so the second auipc lands at thunk offset 0xe and the data
++    // loads compensate with -0xe. Without C (e.g. -march=rv64ima) c.jr is not
++    // available; the base jr is 4 bytes, moving the second auipc to 0x10, so the
++    // loads use -0x10 instead. __riscv_compressed is predefined by the compiler
++    // from -march, so a single source assembles correctly either way.
++#ifdef __riscv_compressed
+     c.jr t2
+ 
+     fence r,rw
+@@ -21,6 +28,15 @@ LEAF_ENTRY FixupPrecodeCode
+     ld t1, (FixupPrecodeData__PrecodeFixupThunk - 0xe)(t2)
+     ld t2, (FixupPrecodeData__MethodDesc - 0xe)(t2)
+     jr t1
++#else
++    jr t2
++
++    fence r,rw
++    auipc t2, 0x4
++    ld t1, (FixupPrecodeData__PrecodeFixupThunk - 0x10)(t2)
++    ld t2, (FixupPrecodeData__MethodDesc - 0x10)(t2)
++    jr t1
++#endif
+ LEAF_END_MARKED FixupPrecodeCode
+ 
+ LEAF_ENTRY CallCountingStubCode
