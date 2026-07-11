@@ -1,29 +1,24 @@
 diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/ElfObjectWriter.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/ElfObjectWriter.cs
-index 5204eb587c6..f59fe9d9682 100644
+index 5204eb587c6..fcd9bebb075 100644
 --- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/ElfObjectWriter.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/ElfObjectWriter.cs
-@@ -10,6 +10,7 @@
- using System.Reflection;
- using ILCompiler.DependencyAnalysis;
- using ILCompiler.DependencyAnalysisFramework;
-+using Internal.JitInterface;
- using Internal.TypeSystem;
- using static ILCompiler.DependencyAnalysis.RelocType;
- using static ILCompiler.ObjectWriter.EabiNative;
-@@ -66,7 +67,11 @@ public ElfObjectWriter(NodeFactory factory, ObjectWritingOptions options)
+@@ -66,7 +66,14 @@ public ElfObjectWriter(NodeFactory factory, ObjectWritingOptions options)
                  _ => throw new NotSupportedException("Unsupported architecture")
              };
              _useInlineRelocationAddends = _machine is EM_386 or EM_ARM;
 -            _useSoftFPAbi = _machine is EM_ARM && factory.Target.Abi == TargetAbi.NativeAotArmel;
-+            // ARM armel and the RISC-V soft-float target (opted in via
-+            // "--codegenopt RiscVSoftFloat=1") both emit objects tagged with the
-+            // soft-float ABI. Off by default, so hard-float targets are unaffected.
++            // ARM armel and the RISC-V soft-float target (rv64ima, no FPU) both emit
++            // objects tagged with the soft-float ABI. The soft-float RISC-V toolchain
++            // opts in with the RiscVSoftFloat environment variable; this is the object
++            // writer's counterpart to the JIT's "--codegenopt RiscVSoftFloat=1"
++            // (JitConfigProvider lives in a JIT assembly this one cannot reference).
++            // Off by default, so hard-float targets are unaffected.
 +            _useSoftFPAbi = (_machine is EM_ARM && factory.Target.Abi == TargetAbi.NativeAotArmel)
-+                         || (_machine is EM_RISCV && JitConfigProvider.Instance.GetIntConfigValue("RiscVSoftFloat", 0) != 0);
++                         || (_machine is EM_RISCV && Environment.GetEnvironmentVariable("RiscVSoftFloat") == "1");
  
              // By convention the symbol table starts with empty symbol
              _symbols.Add(new ElfSymbol {});
-@@ -847,9 +852,10 @@ private void EmitObjectFile<TSize>(FileStream outputFileStream)
+@@ -847,9 +854,10 @@ private void EmitObjectFile<TSize>(FileStream outputFileStream)
                  {
                      EM_ARM => 0x05000000u, // For ARM32 claim conformance with the EABI specification
                      EM_LOONGARCH => 0x43u, // For LoongArch ELF psABI specify the ABI version (1) and modifiers (64-bit GPRs, 64-bit FPRs)
