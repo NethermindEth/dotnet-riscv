@@ -23,27 +23,16 @@ function build_compiler()
     local runtime_dir="$1"
 
     pushd "${runtime_dir}"
-        export ROOTFS_DIR="$(pwd)/.tools/rootfs/riscv64-musl"
-        patch -p1 < "${TOP_DIR}/patches/bflat-runtime/12_alpine_custom.patch"
-        ./eng/common/cross/build-rootfs.sh riscv64 alpineedge --skipemulation --skipunmount --rootfsdir ${ROOTFS_DIR}
-        # The linux-musl-riscv64 runtime/host/crossgen2 packs are an unofficial RID,
-        # so they are not on any public NuGet feed. The main source-build already
-        # produced them locally; point this stage-one restore at that output so the
-        # self-contained ILCompiler/crossgen2 publishes resolve instead of hitting
-        # NU1101 against the remote feeds.
-        # %3B is an escaped ';' — MSBuild otherwise reads the ';' as a property
-        # separator (turning the second path into an invalid property, MSB1006).
-        local local_packs="${TOP_DIR}/dotnet/artifacts/packages/Release/Shipping/runtime"
-        local_packs+="%3B${TOP_DIR}/dotnet/artifacts/packages/Release/Shipping/aspnetcore"
-        ./build.sh -s clr+clr.aot+clr.tools \
-                   -c Release \
-                   -rc Release \
-                   -os linux-musl \
-                   --targetrid linux-musl-riscv64 \
-                   -arch riscv64 \
-                   -cross \
-                   -p:StageOneBuild=true \
-                   -p:RestoreAdditionalProjectSources="${local_packs}"
+        # bflat consumes the *managed* ILCompiler assemblies as a library, and they
+        # are portable: the RISC-V target is selected at runtime (--targetarch plus
+        # the RiscVSoftFloat env var), so there is nothing arch-specific to build.
+        # Build only the managed ILCompiler.RyuJit project graph — no native cross
+        # build, no rootfs, and crucially no self-contained ILCompiler/crossgen2
+        # publish, which would try to restore the unofficial linux-musl-riscv64
+        # runtime packs (NU1101/NU1102). It restores from public feeds only.
+        ./build.sh --restore --build \
+                   --projects "$(pwd)/src/coreclr/tools/aot/ILCompiler.RyuJit/ILCompiler.RyuJit.csproj" \
+                   -c Release
     popd
 }
 
@@ -53,7 +42,12 @@ function pack_bflat_compiler_nupkg()
     local output_dir="$2"
     local artifactpath="$3"
 
-    if [ ! -d "${artifactpath}/bin/ILCompiler.Compiler/riscv64/Release" ] ; then
+    # The ProjectReference build drops every managed assembly bflat needs into
+    # ILCompiler.RyuJit's output. Locate it via find so the config/rid-specific
+    # subdirectory is not hardcoded.
+    local ilc_out
+    ilc_out="$(dirname "$(find "${artifactpath}/bin" -path '*ILCompiler.RyuJit*' -name ILCompiler.Compiler.dll 2>/dev/null | head -1)")"
+    if [ ! -f "${ilc_out}/ILCompiler.Compiler.dll" ] ; then
         return 1
     fi
 
@@ -66,14 +60,13 @@ function pack_bflat_compiler_nupkg()
         rm "$file"
     popd
 
-    pushd "${artifactpath}"
-        cp ./bin/coreclr/linux.riscv64.Release/ilc/ILCompiler*.dll \
-           ./bin/coreclr/linux.riscv64.Release/ilc/Microsoft.DiaSymReader.dll \
-           "${output_dir}/lib/net6.0/"
-        cp ./bin/coreclr/linux.riscv64.Release/crossgen2/ILCompiler*.dll \
-           "${output_dir}/lib/net6.0/"
-        rm "${output_dir}/lib/net6.0/ILCompiler.ReadyToRun.dll"
-    popd
+    cp "${ilc_out}/ILCompiler.Compiler.dll" \
+       "${ilc_out}/ILCompiler.RyuJit.dll" \
+       "${ilc_out}/ILCompiler.TypeSystem.dll" \
+       "${ilc_out}/ILCompiler.DependencyAnalysisFramework.dll" \
+       "${ilc_out}/ILCompiler.MetadataTransform.dll" \
+       "${ilc_out}/Microsoft.DiaSymReader.dll" \
+       "${output_dir}/lib/net6.0/"
 
     ret="1"
     pushd "${output_dir}"
