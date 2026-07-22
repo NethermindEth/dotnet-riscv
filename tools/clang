@@ -55,8 +55,16 @@ if [ "$compile" = 0 ] && [ "$src" = 1 ]; then
 fi
 
 if [ "$compile" = 0 ]; then
-    # Pure link: all inputs already carry the double-float tag.
-    exec "$real" "$@" -march=rv64ima -mabi=lp64 -mno-relax -gdwarf-4 -fno-jump-tables
+    # Pure link: all inputs already carry the double-float tag. rv64ima-compiled
+    # code references soft-fp builtins (__adddf3, __floatsidf, ...) that the
+    # rootfs's hard-float libgcc does not provide, so append the compiler-rt
+    # builtins archive from the rootfs's compiler-rt package — it always carries
+    # the full soft-fp set. Its members are double-tagged like everything else.
+    rt=
+    for f in "${ROOTFS_DIR:-/crossrootfs/riscv64}"/usr/lib/llvm*/lib/clang/*/lib/riscv64-alpine-linux-musl/libclang_rt.builtins-riscv64.a; do
+        [ -f "$f" ] && rt=$f && break
+    done
+    exec "$real" "$@" -march=rv64ima -mabi=lp64 -mno-relax -gdwarf-4 -fno-jump-tables ${rt:+"$rt"}
 fi
 
 "$real" "$@" -march=rv64ima -mabi=lp64 -mno-relax -gdwarf-4 -fno-jump-tables
