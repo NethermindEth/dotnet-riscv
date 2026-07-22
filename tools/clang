@@ -1,15 +1,26 @@
 #!/bin/sh
 # Pins the RISC-V ISA and ABI for target compilations.
 #
-# The Alpine rootfs we build against is compiled for rv64ima/lp64 (no F, D or C
-# extension), while clang defaults to rv64gc/lp64d for the
-# riscv64-alpine-linux-musl triple. Without these flags every link against the
-# rootfs CRT fails with "cannot link object files with different floating-point
-# ABI from Scrt1.o".
+# Native code built here ends up in the zkVM client, which runs on a strict
+# rv64ima core and must not touch floating-point registers. Compiling with
+# -march=rv64ima keeps __riscv_flen == 0, which activates the flen guards the
+# runtime patches add to the .S files and libunwind, and keeps the C
+# (compressed) extension out of the generated code.
 #
-# They cannot be added from CMake: cmake links a test program at project() time,
-# before any of the repo's compile options are applied. They have to be part of
-# the compiler command itself, hence CLR_CC/CLR_CXX pointing here.
+# The rootfs, however, is the stock lp64d Alpine one, and lld refuses to mix
+# float ABIs. The userspace never reaches the zkVM client, so the ABI tag is
+# only there to keep lld happy: every object produced here is retagged to
+# EF_RISCV_FLOAT_ABI_DOUBLE right after compilation, matching the rootfs CRT
+# and the double-tagged managed objects in both the SDK links and the final
+# bflat links. The final binary's flags are rewritten downstream anyway.
+#
+# cmake's configure-time probes compile and link in one step, so their
+# intermediate object cannot be retagged; they are compiled as rv64imafd/lp64d
+# instead — only the probe's exit status matters, the binary is discarded.
+#
+# The flags cannot be added from CMake: cmake links a test program at project()
+# time, before any of the repo's compile options are applied. They have to be
+# part of the compiler command itself, hence CLR_CC/CLR_CXX pointing here.
 #
 # The same CLR_CC is used for the host-arch cross components (the riscv64 JIT
 # that runs on x64), so the flags are only injected when a riscv64 target is
@@ -21,41 +32,45 @@ dir=${CLANG_DIR:-/usr/local/bin}
 real=$dir/$name-${CLANG_VERSION:-20}
 [ -x "$real" ] || real=$dir/$name
 
-# NativeAOT's object writer tags managed objects with EF_RISCV_FLOAT_ABI_DOUBLE,
-# but everything else here (rootfs CRT, bootstrap aotsdk libs) is lp64 soft-float,
-# and lld hard-errors on mixed float ABIs with no way to suppress the check. So
-# before a riscv64 link, clear the float-ABI bits (e_flags & 0x6, byte at offset
-# 0x30 of the ELF64 header) of every loose riscv64 .o on the command line. The
-# FP instructions themselves are untouched — this only retags the calling-
-# convention claim, the rv64imafd+lp64 combination.
-fix_float_abi() {
-    for f in "$@"; do
-        case $f in
-        *.o) [ -w "$f" ] || continue ;;
-        *) continue ;;
-        esac
-        # ELF64 little-endian RISC-V (e_machine 0xf3) only.
-        [ "$(od -An -tx1 -N5 "$f" 2>/dev/null | tr -d ' ')" = "7f454c4602" ] || continue
-        [ "$(od -An -tx1 -j18 -N2 "$f" | tr -d ' ')" = "f300" ] || continue
-        b=$(od -An -tu1 -j48 -N1 "$f" | tr -d ' ')
-        nb=$((b & ~6))
-        [ "$nb" = "$b" ] && continue
-        printf "\\$(printf '%03o' "$nb")" | dd of="$f" bs=1 seek=48 conv=notrunc 2>/dev/null
-    done
-}
-
 riscv=0
-link=1
+compile=0
+src=0
+out=
+prev=
 for arg in "$@"; do
     case $arg in
     --target=riscv64*) riscv=1 ;;
-    -c|-S|-E|-M|-MM) link=0 ;;
+    -c|-S|-E) compile=1 ;;
+    *.c|*.cc|*.cpp|*.cxx|*.S|*.s) src=1 ;;
     esac
+    [ "$prev" = "-o" ] && out=$arg
+    prev=$arg
 done
 
-if [ "$riscv" = 1 ]; then
-    [ "$link" = 1 ] && fix_float_abi "$@"
+[ "$riscv" = 1 ] || exec "$real" "$@"
+
+if [ "$compile" = 0 ] && [ "$src" = 1 ]; then
+    # Compile-and-link in one step: a cmake probe. See header comment.
+    exec "$real" "$@" -march=rv64imafd -mabi=lp64d -mno-relax -gdwarf-4 -fno-jump-tables
+fi
+
+if [ "$compile" = 0 ]; then
+    # Pure link: all inputs already carry the double-float tag.
     exec "$real" "$@" -march=rv64ima -mabi=lp64 -mno-relax -gdwarf-4 -fno-jump-tables
 fi
 
-exec "$real" "$@"
+"$real" "$@" -march=rv64ima -mabi=lp64 -mno-relax -gdwarf-4 -fno-jump-tables
+rc=$?
+
+# Retag the produced object (ELF64 little-endian RISC-V only) to the
+# double-float ABI: e_flags is at offset 0x30 of the ELF64 header, the float
+# ABI lives in bits 1-2. Other e_flags bits are preserved.
+if [ "$rc" = 0 ] && [ -n "$out" ] && [ -f "$out" ]; then
+    if [ "$(od -An -tx1 -N5 "$out" 2>/dev/null | tr -d ' ')" = "7f454c4602" ] &&
+       [ "$(od -An -tx1 -j18 -N2 "$out" | tr -d ' ')" = "f300" ]; then
+        b=$(od -An -tu1 -j48 -N1 "$out" | tr -d ' ')
+        nb=$(((b & ~6) | 4))
+        [ "$nb" = "$b" ] || printf "\\$(printf '%03o' "$nb")" | dd of="$out" bs=1 seek=48 conv=notrunc 2>/dev/null
+    fi
+fi
+exit $rc

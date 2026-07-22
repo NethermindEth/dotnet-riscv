@@ -24,8 +24,8 @@ function build_compiler()
 
     pushd "${runtime_dir}"
         # bflat consumes the *managed* ILCompiler assemblies as a library, and they
-        # are portable: the RISC-V target is selected at runtime (--targetarch plus
-        # the RiscVSoftFloat env var), so there is nothing arch-specific to build.
+        # are portable: the RISC-V target is selected at runtime (--targetarch),
+        # so there is nothing arch-specific to build.
         # Build only the managed ILCompiler.RyuJit project graph — no native cross
         # build, no rootfs, and crucially no self-contained ILCompiler/crossgen2
         # publish, which would try to restore the unofficial linux-musl-riscv64
