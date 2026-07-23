@@ -2,13 +2,15 @@
 # Pins the RISC-V ISA and ABI for target compilations.
 #
 # Only code that lands in the zkVM client must stay free of floating-point
-# registers (and the C extension): the NativeAOT runtime tree — including the
-# GC and llvm-libunwind objects it compiles — and the System.Native library
-# family. Those are compiled with -march=rv64ima, keeping __riscv_flen == 0 so
-# the flen guards patched into the runtime's .S files take effect
-# (llvm-libunwind handles flen == 0 upstream). Client-bound compilations are
-# recognized by path: NativeAOT objects are built under a nativeaot/ directory
-# and System.Native sources live in src/native/libs.
+# registers, atomic instructions and the C extension: the NativeAOT runtime
+# tree — including the GC and llvm-libunwind objects it compiles — and the
+# System.Native library family. Those are compiled with -march=rv64im, keeping
+# __riscv_flen == 0 and __riscv_atomic undefined so the flen and atomic guards
+# patched into the runtime's .S files take effect (llvm-libunwind handles
+# flen == 0 upstream); C/C++ atomics lower to __atomic_* calls, satisfied by
+# libatomic on the SDK side and by the zisk stack in the client. Client-bound
+# compilations are recognized by path: NativeAOT objects are built under a
+# nativeaot/ directory and System.Native sources live in src/native/libs.
 #
 # Everything else (CoreCLR PAL, the savannah libunwind it uses, corehost, ...)
 # is SDK-side, never reaches the client, and compiles with the rootfs-native
@@ -21,7 +23,7 @@
 # matches the rootfs CRT and the double-tagged managed objects everywhere.
 # The final client binary's flags are rewritten downstream anyway.
 #
-# rv64ima-compiled code references soft-fp builtins (__adddf3, ...) that the
+# rv64im-compiled code references soft-fp builtins (__adddf3, ...) that the
 # rootfs's hard-float libgcc does not provide, so links pull in the
 # compiler-rt builtins archive from the rootfs's compiler-rt package.
 #
@@ -67,19 +69,19 @@ fi
 
 if [ "$compile" = 0 ]; then
     # Pure link: all inputs already carry the double-float tag. Append the
-    # soft-fp builtins for the rv64ima-compiled objects among them.
+    # soft-fp builtins for the rv64im-compiled objects among them.
     rt=
     for f in "${ROOTFS_DIR:-/crossrootfs/riscv64}"/usr/lib/llvm*/lib/clang/*/lib/riscv64-alpine-linux-musl/libclang_rt.builtins-riscv64.a; do
         [ -f "$f" ] && rt=$f && break
     done
-    exec "$real" "$@" -march=rv64ima -mabi=lp64 -mno-relax -gdwarf-4 -fno-jump-tables ${rt:+"$rt"}
+    exec "$real" "$@" -march=rv64im -mabi=lp64 -mno-relax -gdwarf-4 -fno-jump-tables ${rt:+"$rt"}
 fi
 
 march="-march=rv64imafd -mabi=lp64d"
 for arg in "$@"; do
     case $arg in
     */nativeaot/*|*/src/native/libs/*)
-        march="-march=rv64ima -mabi=lp64"
+        march="-march=rv64im -mabi=lp64"
         break
         ;;
     esac
