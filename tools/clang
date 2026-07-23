@@ -69,12 +69,19 @@ fi
 
 if [ "$compile" = 0 ]; then
     # Pure link: all inputs already carry the double-float tag. Append the
-    # soft-fp builtins for the rv64im-compiled objects among them.
+    # soft-fp builtins for the rv64im-compiled objects among them, and
+    # libatomic for their __atomic_* calls (the builtins archive carries no
+    # atomic helpers; not every link passes -latomic on its own).
+    rootfs=${ROOTFS_DIR:-/crossrootfs/riscv64}
     rt=
-    for f in "${ROOTFS_DIR:-/crossrootfs/riscv64}"/usr/lib/llvm*/lib/clang/*/lib/riscv64-alpine-linux-musl/libclang_rt.builtins-riscv64.a; do
+    for f in "$rootfs"/usr/lib/llvm*/lib/clang/*/lib/riscv64-alpine-linux-musl/libclang_rt.builtins-riscv64.a; do
         [ -f "$f" ] && rt=$f && break
     done
-    exec "$real" "$@" -march=rv64im -mabi=lp64 -mno-relax -gdwarf-4 -fno-jump-tables ${rt:+"$rt"}
+    atomic=
+    for f in "$rootfs"/usr/lib/libatomic.so*; do
+        [ -e "$f" ] && atomic=-latomic && break
+    done
+    exec "$real" "$@" -march=rv64im -mabi=lp64 -mno-relax -gdwarf-4 -fno-jump-tables ${rt:+"$rt"} ${atomic:+"$atomic"}
 fi
 
 march="-march=rv64imafd -mabi=lp64d"
