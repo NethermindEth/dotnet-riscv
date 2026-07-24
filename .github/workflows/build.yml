@@ -21,6 +21,11 @@ on:
         description: 'apply the perf fixup profile'
         type: boolean
         default: false
+      tag:
+        description: 'release tag name (default: SDK version, plus -perf for perf builds)'
+        required: false
+        type: string
+        default: ''
       whole_source:
         description: 'publish whole source'
         type: boolean
@@ -282,7 +287,13 @@ jobs:
         artifacts+=" -a ${{ github.workspace }}/output/bflat-libs-linux/bflat-libs-linux-musl-riscv64.zip"
         artifacts+=" -a ${{ github.workspace }}/output/bflat-compiler-nupkg/bflat.compiler.10.0.0.nupkg"
 
-        tag_name="$sdk_version"
+        tag_name="${{ inputs.tag }}"
+        if [ -z "$tag_name" ] ; then
+          tag_name="$sdk_version"
+          if [ "${{ inputs.performance }}" = "true" ] ; then
+            tag_name="$tag_name-perf"
+          fi
+        fi
 
         echo "tag_name: $tag_name"
         echo "artifacts: $artifacts"
