@@ -1,0 +1,56 @@
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -6814,7 +6814,12 @@
+ 
+     if (compiler->compUsesThrowHelper || compiler->ehAnyFunclets() || compiler->compLocallocUsed ||
+         compiler->info.compIsVarArgs || compiler->opts.IsOSR() || compiler->opts.MinOpts() ||
+-        compiler->fgHasLoops || compiler->compIsProfilerHookNeeded() || (genTotalFrameSize() > 2040))
++        compiler->fgHasLoops || compiler->compIsProfilerHookNeeded() ||
++        // zkVM: this is a soft-float target (FP disabled); float/double arithmetic and
++        // FP casts lower to HELPER CALLS in the backend with no GT_CALL node in the LIR
++        // scan below, so an FP method is not really a leaf - eliding its RA save lets the
++        // soft-float jalr clobber ra and ret to garbage. Exclude any FP user.
++        compiler->compFloatingPointUsed || (genTotalFrameSize() > 2040))
+     {
+         return;
+     }
+@@ -6828,16 +6833,31 @@
+                 return;
+             }
+ 
++            // zkVM: RyuJIT riscv64 uses REG_RA as a HARDCODED scratch (not via LSRA) in
++            // several paths - materializing a branch/compare constant (genCodeForJumpCompare
++            // instGen_Set_Reg_To_Imm into REG_RA; genCodeForCompare 4-byte sext temp), the
++            // far-jump target (auipc/jalr REG_RA), and 64-bit mul-high. In a leaf with the
++            // RA save elided that scratch use destroys the live return address -> ret to
++            // garbage. The elision is decided before codegen so these backend register
++            // choices are invisible; conservatively refuse to elide any method whose LIR
++            // contains the shapes that lead to a REG_RA scratch. (GT_EQ/GT_NE do not - they
++            // use REG_ZERO / an LSRA reg - so pure-integer getters like get_AsSpan and
++            // UInt256.IsZero/IsOne still qualify.)
++            if (node->OperIs(GT_JCMP, GT_LT, GT_LE, GT_GT, GT_GE, GT_MULHI))
++            {
++                return;
++            }
++            // genCodeForShift emits a rotate as srl/sll + or using REG_RA as the temp.
++            if (node->OperIs(GT_ROL, GT_ROR))
++            {
++                return;
++            }
++
+             if (node->OperIs(GT_STORE_BLK))
+             {
+-                GenTreeBlk* blk = node->AsBlk();
+-                if (((blk->gtBlkOpKind != GenTreeBlk::BlkOpKindUnroll) &&
+-                     (blk->gtBlkOpKind != GenTreeBlk::BlkOpKindUnrollMemmove) &&
+-                     (blk->gtBlkOpKind != GenTreeBlk::BlkOpKindLoop)) ||
+-                    ((blk->GetLayout() != nullptr) && blk->GetLayout()->HasGCPtr()))
+-                {
+-                    return;
+-                }
++                // genCodeForCpBlkUnroll uses REG_RA (tempReg2) for >=16-byte copies, so do
++                // not elide any block store (none occur in the hot leaf getters anyway).
++                return;
+             }
+ 
+             if (node->OperIs(GT_STOREIND) && varTypeIsGC(node->TypeGet()))

@@ -1,0 +1,51 @@
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -2527,8 +2527,15 @@
+             }
+             else
+             {
+-                // In the case of a GC-Pointer we'll call the ByRef write barrier helper
+-                genEmitHelperCall(CORINFO_HELP_ASSIGN_BYREF, 0, EA_PTRSIZE);
++                // zkVM: the ByRef barrier helper is reduced to a bare
++                // *dst++ = *src++ (uGC has no card table). Inline it to drop the
++                // per-slot call/ret. Mirrors __wrap_RhpByRefAssignRef.
++                emit->emitIns_R_R_I(INS_ld, EA_8BYTE, tmpReg, REG_WRITE_BARRIER_SRC_BYREF, 0);
++                emit->emitIns_R_R_I(INS_addi, EA_PTRSIZE, REG_WRITE_BARRIER_SRC_BYREF,
++                                    REG_WRITE_BARRIER_SRC_BYREF, TARGET_POINTER_SIZE);
++                emit->emitIns_R_R_I(INS_sd, EA_8BYTE, tmpReg, REG_WRITE_BARRIER_DST_BYREF, 0);
++                emit->emitIns_R_R_I(INS_addi, EA_PTRSIZE, REG_WRITE_BARRIER_DST_BYREF,
++                                    REG_WRITE_BARRIER_DST_BYREF, TARGET_POINTER_SIZE);
+                 gcPtrCount--;
+             }
+             ++i;
+@@ -3040,6 +3047,12 @@
+     GenTree* addr = tree->Addr();
+ 
+     GCInfo::WriteBarrierForm writeBarrierForm = gcInfo.gcIsWriteBarrierCandidate(tree);
++
++    // zkVM: uGC never relocates or collects and the RhpAssignRef* helpers are
++    // already reduced to a bare store, so a GC ref store is just a plain store.
++    // Force the inline-store path below (no t3/t4 marshalling, no call/ret).
++    writeBarrierForm = GCInfo::WBF_NoBarrier;
++
+     if (writeBarrierForm != GCInfo::WBF_NoBarrier)
+     {
+         // data and addr must be in registers.
+--- a/src/coreclr/jit/lsrariscv64.cpp
++++ b/src/coreclr/jit/lsrariscv64.cpp
+@@ -552,12 +552,9 @@
+         {
+             assert(dstCount == 0);
+ 
+-            if (compiler->codeGen->gcInfo.gcIsWriteBarrierStoreIndNode(tree->AsStoreInd()))
+-            {
+-                srcCount = BuildGCWriteBarrier(tree);
+-                break;
+-            }
+-
++            // zkVM: ref stores are inlined (see genCodeForStoreInd), so never
++            // take the write-barrier path - always build an ordinary indir so
++            // the operands are not pinned to t3/t4.
+             srcCount = BuildIndir(tree->AsIndir());
+             if (!tree->gtGetOp2()->isContained())
+             {

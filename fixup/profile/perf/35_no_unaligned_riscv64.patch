@@ -1,0 +1,316 @@
+--- a/src/coreclr/jit/jitconfigvalues.h
++++ b/src/coreclr/jit/jitconfigvalues.h
+@@ -459,6 +459,13 @@
+ // no LR/SC) and elides every memory barrier (no fence). Set 0 to restore the stock
+ // atomic/fence codegen -- required on any real multi-hart RISC-V hardware.
+ RELEASE_CONFIG_INTEGER(RiscV64NoAtomics,            "RiscV64NoAtomics",          1)
++// Some targets require every memory access to be naturally aligned (the executor
++// asserts addr % width == 0). When 1, the riscv64 JIT never emits a wide load/store
++// for an access the front end flagged unaligned (Unsafe.Read/WriteUnaligned, the
++// `unaligned.` IL prefix, unrolled cpblk/initblk); it expands them into byte-wise
++// sequences instead. On by default; set 0 on targets that tolerate unaligned access
++// to keep the faster wide accesses.
++RELEASE_CONFIG_INTEGER(JitNoUnalignedAccess,        "JitNoUnalignedAccess",      1)
+ #endif
+ 
+ RELEASE_CONFIG_INTEGER(EnableEmbeddedBroadcast,     "EnableEmbeddedBroadcast",   1) // Allows embedded broadcasts to be disabled
+--- a/src/coreclr/jit/lowerriscv64.cpp
++++ b/src/coreclr/jit/lowerriscv64.cpp
+@@ -999,6 +999,15 @@
+     NYI_RISCV64("ContainCheckIndir-SIMD");
+ #endif // FEATURE_SIMD
+ 
++    // No-unaligned mode: an unaligned scalar access is expanded byte-wise off a base
++    // register (see genCodeForIndir/genCodeForStoreInd), so its address must be left
++    // in a register rather than folded into an addressing mode.
++    if ((JitConfig.JitNoUnalignedAccess() != 0) && indirNode->IsUnaligned() &&
++        (genTypeSize(indirNode->TypeGet()) > 1))
++    {
++        return;
++    }
++
+     GenTree* addr = indirNode->Addr();
+     if (addr->OperIs(GT_LEA) && IsSafeToContainMem(indirNode, addr))
+     {
+--- a/src/coreclr/jit/lsrariscv64.cpp
++++ b/src/coreclr/jit/lsrariscv64.cpp
+@@ -887,6 +887,36 @@
+     GenTree* addr  = indirTree->Addr();
+     GenTree* index = nullptr;
+     int      cns   = 0;
++
++    // No-unaligned mode: an unaligned scalar load/store is expanded into a byte-wise
++    // sequence (see genCodeForIndir/genCodeForStoreInd). The address is forced into a
++    // register (ContainCheckIndir), and we reserve integer scratch(es): one for
++    // the byte being merged/extracted, plus, for a floating load, an accumulator that
++    // is moved into the fp destination. The address is kept off the load's target reg.
++    if ((JitConfig.JitNoUnalignedAccess() != 0) && indirTree->IsUnaligned() &&
++        indirTree->OperIs(GT_IND, GT_STOREIND) && (genTypeSize(indirTree->TypeGet()) > 1))
++    {
++        assert(!addr->isContained());
++        const bool isLoad  = indirTree->OperIs(GT_IND);
++        const bool isFloat = varTypeIsFloating(indirTree->TypeGet());
++
++        setDelayFree(BuildUse(addr));
++        int srcCount = 1;
++
++        buildInternalIntRegisterDefForNode(indirTree); // scratch for the byte
++        if (isLoad && isFloat)
++        {
++            buildInternalIntRegisterDefForNode(indirTree); // integer accumulator
++        }
++        setInternalRegsDelayFree = true;
++        buildInternalRegisterUses();
++
++        if (isLoad)
++        {
++            BuildDef(indirTree);
++        }
++        return srcCount;
++    }
+ 
+     if (addr->isContained())
+     {
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -1865,7 +1865,119 @@
+     }
+     genProduceReg(tree);
+ }
++
++//------------------------------------------------------------------------
++// "No unaligned access" support.
++//
++// Some targets require every memory access to be naturally aligned (the executor
++// asserts addr % width == 0). Like on any unaligned-tolerant ISA, RyuJIT otherwise
++// emits a single wide ld/sd for accesses the front end flagged unaligned (Unsafe.Read/
++// WriteUnaligned, the `unaligned.` IL prefix, unrolled cpblk/initblk). When
++// JitNoUnalignedAccess is set we expand those into byte-wise sequences instead. The
++// knob is off by default, so targets that tolerate unaligned access are unaffected.
++//
++static bool genRiscV64NoUnalignedAccess()
++{
++    return JitConfig.JitNoUnalignedAccess() != 0;
++}
++
++// True for a scalar (non-struct) load/store wider than one byte that is flagged
++// unaligned and so, in no-unaligned mode, must be lowered to a byte-wise sequence.
++static bool genRiscV64ByteWiseUnaligned(GenTreeIndir* indir)
++{
++    return genRiscV64NoUnalignedAccess() && indir->IsUnaligned() && !indir->TypeIs(TYP_STRUCT) &&
++           (genTypeSize(indir->TypeGet()) > 1);
++}
++
++//------------------------------------------------------------------------
++// genRiscV64ByteWiseLoad: Emit a byte-by-byte load of `type` from [addrReg] into
++//   dstReg so that every memory access is a naturally-aligned single byte.
++//
++// Arguments:
++//   emit    - the emitter
++//   type    - the scalar type being loaded; size must be 2, 4 or 8
++//   dstReg  - destination register (integer or float)
++//   addrReg - register holding the base address (accessed at offsets 0..size-1)
++//   intTmp  - integer scratch for the byte being merged in
++//   intAcc  - integer accumulator: for a float load it is built up and then moved
++//             into dstReg; for an integer load pass dstReg itself
++//
++static void genRiscV64ByteWiseLoad(
++    emitter* emit, var_types type, regNumber dstReg, regNumber addrReg, regNumber intTmp, regNumber intAcc)
++{
++    const unsigned size       = genTypeSize(type);
++    const bool     isFloat    = varTypeIsFloating(type);
++    const bool     isUnsigned = varTypeIsUnsigned(type);
++    assert((size == 2) || (size == 4) || (size == 8));
++    assert(intAcc != REG_NA);
+ 
++    // Low byte: always zero-extended; the OR chain fills the bytes above it.
++    emit->emitIns_R_R_I(INS_lbu, EA_PTRSIZE, intAcc, addrReg, 0);
++
++    for (unsigned i = 1; i < size; i++)
++    {
++        // The most-significant byte of a signed sub-word integer load is sign-extended
++        // so the value matches a native lh/lw; every other byte (and all bytes of an
++        // unsigned or float load) is zero-extended.
++        instruction lbIns = (!isFloat && !isUnsigned && (i == size - 1)) ? INS_lb : INS_lbu;
++        emit->emitIns_R_R_I(lbIns, EA_PTRSIZE, intTmp, addrReg, (int)i);
++        emit->emitIns_R_R_I(INS_slli, EA_PTRSIZE, intTmp, intTmp, (int)(i * 8));
++        emit->emitIns_R_R_R(INS_or, EA_PTRSIZE, intAcc, intAcc, intTmp);
++    }
++
++    if (isFloat)
++    {
++        emit->emitIns_R_R((size == 4) ? INS_fmv_w_x : INS_fmv_d_x, EA_ATTR(size), dstReg, intAcc);
++    }
++}
++
++//------------------------------------------------------------------------
++// genRiscV64ByteWiseStore: Emit a byte-by-byte store of `type` from dataReg to
++//   [addrReg] so that every memory access is a naturally-aligned single byte.
++//
++// Arguments:
++//   emit    - the emitter
++//   type    - the scalar type being stored; size must be 2, 4 or 8
++//   dataReg - source register holding the value (integer/float, or REG_R0 for a
++//             contained integer zero)
++//   addrReg - register holding the base address (accessed at offsets 0..size-1)
++//   intTmp  - integer scratch; for a float store it receives the bit pattern and is
++//             then shifted down in place
++//
++static void genRiscV64ByteWiseStore(
++    emitter* emit, var_types type, regNumber dataReg, regNumber addrReg, regNumber intTmp)
++{
++    const unsigned size    = genTypeSize(type);
++    const bool     isFloat = varTypeIsFloating(type);
++    assert((size == 2) || (size == 4) || (size == 8));
++
++    regNumber bits; // integer register whose low bytes are spilled one at a time
++    if (isFloat)
++    {
++        emit->emitIns_R_R((size == 4) ? INS_fmv_x_w : INS_fmv_x_d, EA_ATTR(size), intTmp, dataReg);
++        bits = intTmp; // a private copy: safe to shift down in place
++    }
++    else
++    {
++        bits = dataReg; // a live operand: must not be clobbered, so shift into intTmp
++    }
++
++    emit->emitIns_R_R_I(INS_sb, EA_PTRSIZE, bits, addrReg, 0);
++    for (unsigned i = 1; i < size; i++)
++    {
++        if (isFloat)
++        {
++            emit->emitIns_R_R_I(INS_srli, EA_PTRSIZE, bits, bits, 8);
++            emit->emitIns_R_R_I(INS_sb, EA_PTRSIZE, bits, addrReg, (int)i);
++        }
++        else
++        {
++            emit->emitIns_R_R_I(INS_srli, EA_PTRSIZE, intTmp, bits, (int)(i * 8));
++            emit->emitIns_R_R_I(INS_sb, EA_PTRSIZE, intTmp, addrReg, (int)i);
++        }
++    }
++}
++
+ // Generate code for InitBlk by performing a loop unroll
+ // Preconditions:
+ //   a) Both the size and fill byte value are integer constants.
+@@ -1926,6 +2038,24 @@
+ 
+     assert(size <= INT32_MAX);
+     assert(dstOffset < INT32_MAX - static_cast<int>(size));
++
++    if (genRiscV64NoUnalignedAccess() && node->IsUnaligned())
++    {
++        // Unaligned access is forbidden here: spill the (already byte-replicated) fill
++        // value one byte at a time so every store is naturally aligned.
++        for (unsigned i = 0; i < size; i++)
++        {
++            if (dstLclNum != BAD_VAR_NUM)
++            {
++                emit->emitIns_S_R(INS_sb, EA_4BYTE, srcReg, dstLclNum, dstOffset + (int)i);
++            }
++            else
++            {
++                emit->emitIns_R_R_I(INS_sb, EA_4BYTE, srcReg, dstAddrBaseReg, dstOffset + (int)i);
++            }
++        }
++        return;
++    }
+ 
+     for (unsigned regSize = 2 * REGSIZE_BYTES; size >= regSize; size -= regSize, dstOffset += regSize)
+     {
+@@ -2927,7 +3057,25 @@
+             instGen_MemoryBarrier();
+         }
+ 
+-        GetEmitter()->emitInsLoadStoreOp(ins, emitActualTypeSize(type), dataReg, tree);
++        if (genRiscV64ByteWiseUnaligned(tree))
++        {
++            // Expand the unaligned store into a naturally-aligned byte sequence.
++            // The address was forced into a register (ContainCheckIndir) and LSRA
++            // reserved the scratch register (BuildIndir).
++            regNumber addrReg = addr->GetRegNum();
++            regNumber intTmp  = internalRegisters.GetSingle(tree);
++
++            // genConsumeAddress marked addrReg dead, but the byte sequence reuses it; if
++            // it holds a (possibly interior) GC pointer keep it reported until the last
++            // byte is stored.
++            gcInfo.gcMarkRegPtrVal(addrReg, addr->TypeGet());
++            genRiscV64ByteWiseStore(GetEmitter(), type, dataReg, addrReg, intTmp);
++            gcInfo.gcMarkRegSetNpt(genRegMask(addrReg));
++        }
++        else
++        {
++            GetEmitter()->emitInsLoadStoreOp(ins, emitActualTypeSize(type), dataReg, tree);
++        }
+     }
+ }
+ 
+@@ -5464,8 +5612,27 @@
+         instGen_MemoryBarrier(BARRIER_FULL);
+     }
+ 
+-    GetEmitter()->emitInsLoadStoreOp(ins, emitActualTypeSize(type), targetReg, tree);
++    if (genRiscV64ByteWiseUnaligned(tree))
++    {
++        // Expand the unaligned load into a naturally-aligned byte sequence. The
++        // address was forced into a register (ContainCheckIndir) and LSRA reserved the
++        // scratch register(s) (BuildIndir).
++        regNumber addrReg = tree->Addr()->GetRegNum();
++        regNumber intTmp  = internalRegisters.Extract(tree);
++        regNumber intAcc  = varTypeIsFloating(type) ? internalRegisters.Extract(tree) : targetReg;
+ 
++        // genConsumeAddress marked addrReg dead, but the byte sequence reuses it; if it
++        // holds a (possibly interior) GC pointer - e.g. ReadUnaligned off a byref into a
++        // managed array - keep it reported until the last byte is loaded.
++        gcInfo.gcMarkRegPtrVal(addrReg, tree->Addr()->TypeGet());
++        genRiscV64ByteWiseLoad(GetEmitter(), type, targetReg, addrReg, intTmp, intAcc);
++        gcInfo.gcMarkRegSetNpt(genRegMask(addrReg));
++    }
++    else
++    {
++        GetEmitter()->emitInsLoadStoreOp(ins, emitActualTypeSize(type), targetReg, tree);
++    }
++
+     genProduceReg(tree);
+ }
+ 
+@@ -5556,7 +5723,39 @@
+     assert(dstOffset < INT32_MAX - static_cast<int>(size));
+ 
+     regNumber tempReg = internalRegisters.Extract(cpBlkNode, RBM_ALLINT);
++
++    if (genRiscV64NoUnalignedAccess() && cpBlkNode->IsUnaligned())
++    {
++        // Unaligned access is forbidden here: copy one byte at a time so every load/store
++        // is naturally aligned, regardless of the (unknown) base alignment.
++        for (unsigned i = 0; i < size; i++)
++        {
++            if (srcLclNum != BAD_VAR_NUM)
++            {
++                emit->emitIns_R_S(INS_lbu, EA_4BYTE, tempReg, srcLclNum, srcOffset + (int)i);
++            }
++            else
++            {
++                emit->emitIns_R_R_I(INS_lbu, EA_4BYTE, tempReg, srcAddrBaseReg, srcOffset + (int)i);
++            }
++
++            if (dstLclNum != BAD_VAR_NUM)
++            {
++                emit->emitIns_S_R(INS_sb, EA_4BYTE, tempReg, dstLclNum, dstOffset + (int)i);
++            }
++            else
++            {
++                emit->emitIns_R_R_I(INS_sb, EA_4BYTE, tempReg, dstAddrBaseReg, dstOffset + (int)i);
++            }
++        }
+ 
++        if (cpBlkNode->IsVolatile())
++        {
++            instGen_MemoryBarrier(BARRIER_LOAD_ONLY);
++        }
++        return;
++    }
++
+     if (size >= 2 * REGSIZE_BYTES)
+     {
+         regNumber tempReg2 = REG_RA;
