@@ -1,0 +1,94 @@
+diff --git a/src/coreclr/jit/inline.cpp b/src/coreclr/jit/inline.cpp
+index 8f662c78450..88449c04b89 100644
+--- a/src/coreclr/jit/inline.cpp
++++ b/src/coreclr/jit/inline.cpp
+@@ -856,55 +856,42 @@ InlineStrategy::InlineStrategy(Compiler* compiler)
+     // Verify compiler is a root compiler instance
+     assert(m_Compiler->impInlineRoot() == m_Compiler);
+ 
+-#ifdef DEBUG
+-
+-    // Possibly modify the max inline size.
++    // Possibly modify the max inline size / depth / force-inline depth from config.
+     //
+-    // Default value of JitInlineSize is the same as our default.
+-    // So normally this next line does not change the size.
++    // Default values equal our compiled defaults, so these are normally no-ops. The configs
++    // are RELEASE-settable (see jitconfigvalues.h) so the ZisK riscv64 guest build can raise
++    // them to inline more (no icache; proving cost == executed-instruction count). Clamp
++    // (instead of asserting) so release-set values stay in the implementation-safe range.
+     m_MaxInlineSize = JitConfig.JitInlineSize();
+ 
+-    // Up the max size under stress
++#ifdef DEBUG
++    // Up the max size under stress.
+     if (m_Compiler->compInlineStress())
+     {
+         m_MaxInlineSize *= 10;
+     }
++#endif // DEBUG
+ 
+-    // But don't overdo it
+     if (m_MaxInlineSize > IMPLEMENTATION_MAX_INLINE_SIZE)
+     {
+         m_MaxInlineSize = IMPLEMENTATION_MAX_INLINE_SIZE;
+     }
++    if (m_MaxInlineSize < ALWAYS_INLINE_SIZE)
++    {
++        m_MaxInlineSize = ALWAYS_INLINE_SIZE;
++    }
+ 
+-    // Verify: not too small, not too big.
+-    assert(m_MaxInlineSize >= ALWAYS_INLINE_SIZE);
+-    assert(m_MaxInlineSize <= IMPLEMENTATION_MAX_INLINE_SIZE);
+-
+-    // Possibly modify the max inline depth
+-    //
+-    // Default value of JitInlineDepth is the same as our default.
+-    // So normally this next line does not change the size.
+     m_MaxInlineDepth = JitConfig.JitInlineDepth();
+-
+-    // But don't overdo it
+     if (m_MaxInlineDepth > IMPLEMENTATION_MAX_INLINE_DEPTH)
+     {
+         m_MaxInlineDepth = IMPLEMENTATION_MAX_INLINE_DEPTH;
+     }
+ 
+-    // Possibly modify the max force inline depth
+-    //
+-    // Default value of JitForceInlineDepth is the same as our default.
+-    // So normally this next line does not change the size.
+     m_MaxForceInlineDepth = JitConfig.JitForceInlineDepth();
+-
+-    // But don't overdo it
+     if (m_MaxForceInlineDepth > m_MaxInlineDepth)
+     {
+         m_MaxForceInlineDepth = m_MaxInlineDepth;
+     }
+-
+-#endif // DEBUG
+ }
+ 
+ //------------------------------------------------------------------------
+diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
+index f5d05b2a95a..16e9cdbcfaf 100644
+--- a/src/coreclr/jit/jitconfigvalues.h
++++ b/src/coreclr/jit/jitconfigvalues.h
+@@ -116,10 +116,14 @@ CONFIG_INTEGER(JitHashBreak, "JitHashBreak", -1)        // Same as JitBreak, but
+ CONFIG_INTEGER(JitHashHalt, "JitHashHalt", -1)          // Same as JitHalt, but for a method hash
+ CONFIG_INTEGER(JitInlineAdditionalMultiplier, "JitInlineAdditionalMultiplier", 0)
+ CONFIG_INTEGER(JitInlinePrintStats, "JitInlinePrintStats", 0)
+-CONFIG_INTEGER(JitInlineSize, "JitInlineSize", DEFAULT_MAX_INLINE_SIZE)
+-CONFIG_INTEGER(JitInlineDepth, "JitInlineDepth", DEFAULT_MAX_INLINE_DEPTH)
++// RELEASE-settable (were DEBUG-only) so the ZisK riscv64 guest build can raise the inline
++// size/depth: the target has no icache and proving cost == executed-instruction count, so the
++// stock heuristics (tuned for icache/compile-time on real HW) are overly conservative here.
++// Defaults equal the compiled defaults -> NO behaviour change unless the build sets them.
++RELEASE_CONFIG_INTEGER(JitInlineSize, "JitInlineSize", DEFAULT_MAX_INLINE_SIZE)
++RELEASE_CONFIG_INTEGER(JitInlineDepth, "JitInlineDepth", DEFAULT_MAX_INLINE_DEPTH)
+ RELEASE_CONFIG_INTEGER(JitInlineBudget, "JitInlineBudget", DEFAULT_INLINE_BUDGET)
+-CONFIG_INTEGER(JitForceInlineDepth, "JitForceInlineDepth", DEFAULT_MAX_FORCE_INLINE_DEPTH)
++RELEASE_CONFIG_INTEGER(JitForceInlineDepth, "JitForceInlineDepth", DEFAULT_MAX_FORCE_INLINE_DEPTH)
+ RELEASE_CONFIG_INTEGER(JitInlineMethodsWithEH, "JitInlineMethodsWithEH", 1)
+ CONFIG_STRING(JitInlineMethodsWithEHRange, "JitInlineMethodsWithEHRange")
+ 

@@ -17,6 +17,10 @@ on:
         description: 'publish release'
         type: boolean
         default: true
+      performance:
+        description: 'apply the perf fixup profile'
+        type: boolean
+        default: false
       whole_source:
         description: 'publish whole source'
         type: boolean
@@ -55,7 +59,7 @@ jobs:
     - name: Patch repository
       run: |
         cd ${{ github.workspace }}
-        ./patch_runtime.sh
+        ./patch_runtime.sh ${{ inputs.performance && 'perf' || 'minimal' }}
 
     - name: Pack whole source early
       if: ${{ inputs.whole_source_early }}
