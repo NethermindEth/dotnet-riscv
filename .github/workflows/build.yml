@@ -9,10 +9,10 @@ on:
         type: string
         default: dotnet
       branch:
-        description: 'dotnet VMR branch name'
+        description: 'dotnet VMR branch name (must be a full-VMR branch with src/runtime, e.g. release/10.0.1xx; SDK-only feature bands like 10.0.4xx cannot source-build the runtime)'
         required: true
         type: string
-        default: release/10.0.2xx
+        default: release/10.0.1xx
       release:
         description: 'publish release'
         type: boolean
