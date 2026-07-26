@@ -88,7 +88,10 @@ march="-march=rv64imafd -mabi=lp64d"
 for arg in "$@"; do
     case $arg in
     */nativeaot/*|*/src/native/libs/*)
-        march="-march=rv64im -mabi=lp64"
+        # -Wno-atomic-alignment: without the A extension every __atomic_* call
+        # is "not lock-free" and clang warns; the nativeaot build compiles with
+        # -Werror, which would turn that into a hard error.
+        march="-march=rv64im -mabi=lp64 -Wno-atomic-alignment"
         break
         ;;
     esac
