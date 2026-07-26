@@ -84,18 +84,38 @@ if [ "$compile" = 0 ]; then
     exec "$real" "$@" -march=rv64im -mabi=lp64 -mno-relax -gdwarf-4 -fno-jump-tables ${rt:+"$rt"} ${atomic:+"$atomic"}
 fi
 
+# Classify by the source file and the -o path only — never by -I/-D and other
+# flag values: SDK-side compiles may carry -I.../src/native/libs/... include
+# paths without being client-bound.
 march="-march=rv64imafd -mabi=lp64d"
+prev=
 for arg in "$@"; do
-    case $arg in
-    */nativeaot/*|*/src/native/libs/*)
-        # -Wno-atomic-alignment: without the A extension every __atomic_* call
-        # is "not lock-free" and clang warns; the nativeaot build compiles with
-        # -Werror, which would turn that into a hard error.
-        march="-march=rv64im -mabi=lp64 -Wno-atomic-alignment"
-        break
-        ;;
-    esac
+    if [ "$prev" = "-o" ]; then
+        case $arg in
+        */nativeaot/*)
+            client=1
+            ;;
+        esac
+    else
+        case $arg in
+        -*) ;;
+        *.c|*.cc|*.cpp|*.cxx|*.S|*.s)
+            case $arg in
+            */nativeaot/*|*/src/native/libs/*)
+                client=1
+                ;;
+            esac
+            ;;
+        esac
+    fi
+    prev=$arg
 done
+if [ "${client:-0}" = 1 ]; then
+    # -Wno-atomic-alignment: without the A extension every __atomic_* call is
+    # "not lock-free" and clang warns; the nativeaot build compiles with
+    # -Werror, which would turn that into a hard error.
+    march="-march=rv64im -mabi=lp64 -Wno-atomic-alignment"
+fi
 
 "$real" "$@" $march -mno-relax -gdwarf-4 -fno-jump-tables
 rc=$?
