@@ -8,10 +8,10 @@ profile="${1:-minimal}"
 
 case "$profile" in
     minimal)
-        fixup_dirs="minimal"
+        profile_dirs="minimal"
         ;;
     perf|performance)
-        fixup_dirs="minimal perf"
+        profile_dirs="minimal perf"
         ;;
     *)
         echo "Unknown fixup profile: $profile (expected minimal or perf)" >&2
@@ -26,9 +26,24 @@ if [ ! -d dotnet/src/runtime ] ; then
     exit 1
 fi
 
+# Fixups are versioned per .NET major (fixup/<major>/profile/<profile>).
+major="$(sed -n 's/.*<MajorVersion>\([0-9][0-9]*\)<\/MajorVersion>.*/\1/p' dotnet/src/runtime/eng/Versions.props | head -n1)"
+if [ -z "$major" ] ; then
+    echo "Cannot determine the .NET major version from dotnet/src/runtime/eng/Versions.props" >&2
+    exit 1
+fi
+echo "Detected .NET major version: $major"
+
+for dir in $profile_dirs ; do
+    if [ ! -d "${TOP_DIR}/fixup/$major/profile/$dir" ] ; then
+        echo "No '$dir' fixups for .NET $major (fixup/$major/profile/$dir does not exist)." >&2
+        exit 1
+    fi
+done
+
 pushd dotnet/src/runtime
-    for dir in $fixup_dirs ; do
-        for file in $(ls ${TOP_DIR}/fixup/profile/$dir/*.patch | xargs) ; do
+    for dir in $profile_dirs ; do
+        for file in $(ls ${TOP_DIR}/fixup/$major/profile/$dir/*.patch | xargs) ; do
             echo Applying $file
             patch -p1 < $file
             res="$?"

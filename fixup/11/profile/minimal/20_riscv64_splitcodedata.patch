@@ -1,0 +1,101 @@
+diff --git a/src/coreclr/jit/ee_il_dll.cpp b/src/coreclr/jit/ee_il_dll.cpp
+--- a/src/coreclr/jit/ee_il_dll.cpp
++++ b/src/coreclr/jit/ee_il_dll.cpp
+@@ -1122,7 +1122,10 @@
+ 
+ bool Compiler::eeDataWithCodePointersNeedsRelocs()
+ {
+-#if defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
++// RISCV64 intentionally excluded: JIT data chunks are no longer folded into
++// the code chunk (see eeAllocMem), so data with code pointers always needs
++// relocations, like the other separate-allocation targets.
++#if defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64)
+     // On these platforms, for ELF/MachO, we allocate this data in read-write
+     // data and need to report relocations to the EE. Otherwise we allocate
+     // next to the code chunk and hence do not need to report any relocs.
+@@ -1177,7 +1180,14 @@
+ 
+     int firstDataChunk = chunks.Height();
+ 
+-#if defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
++// RISCV64 intentionally excluded: by NOT folding the JIT data chunks into the
++// hot code allocation here, the AOT pipeline emits them as separate data
++// nodes placed in their own read-only data section. The auipc + addi/ld
++// sequences that reference them use the paired RISCV64_PCREL_I relocation
++// resolved at link time, so code and read-only data no longer have to be laid
++// out adjacently (which the baked-at-emit-time displacement previously
++// required).
++#if defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64)
+ 
+     // For arm64/LoongArch64/RISCV64, we want to allocate JIT data always adjacent to code similar to what native
+     // compiler does.
+@@ -1212,7 +1222,7 @@
+         chunks.Push(dataChunks[i]);
+     }
+ 
+-#endif // defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
++#endif // defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64)
+ 
+     AllocMemArgs args;
+     args.chunks      = chunks.Data();
+@@ -1244,7 +1254,8 @@
+ 
+     int curDataChunk = firstDataChunk;
+ 
+-#if defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
++// RISCV64 intentionally excluded, see the fold loop above.
++#if defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64)
+ 
+     // Fix up data section pointers.
+     for (unsigned i = 0; i < numDataChunks; i++)
+@@ -1272,7 +1283,7 @@
+         curDataChunk++;
+     }
+ 
+-#endif // defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
++#endif // defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64)
+ }
+ 
+ void Compiler::eeReserveUnwindInfo(bool isFunclet, bool isColdCode, ULONG unwindSize)
+diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
+--- a/src/coreclr/jit/emitriscv64.cpp
++++ b/src/coreclr/jit/emitriscv64.cpp
+@@ -1222,9 +1222,12 @@
+     id->idInsOpt(INS_OPTS_RC);
+     id->idCodeSize(2 * sizeof(code_t)); // auipc + load/addi
+ 
+-    // TODO-RISCV64: this maybe deleted.
+-    id->idSetIsBound(); // We won't patch address since we will know the exact distance
+-                        // once JIT code and data are allocated together.
++    // RISC-V64 used to allocate JIT code and data adjacent (see eeAllocMem)
++    // and therefore knew the exact code->data distance at emit time. Data now
++    // stays a separate chunk (own .rodata section in AOT), so the distance is
++    // only resolved at link time. Do NOT mark the instr as bound --
++    // emitOutputInstr_OptsRc leaves both the auipc and addi/ld immediates at
++    // zero and records a RISCV64_PCREL_I relocation against the data symbol.
+ 
+     assert(addrReg == REG_NA); // NOTE: for RISV64, not support addrReg != REG_NA.
+ 
+@@ -2970,13 +2973,17 @@
+     const regNumber reg1 = id->idReg1();
+     assert(reg1 != REG_ZERO);
+     assert(id->idCodeSize() == 2 * sizeof(code_t));
+-    const ssize_t immediate = emitDataOffsetToPtr(offset) - dst;
+-    assert((immediate > 0) && ((immediate & 0x01) == 0));
+-    assert(isValidSimm32(immediate));
+ 
++    // Emit auipc + (ld/addi) with zero immediates and record a paired
++    // PC-relative relocation on the auipc: the consumer (VM at runtime, or
++    // the linker for AOT once .text and .rodata are laid out) substitutes
++    // the actual displacement between the auipc PC and the data symbol.
++    BYTE* const     dstBase = dst;
+     const regNumber tempReg = isFloatReg(reg1) ? codeGen->rsGetRsvdReg() : reg1;
+-    dst += emitOutput_UTypeInstr(dst, INS_auipc, tempReg, UpperNBitsOfWordSignExtend<20>(immediate));
+-    dst += emitOutput_ITypeInstr(dst, *ins, reg1, tempReg, LowerNBitsOfWord<12>(immediate));
++    dst += emitOutput_UTypeInstr(dst, INS_auipc, tempReg, 0);
++    dst += emitOutput_ITypeInstr(dst, *ins, reg1, tempReg, 0);
++
++    emitRecordRelocation(dstBase, emitDataOffsetToPtr(offset), CorInfoReloc::RISCV64_PCREL_I);
+     return dst;
+ }
+ 
