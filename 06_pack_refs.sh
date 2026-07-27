@@ -21,7 +21,15 @@ function pack_bflat_refs()
     fi
 
     pushd "${artifactpath}"
-        cp $pkgpath/*/ref/net[0-9]*/*.dll \
+        # The cache holds reference packs for several majors (6.0, 8.0, 9.0,
+        # ... plus the freshly built one) — pick the highest version only,
+        # a flat copy of all of them would mix and clobber same-named dlls.
+        refdir="$(ls -d $pkgpath/*/ref/net[0-9]* 2>/dev/null | sort -V | tail -n1)"
+        if [ -z "$refdir" ] ; then
+            popd
+            return 1
+        fi
+        cp "$refdir"/*.dll \
            "${output_dir}/"
     popd
 
