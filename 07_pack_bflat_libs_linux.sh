@@ -24,11 +24,11 @@ function pack_bflat_libs_linux()
     fi
 
     pushd "${artifactpath}/$pkgpath"
-        cp 10.0.*/runtimes/linux-*riscv64/lib/net10.0/*.dll \
-           10.0.*/runtimes/linux-*riscv64/native/*.a \
-           10.0.*/runtimes/linux-*riscv64/native/*.o \
-           10.0.*/runtimes/linux-*riscv64/native/*.so \
-           10.0.*/runtimes/linux-*riscv64/native/*.dll \
+        cp [0-9]*/runtimes/linux-*riscv64/lib/net[0-9]*/*.dll \
+           [0-9]*/runtimes/linux-*riscv64/native/*.a \
+           [0-9]*/runtimes/linux-*riscv64/native/*.o \
+           [0-9]*/runtimes/linux-*riscv64/native/*.so \
+           [0-9]*/runtimes/linux-*riscv64/native/*.dll \
            "${output_dir}/"
     popd
 
