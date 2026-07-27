@@ -23,13 +23,46 @@ function build_compiler()
     local runtime_dir="$1"
 
     pushd "${runtime_dir}"
+        # The VMR build rewrites this repo to consume the locally built toolset
+        # (arcade & friends stamped with our OfficialBuildId), which no public
+        # feed carries — for released bands the versions happen to be public,
+        # for preview bands they are not. Register the VMR's own package
+        # outputs as NuGet sources so the restore finds them either way.
+        # NB: inserted right after the <clear /> that opens <packageSources> —
+        # anything added before that clear would be wiped by it, and the file
+        # has another unrelated <clear /> in <fallbackPackageFolders>.
+        TOP_DIR="${TOP_DIR}" python3 - <<'PYEOF'
+import os, re
+
+path = "NuGet.config"
+with open(path) as f:
+    s = f.read()
+
+if "vmr-local-shipping" not in s:
+    top = os.environ["TOP_DIR"]
+    feeds = "\n".join(
+        f'    <add key="vmr-local-{name}" value="{top}/dotnet/{sub}" />'
+        for name, sub in (
+            ("shipping", "artifacts/packages/Release/Shipping"),
+            ("nonshipping", "artifacts/packages/Release/NonShipping"),
+            ("cache", ".packages"),
+        ))
+    m = re.search(r"<packageSources>\s*<clear\s*/>", s)
+    if m:
+        s = s[:m.end()] + "\n" + feeds + s[m.end():]
+    else:
+        s = s.replace("<packageSources>", "<packageSources>\n" + feeds, 1)
+    with open(path, "w") as f:
+        f.write(s)
+PYEOF
+
         # bflat consumes the *managed* ILCompiler assemblies as a library, and they
         # are portable: the RISC-V target is selected at runtime (--targetarch),
         # so there is nothing arch-specific to build.
         # Build only the managed ILCompiler.RyuJit project graph — no native cross
         # build, no rootfs, and crucially no self-contained ILCompiler/crossgen2
         # publish, which would try to restore the unofficial linux-musl-riscv64
-        # runtime packs (NU1101/NU1102). It restores from public feeds only.
+        # runtime packs (NU1101/NU1102).
         ./build.sh --restore --build \
                    --projects "$(pwd)/src/coreclr/tools/aot/ILCompiler.RyuJit/ILCompiler.RyuJit.csproj" \
                    -c Release
