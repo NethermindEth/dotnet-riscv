@@ -91,8 +91,10 @@ march="-march=rv64imafd -mabi=lp64d"
 prev=
 for arg in "$@"; do
     if [ "$prev" = "-o" ]; then
+        # ninja passes object paths relative to the build root (nativeaot/...),
+        # make passes them absolute (.../obj/.../nativeaot/...) — match both.
         case $arg in
-        */nativeaot/*)
+        */nativeaot/*|nativeaot/*)
             client=1
             ;;
         esac
