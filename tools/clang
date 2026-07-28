@@ -114,7 +114,13 @@ if [ "${client:-0}" = 1 ]; then
     # -Wno-atomic-alignment: without the A extension every __atomic_* call is
     # "not lock-free" and clang warns; the nativeaot build compiles with
     # -Werror, which would turn that into a hard error.
-    march="-march=rv64im -mabi=lp64 -Wno-atomic-alignment"
+    # -fno-use-cxa-atexit: static destructors register via plain atexit()
+    # instead of __cxa_atexit(..., &__dso_handle). The zkVM guest link has no
+    # crtbegin.o to define __dso_handle, so the weak reference resolves to
+    # address 0 and the PC-relative access from ~0x80000000 overflows
+    # R_RISCV_PCREL_HI20 (~-2 GiB). No dso ever unloads in the guest, so the
+    # cxa registration protocol buys nothing there.
+    march="-march=rv64im -mabi=lp64 -Wno-atomic-alignment -fno-use-cxa-atexit"
 fi
 
 "$real" "$@" $march -mno-relax -gdwarf-4 -fno-jump-tables
