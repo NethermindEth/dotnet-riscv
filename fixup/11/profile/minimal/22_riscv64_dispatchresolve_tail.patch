@@ -1,0 +1,18 @@
+diff --git a/src/coreclr/nativeaot/Runtime/riscv64/DispatchResolve.S b/src/coreclr/nativeaot/Runtime/riscv64/DispatchResolve.S
+--- a/src/coreclr/nativeaot/Runtime/riscv64/DispatchResolve.S
++++ b/src/coreclr/nativeaot/Runtime/riscv64/DispatchResolve.S
+@@ -19,7 +19,13 @@
+         //  t1: parameter of the thunk's target
+         PREPARE_EXTERNAL_VAR RhpCidResolve, t0
+         mv      t1, t5
+-        tail    C_FUNC(RhpUniversalTransitionTailCall)
++        // The `tail` pseudo expands to auipc t1 + jalr t1 (always, when linker
++        // relaxation is disabled), clobbering the dispatch cell address that
++        // was just moved into t1. Route the jump through t2 instead, mirroring
++        // RhpInterfaceDispatchSlow in StubDispatch.S.
++1:
++        auipc   t2, %pcrel_hi(C_FUNC(RhpUniversalTransitionTailCall))
++        jalr    x0, t2, %pcrel_lo(1b)
+ 
+ LEAF_END RhpInterfaceDispatch, _TEXT
+ 
