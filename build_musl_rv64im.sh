@@ -61,7 +61,7 @@ pushd "$src" >/dev/null
 popd >/dev/null
 
 # --- 5. gate: no compressed / atomic instructions may have survived ----------
-OBJDUMP="${cross}objdump" python3 "$TOP_DIR/tools/musl_isa_scan.py" \
+OBJDUMP="${cross}objdump" python3 "$TOP_DIR/tools/isa_scan.py" \
     "$work/out/lib/libc.a" "$work/out/lib/crt1.o" \
     "$work/out/lib/crti.o" "$work/out/lib/crtn.o"
 
