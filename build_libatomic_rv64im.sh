@@ -16,7 +16,7 @@ target_libdir="${1:?usage: build_libatomic_rv64im.sh <target-usr-lib-dir>}"
 cross="${CROSS_COMPILE:-riscv64-linux-gnu-}"
 # -fno-builtin: the generic __atomic_* names are compiler builtins; without this
 # the compiler refuses to let us define them.
-cflags="-march=rv64im -mabi=lp64 -mno-relax -O2 -ffreestanding -fno-builtin -fno-stack-protector"
+cflags="-march=rv64im -mabi=lp64 -mno-relax -O2 -ffreestanding -fno-builtin -fno-stack-protector -Wno-builtin-declaration-mismatch"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 

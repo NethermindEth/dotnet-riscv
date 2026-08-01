@@ -30,8 +30,12 @@ function pack_libs()
         cp ./usr/lib/*.a \
            ./usr/lib/*.o \
            ./usr/lib/gcc/riscv64-alpine-linux-musl/*/libgcc.a \
-           "${gnu_output_dir}/libatomic.a" \
            "${output_dir}/"
+        # The Alpine rootfs ships its own rv64gc libatomic.a (picked up by the
+        # *.a glob above); overwrite it with our rv64im soft libatomic. This is
+        # a separate cp because cp refuses to clobber a just-created file when
+        # both sources are named in one invocation.
+        cp -f "${gnu_output_dir}/libatomic.a" "${output_dir}/"
     popd
 
     pushd "${output_dir}"
