@@ -6,17 +6,17 @@ tmp_dir_rootfs="${TOP_DIR}/tmp/rootfs"
 
 cd "${TOP_DIR}"
 
-apt-get install -y xz-utils git debootstrap libc6-riscv64-cross qemu-user-static binfmt-support python3-pip
+apt-get install -y xz-utils git debootstrap libc6-riscv64-cross qemu-user-static binfmt-support python3-pip \
+                   gcc-riscv64-linux-gnu binutils-riscv64-linux-gnu python3
 pip3 install aiohttp
 
 mkdir -p "${output_dir}"
 
-ret="1"
-pushd "${tmp_dir}"
-    pushd runtime
-        cp "${tmp_dir_rootfs}/runtime/.tools/rootfs/riscv64-gnu/usr/lib/gcc/riscv64-linux-gnu/13/libatomic.a" "${output_dir}/"
-        ret="$?"
-    popd
-popd
+# The stock GCC libatomic in the GNU rootfs is rv64gc (compressed + lr/sc) and
+# the zkVM guest links libatomic but decodes only base rv64im. The guest is
+# single-hart, so build our soft libatomic (plain load/modify/store, full
+# __atomic_* ABI) for rv64im and pack that instead of the rv64gc one.
+"${TOP_DIR}/build_libatomic_rv64im.sh" "${output_dir}"
+ret="$?"
 
 exit $ret
