@@ -12,7 +12,7 @@ diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 --- a/src/coreclr/jit/codegenriscv64.cpp
 +++ b/src/coreclr/jit/codegenriscv64.cpp
-@@ -2187,7 +2187,49 @@
+@@ -2187,7 +2187,51 @@
          default:
              noway_assert(!"Unexpected treeNode->gtOper");
      }
@@ -22,6 +22,8 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
 +        // Single-hart target: no amo. Plain read/modify/store. XCHG needs no
 +        // scratch; the arithmetic/bitwise forms compute the new value in an
 +        // internal register so the original value stays live in targetReg.
++        // lsrariscv64 extends the address/data lifetimes (delay-free) so they
++        // are not reused across the multi-instruction sequence.
 +        instruction insLoad  = is4 ? INS_lw : INS_ld;
 +        instruction insStore = is4 ? INS_sw : INS_sd;
 +        if (treeNode->OperIs(GT_XCHG))
@@ -63,7 +65,15 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
  
      if (targetReg != REG_ZERO)
      {
-@@ -2257,12 +2299,24 @@
+@@ -2250,19 +2294,31 @@
+     // so mark the location register as a GC pointer until code generation for this node is finished.
+     gcInfo.gcMarkRegPtrVal(loc, locOp->TypeGet());
+ 
+-    BasicBlock* retry = genCreateTempLabel();
+-    BasicBlock* fail  = genCreateTempLabel();
++    BasicBlock* fail = genCreateTempLabel();
+ 
+     emitter* e    = GetEmitter();
      emitAttr size = emitActualTypeSize(valOp);
      bool     is4  = (size == EA_4BYTE);
  
@@ -84,6 +94,7 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
 +    }
 +    else
 +    {
++        BasicBlock* retry = genCreateTempLabel();
 +        genDefineTempLabel(retry);
 +        e->emitIns_R_R_R(is4 ? INS_lr_w : INS_lr_d, size, target, loc, REG_R0); // load original value
 +        e->emitIns_J_cond_la(INS_bne, fail, target, comparand);                 // fail if doesn't match
@@ -97,18 +108,46 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
 diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
 --- a/src/coreclr/jit/lsrariscv64.cpp
 +++ b/src/coreclr/jit/lsrariscv64.cpp
-@@ -571,6 +571,14 @@
+@@ -561,18 +561,40 @@
+             GenTree* data = tree->gtGetOp2();
+             assert(!addr->isContained());
+ 
++            // Plain (no-A) lowering expands to a multi-instruction load/modify/
++            // store sequence (see genLockedInstructions) that reuses the address
++            // and data registers after the first instruction, so their lifetimes
++            // must be extended past the def; the arithmetic/bitwise forms also
++            // need one scratch register for the new value.
++            const bool plainAtomic = (JitConfig.EnableRiscV64Atomic() == 0);
++
+             srcCount = 1;
+-            BuildUse(addr);
++            RefPosition* addrUse = BuildUse(addr);
++            if (plainAtomic)
++            {
++                setDelayFree(addrUse);
++            }
+             if (!data->isContained())
+             {
+                 srcCount++;
+-                BuildUse(data);
++                RefPosition* dataUse = BuildUse(data);
++                if (plainAtomic)
++                {
++                    setDelayFree(dataUse);
++                }
+             }
              else
              {
                  assert(data->IsIntegralConst(0));
-+            }
-+
-+            // Plain (no-A) lowering of the arithmetic/bitwise forms computes the
-+            // new value in a scratch register; see genLockedInstructions.
-+            if ((JitConfig.EnableRiscV64Atomic() == 0) && !tree->OperIs(GT_XCHG))
-+            {
-+                buildInternalIntRegisterDefForNode(tree);
-+                buildInternalRegisterUses();
              }
  
++            if (plainAtomic && !tree->OperIs(GT_XCHG))
++            {
++                buildInternalIntRegisterDefForNode(tree);
++                setInternalRegsDelayFree = true;
++                buildInternalRegisterUses();
++            }
++
              if (dstCount == 1)
+             {
+                 BuildDef(tree);
