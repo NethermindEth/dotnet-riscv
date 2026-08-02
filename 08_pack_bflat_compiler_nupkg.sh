@@ -18,6 +18,37 @@ cd "${TOP_DIR}"
 
 mkdir -p "${output_dir}"
 
+# The managed ILCompiler assemblies bflat needs. All six live together in the
+# published host ILCompiler (runtime.linux-x64.microsoft.dotnet.ilcompiler),
+# which the main source-build already produced into .packages, so normally we
+# just locate and copy them — no separate build. build_compiler() below is only
+# a fallback for the rare case they are not present.
+ILC_DLLS=(ILCompiler.Compiler.dll ILCompiler.RyuJit.dll ILCompiler.TypeSystem.dll
+          ILCompiler.DependencyAnalysisFramework.dll ILCompiler.MetadataTransform.dll
+          Microsoft.DiaSymReader.dll)
+
+# Print a directory that contains ALL the assemblies in ILC_DLLS, or nothing.
+function find_ilc_out()
+{
+    local dotnet_dir="$1"
+    local candidate d ok f
+    # Prefer the published host ILCompiler in the restored package cache (all
+    # assemblies in one tools/ dir); fall back to any per-project build output.
+    for candidate in \
+        "${dotnet_dir}/.packages/runtime.linux-x64.microsoft.dotnet.ilcompiler" \
+        "${dotnet_dir}/src/runtime/artifacts/bin"; do
+        [ -d "${candidate}" ] || continue
+        while IFS= read -r f; do
+            d="$(dirname "$f")"
+            ok=1
+            for want in "${ILC_DLLS[@]}"; do
+                [ -f "${d}/${want}" ] || { ok=0; break; }
+            done
+            if [ "${ok}" = 1 ]; then echo "${d}"; return; fi
+        done < <(find "${candidate}" -name ILCompiler.Compiler.dll 2>/dev/null)
+    done
+}
+
 function build_compiler()
 {
     local runtime_dir="$1"
@@ -73,13 +104,8 @@ function pack_bflat_compiler_nupkg()
 {
     local file="$1"
     local output_dir="$2"
-    local artifactpath="$3"
+    local ilc_out="$3"
 
-    # The ProjectReference build drops every managed assembly bflat needs into
-    # ILCompiler.RyuJit's output. Locate it via find so the config/rid-specific
-    # subdirectory is not hardcoded.
-    local ilc_out
-    ilc_out="$(dirname "$(find "${artifactpath}/bin" -path '*ILCompiler.RyuJit*' -name ILCompiler.Compiler.dll 2>/dev/null | head -1)")"
     if [ ! -f "${ilc_out}/ILCompiler.Compiler.dll" ] ; then
         return 1
     fi
@@ -93,13 +119,10 @@ function pack_bflat_compiler_nupkg()
         rm "$file"
     popd
 
-    cp "${ilc_out}/ILCompiler.Compiler.dll" \
-       "${ilc_out}/ILCompiler.RyuJit.dll" \
-       "${ilc_out}/ILCompiler.TypeSystem.dll" \
-       "${ilc_out}/ILCompiler.DependencyAnalysisFramework.dll" \
-       "${ilc_out}/ILCompiler.MetadataTransform.dll" \
-       "${ilc_out}/Microsoft.DiaSymReader.dll" \
-       "${output_dir}/lib/net6.0/"
+    local d
+    for d in "${ILC_DLLS[@]}" ; do
+        cp "${ilc_out}/${d}" "${output_dir}/lib/net6.0/"
+    done
 
     ret="1"
     pushd "${output_dir}"
@@ -111,7 +134,16 @@ function pack_bflat_compiler_nupkg()
 }
 
 
-build_compiler "${TOP_DIR}/dotnet/src/runtime"
+# Normally the main source-build already produced the managed ILCompiler
+# assemblies; only build them ourselves if they are missing.
+ilc_out="$(find_ilc_out "${TOP_DIR}/dotnet")"
+if [ -z "${ilc_out}" ] ; then
+    echo "Managed ILCompiler assemblies not found in the source-build output; building ILCompiler.RyuJit"
+    build_compiler "${TOP_DIR}/dotnet/src/runtime"
+    ilc_out="$(find_ilc_out "${TOP_DIR}/dotnet")"
+else
+    echo "Reusing managed ILCompiler assemblies from ${ilc_out}"
+fi
 
-pack_bflat_compiler_nupkg "$file" "${output_dir}" "${TOP_DIR}/dotnet/src/runtime/artifacts"
+pack_bflat_compiler_nupkg "$file" "${output_dir}" "${ilc_out}"
 exit $ret
