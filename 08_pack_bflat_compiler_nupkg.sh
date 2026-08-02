@@ -25,6 +25,17 @@ function build_compiler()
     pushd "${runtime_dir}"
         export ROOTFS_DIR="$(pwd)/.tools/rootfs/riscv64-musl"
         ./eng/common/cross/build-rootfs.sh riscv64 alpineedge --skipemulation --skipunmount --rootfsdir ${ROOTFS_DIR}
+
+        # The unofficial linux-musl-riscv64 runtime/host/crossgen2 packs are not
+        # on any public NuGet feed (for preview bands their exact versions do not
+        # exist publicly at all), but the main source-build already produced them
+        # locally. Point the stage-one restore at that output so it resolves them
+        # instead of failing with NU1101/NU1102.
+        # %3B is an escaped ';' — MSBuild otherwise reads the ';' as a property
+        # separator (turning the second path into an invalid property, MSB1006).
+        local local_packs="${TOP_DIR}/dotnet/artifacts/packages/Release/Shipping/runtime"
+        local_packs+="%3B${TOP_DIR}/dotnet/artifacts/packages/Release/Shipping/aspnetcore"
+
         ./build.sh -s clr+clr.aot+clr.tools \
                    -c Release \
                    -rc Release \
@@ -32,7 +43,8 @@ function build_compiler()
                    --targetrid linux-musl-riscv64 \
                    -arch riscv64 \
                    -cross \
-                   -p:StageOneBuild=true
+                   -p:StageOneBuild=true \
+                   -p:RestoreAdditionalProjectSources="${local_packs}"
     popd
 }
 
