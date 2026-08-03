@@ -69,31 +69,40 @@ PYEOF
         local local_packs="${TOP_DIR}/dotnet/artifacts/packages/Release/Shipping/runtime"
         local_packs+="%3B${TOP_DIR}/dotnet/artifacts/packages/Release/Shipping/aspnetcore"
 
-        # This stand-alone stage-one build reads dotnet/src/runtime's own
-        # eng/Versions.props (PreReleaseVersionIteration N), which computes a
-        # DIFFERENT version than the outer VMR build did (the VMR bumps the
-        # iteration to N+1). targetingpacks.targets versions every framework pack
-        # it pulls — Microsoft.NETCore.App.{Host,Runtime,Runtime.NativeAOT} and
-        # Microsoft.AspNetCore.App.Runtime — at $(ProductVersion), so the restore
-        # asks for e.g. 11.0.0-preview.6.* while only 11.0.0-preview.7.* was built
-        # and exposed via the feeds above (NU1102 "Nearest version").
-        # Pin ProductVersion to whatever the VMR actually shipped (read off the
-        # host pack filename); a command-line -p: is a global property, so it
-        # overrides the inner Versions.props computation everywhere.
-        local product_version="" host_pkg
+        # This stand-alone stage-one build runs against a bootstrap .NET SDK of
+        # the SAME major band as what we build. Because that SDK already knows the
+        # current TFM, the runtime repo's targetingpacks.targets override (which
+        # would stamp the live $(ProductVersion) onto the packs) is skipped, and
+        # the self-contained AOT-tool publishes resolve their runtime/apphost/
+        # NativeAOT/AspNetCore packs at the bootstrap SDK's bundled version. Those
+        # RID-specific preview packs were never published, so restore fails NU1102
+        # while only the outer VMR's version exists (and is exposed via the feeds
+        # above). Pinning -p:ProductVersion does NOT help — the bootstrap SDK's
+        # KnownFrameworkReference wins over it.
+        #
+        # Read the version the VMR actually shipped off the host pack filename and
+        # force every framework pack onto it via an injected targets file
+        # (CustomAfterMicrosoftCommonTargets), which rewrites the same
+        # KnownFrameworkReference/KnownRuntimePack metadata targetingpacks.targets
+        # would — unconditionally, so it beats the bootstrap SDK.
+        local vmr_version="" host_pkg
         host_pkg=$(ls "${TOP_DIR}/dotnet/artifacts/packages/Release/Shipping/runtime/Microsoft.NETCore.App.Host.linux-musl-riscv64."*.nupkg 2>/dev/null | head -n1)
         if [ -n "${host_pkg}" ]; then
-            product_version=$(basename "${host_pkg}")
-            product_version=${product_version#Microsoft.NETCore.App.Host.linux-musl-riscv64.}
-            product_version=${product_version%.nupkg}
+            vmr_version=$(basename "${host_pkg}")
+            vmr_version=${vmr_version#Microsoft.NETCore.App.Host.linux-musl-riscv64.}
+            vmr_version=${vmr_version%.nupkg}
         fi
 
-        local version_arg=()
-        if [ -n "${product_version}" ]; then
-            version_arg=(-p:ProductVersion="${product_version}")
-            echo "Pinning stage-one ProductVersion to ${product_version}"
+        local version_args=()
+        if [ -n "${vmr_version}" ]; then
+            version_args=(
+                -p:CustomAfterMicrosoftCommonTargets="${TOP_DIR}/tools/pin_framework_pack_version.targets"
+                -p:PinFrameworkPackVersion="${vmr_version}"
+                -p:RuntimeFrameworkVersion="${vmr_version}"
+            )
+            echo "Pinning stage-one framework packs to ${vmr_version}"
         else
-            echo "WARNING: could not determine VMR ProductVersion; stage-one restore may fail" >&2
+            echo "WARNING: could not determine VMR framework-pack version; stage-one restore may fail" >&2
         fi
 
         ./build.sh -s clr+clr.aot+clr.tools \
@@ -105,7 +114,7 @@ PYEOF
                    -cross \
                    -p:StageOneBuild=true \
                    -p:RestoreAdditionalProjectSources="${local_packs}" \
-                   "${version_arg[@]}"
+                   "${version_args[@]}"
     popd
 }
 
