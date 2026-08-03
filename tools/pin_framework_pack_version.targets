@@ -1,0 +1,43 @@
+<Project>
+  <!--
+    Injected into every project via CustomAfterMicrosoftCommonTargets by
+    08_pack_bflat_compiler_nupkg.sh.
+
+    The stand-alone stage-one build runs against a bootstrap .NET SDK of the
+    SAME major band (e.g. an 11.0 preview.6 SDK building 11.0 preview.7). Because
+    that SDK already ships a KnownFrameworkReference for the current TFM, the
+    runtime repo's own targetingpacks.targets override (which would stamp the
+    live-built $(ProductVersion) onto the packs) is skipped, and the SELF-CONTAINED
+    AOT-tool publishes (crossgen2_publish, ILCompiler_publish, ilasm) resolve
+    their runtime/apphost/NativeAOT packs at the bootstrap SDK's bundled version.
+    Those RID-specific packs (linux-musl-riscv64) were never published for a
+    preview band, so the restore fails NU1102 — only the outer VMR's version was
+    built (and exposed via the local feeds this script registers).
+
+    Re-point every framework pack (Microsoft.NETCore.App and
+    Microsoft.AspNetCore.App: Runtime, Host/apphost and Runtime.NativeAOT) at the
+    version the VMR actually produced, passed in as PinFrameworkPackVersion. This
+    is exactly the metadata targetingpacks.targets sets; we just force it on
+    unconditionally so it wins over the bootstrap SDK's KnownFrameworkReference.
+    Updating by identity touches every per-TFM variant, which is fine — only the
+    current TFM is ever resolved here.
+  -->
+  <ItemGroup Condition="'$(PinFrameworkPackVersion)' != ''">
+    <KnownFrameworkReference Update="Microsoft.NETCore.App;Microsoft.AspNetCore.App">
+      <LatestRuntimeFrameworkVersion>$(PinFrameworkPackVersion)</LatestRuntimeFrameworkVersion>
+      <DefaultRuntimeFrameworkVersion>$(PinFrameworkPackVersion)</DefaultRuntimeFrameworkVersion>
+    </KnownFrameworkReference>
+
+    <!-- Covers the base, Mono and NativeAOT runtime-pack variants (all share the
+         Microsoft.NETCore.App identity), plus AspNetCore. -->
+    <KnownRuntimePack Update="Microsoft.NETCore.App;Microsoft.AspNetCore.App">
+      <LatestRuntimeFrameworkVersion>$(PinFrameworkPackVersion)</LatestRuntimeFrameworkVersion>
+    </KnownRuntimePack>
+
+    <!-- Apphost pack (Microsoft.NETCore.App.Host.<rid>); the item type only
+         exists on some SDKs, an Update against a missing item is a no-op. -->
+    <KnownAppHostPack Update="Microsoft.NETCore.App">
+      <AppHostPackVersion>$(PinFrameworkPackVersion)</AppHostPackVersion>
+    </KnownAppHostPack>
+  </ItemGroup>
+</Project>
