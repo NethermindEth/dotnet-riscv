@@ -122,32 +122,86 @@ PYEOF
     popd
 }
 
+# Locate a freshly-built managed assembly under the stage-one artifacts and echo
+# its path. These are pure managed (AnyCPU) assemblies produced by the managed
+# ILCompiler build, so they exist whenever that build reached them — independent
+# of the (unneeded, and for riscv64 currently failing) native `ilc` link. Prefer
+# the assembly's own project output dir, then fall back to any riscv64 Release
+# output (the projects copy each other's assemblies), never an obj/ intermediate.
+function find_fresh_managed_dll()
+{
+    local base="$1" art="$2"
+    local proj="${base%.dll}"
+    local direct="${art}/bin/${proj}/riscv64/Release/${base}"
+
+    if [ -f "${direct}" ] ; then
+        printf '%s\n' "${direct}"
+        return 0
+    fi
+    find "${art}/bin" -type f -name "${base}" -path '*/riscv64/Release/*' \
+         ! -path '*/obj/*' 2>/dev/null | head -n1
+}
+
 function pack_bflat_compiler_nupkg()
 {
     local file="$1"
     local output_dir="$2"
     local artifactpath="$3"
+    local libdir="${output_dir}/lib/net6.0"
 
-    if [ ! -d "${artifactpath}/bin/ILCompiler.Compiler/riscv64/Release" ] ; then
-        return 1
-    fi
-
+    # Lay down the template so we inherit its .nuspec and layout, then overwrite
+    # every assembly it carries with the freshly built one. The template ships a
+    # .NET 10 ILCompiler; if any refresh below is skipped we would silently
+    # re-ship that stale compiler (the historical bug: a wrong guard let a failed
+    # build pack the pristine template and exit 0), so a missing assembly is a
+    # hard failure here, never a fallback to the template copy.
     pushd "${output_dir}"
         if [ -f "$file" ] ; then
             rm "$file"
         fi
         cp "${template_dir}/$file" ./
-        unzip "$file"
+        unzip -o "$file"
         rm "$file"
     popd
 
-    pushd "${artifactpath}"
-        cp ./bin/coreclr/linux.riscv64.Release/ilc/ILCompiler*.dll \
-           ./bin/coreclr/linux.riscv64.Release/ilc/Microsoft.DiaSymReader.dll \
-           "${output_dir}/lib/net6.0/"
-        cp ./bin/coreclr/linux.riscv64.Release/crossgen2/ILCompiler*.dll \
-           "${output_dir}/lib/net6.0/"
-    popd
+    local dll base src missing=0 refreshed=0
+
+    # Every ILCompiler*.dll the template carries must be replaced with the fresh
+    # build — these hold the types bflat compiles against (TypeSystem, Compiler,
+    # RyuJit, ...). Refreshing exactly the template's set keeps the curated
+    # assembly list while guaranteeing the bits are the ones we just built.
+    for dll in "${libdir}"/ILCompiler*.dll ; do
+        [ -e "$dll" ] || continue
+        base=$(basename "$dll")
+        src=$(find_fresh_managed_dll "$base" "$artifactpath")
+        if [ -n "$src" ] && [ -f "$src" ] ; then
+            cp -f "$src" "$dll"
+            refreshed=$((refreshed + 1))
+        else
+            echo "ERROR: no freshly-built ${base} found under ${artifactpath}/bin" >&2
+            missing=$((missing + 1))
+        fi
+    done
+
+    # DiaSymReader is a stable, version-tolerant dependency (not one of the
+    # types bflat fails on); refresh it if the build produced one, otherwise keep
+    # the template's copy rather than failing the whole pack.
+    src=$(find_fresh_managed_dll "Microsoft.DiaSymReader.dll" "$artifactpath")
+    if [ -n "$src" ] && [ -f "$src" ] ; then
+        cp -f "$src" "${libdir}/Microsoft.DiaSymReader.dll"
+    fi
+
+    if [ "$refreshed" -eq 0 ] || [ "$missing" -ne 0 ] ; then
+        echo "ERROR: refusing to pack ${file} — ${missing} ILCompiler assembly(ies) missing," \
+             "${refreshed} refreshed; this would ship the stale .NET 10 template compiler." >&2
+        echo "Freshly-built ILCompiler assemblies available under ${artifactpath}/bin:" >&2
+        find "${artifactpath}/bin" -type f -name 'ILCompiler*.dll' \
+             -path '*/riscv64/Release/*' ! -path '*/obj/*' 2>/dev/null | sort -u >&2
+        ret="1"
+        return 1
+    fi
+
+    echo "Refreshed ${refreshed} ILCompiler assembly(ies) from the stage-one build."
 
     ret="1"
     pushd "${output_dir}"
