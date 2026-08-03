@@ -17,12 +17,20 @@
     Re-point every framework pack (Microsoft.NETCore.App and
     Microsoft.AspNetCore.App: Runtime, Host/apphost and Runtime.NativeAOT) at the
     version the VMR actually produced, passed in as PinFrameworkPackVersion. This
-    is exactly the metadata targetingpacks.targets sets; we just force it on
-    unconditionally so it wins over the bootstrap SDK's KnownFrameworkReference.
-    Updating by identity touches every per-TFM variant, which is fine — only the
-    current TFM is ever resolved here.
+    is exactly the metadata targetingpacks.targets sets; we just force it on so it
+    wins over the bootstrap SDK's KnownFrameworkReference.
+
+    Scope this to the TARGET (riscv64) projects only, keyed off the project's own
+    RuntimeIdentifier. The self-contained AOT-tool publishes we harvest target
+    riscv64, and only the riscv64 packs were built at the VMR version. The many
+    HOST tools in this subset (crossgen2_inbuild, ILCompiler_inbuild, dotnet-pgo,
+    R2RDump, r2rtest, cdac-build-tool, ...) run on the x64 build machine and must
+    keep resolving their x64/win/osx packs at the bootstrap SDK's public version —
+    pinning those to the VMR version breaks them (those RID packs were never
+    built at preview.7). Updating by identity touches every per-TFM variant, which
+    is fine — only the current TFM is ever resolved here.
   -->
-  <ItemGroup Condition="'$(PinFrameworkPackVersion)' != ''">
+  <ItemGroup Condition="'$(PinFrameworkPackVersion)' != '' and $(RuntimeIdentifier.Contains('riscv64'))">
     <KnownFrameworkReference Update="Microsoft.NETCore.App;Microsoft.AspNetCore.App">
       <LatestRuntimeFrameworkVersion>$(PinFrameworkPackVersion)</LatestRuntimeFrameworkVersion>
       <DefaultRuntimeFrameworkVersion>$(PinFrameworkPackVersion)</DefaultRuntimeFrameworkVersion>

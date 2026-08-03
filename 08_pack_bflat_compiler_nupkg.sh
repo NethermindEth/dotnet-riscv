@@ -93,14 +93,18 @@ PYEOF
             vmr_version=${vmr_version%.nupkg}
         fi
 
+        # NB: pass the version only through the injected targets file, NOT as a
+        # global -p:RuntimeFrameworkVersion — a global would also retarget the
+        # host-side tools (which run on x64 and need the bootstrap SDK's public
+        # x64 packs) and break their restore. The targets file scopes the pin to
+        # riscv64 projects.
         local version_args=()
         if [ -n "${vmr_version}" ]; then
             version_args=(
                 -p:CustomAfterMicrosoftCommonTargets="${TOP_DIR}/tools/pin_framework_pack_version.targets"
                 -p:PinFrameworkPackVersion="${vmr_version}"
-                -p:RuntimeFrameworkVersion="${vmr_version}"
             )
-            echo "Pinning stage-one framework packs to ${vmr_version}"
+            echo "Pinning stage-one riscv64 framework packs to ${vmr_version}"
         else
             echo "WARNING: could not determine VMR framework-pack version; stage-one restore may fail" >&2
         fi
