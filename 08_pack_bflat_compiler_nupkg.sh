@@ -69,6 +69,33 @@ PYEOF
         local local_packs="${TOP_DIR}/dotnet/artifacts/packages/Release/Shipping/runtime"
         local_packs+="%3B${TOP_DIR}/dotnet/artifacts/packages/Release/Shipping/aspnetcore"
 
+        # This stand-alone stage-one build reads dotnet/src/runtime's own
+        # eng/Versions.props (PreReleaseVersionIteration N), which computes a
+        # DIFFERENT version than the outer VMR build did (the VMR bumps the
+        # iteration to N+1). targetingpacks.targets versions every framework pack
+        # it pulls — Microsoft.NETCore.App.{Host,Runtime,Runtime.NativeAOT} and
+        # Microsoft.AspNetCore.App.Runtime — at $(ProductVersion), so the restore
+        # asks for e.g. 11.0.0-preview.6.* while only 11.0.0-preview.7.* was built
+        # and exposed via the feeds above (NU1102 "Nearest version").
+        # Pin ProductVersion to whatever the VMR actually shipped (read off the
+        # host pack filename); a command-line -p: is a global property, so it
+        # overrides the inner Versions.props computation everywhere.
+        local product_version="" host_pkg
+        host_pkg=$(ls "${TOP_DIR}/dotnet/artifacts/packages/Release/Shipping/runtime/Microsoft.NETCore.App.Host.linux-musl-riscv64."*.nupkg 2>/dev/null | head -n1)
+        if [ -n "${host_pkg}" ]; then
+            product_version=$(basename "${host_pkg}")
+            product_version=${product_version#Microsoft.NETCore.App.Host.linux-musl-riscv64.}
+            product_version=${product_version%.nupkg}
+        fi
+
+        local version_arg=()
+        if [ -n "${product_version}" ]; then
+            version_arg=(-p:ProductVersion="${product_version}")
+            echo "Pinning stage-one ProductVersion to ${product_version}"
+        else
+            echo "WARNING: could not determine VMR ProductVersion; stage-one restore may fail" >&2
+        fi
+
         ./build.sh -s clr+clr.aot+clr.tools \
                    -c Release \
                    -rc Release \
@@ -77,7 +104,8 @@ PYEOF
                    -arch riscv64 \
                    -cross \
                    -p:StageOneBuild=true \
-                   -p:RestoreAdditionalProjectSources="${local_packs}"
+                   -p:RestoreAdditionalProjectSources="${local_packs}" \
+                   "${version_arg[@]}"
     popd
 }
 
