@@ -26,6 +26,39 @@ function build_compiler()
         export ROOTFS_DIR="$(pwd)/.tools/rootfs/riscv64-musl"
         ./eng/common/cross/build-rootfs.sh riscv64 alpineedge --skipemulation --skipunmount --rootfsdir ${ROOTFS_DIR}
 
+        # The stage-one toolset restore (Arcade.Sdk & friends, stamped with our
+        # OfficialBuildId) is not on any public feed for preview bands, and it
+        # goes through NuGet.config — not RestoreAdditionalProjectSources — so
+        # register the VMR's own package outputs (Shipping, NonShipping and the
+        # .packages cache; Arcade lives under NonShipping) as NuGet sources.
+        # Inserted right after the <clear /> that opens <packageSources>; a
+        # source added before that clear would be wiped, and the file has an
+        # unrelated <clear /> in <fallbackPackageFolders>.
+        TOP_DIR="${TOP_DIR}" python3 - <<'PYEOF'
+import os, re
+
+path = "NuGet.config"
+with open(path) as f:
+    s = f.read()
+
+if "vmr-local-shipping" not in s:
+    top = os.environ["TOP_DIR"]
+    feeds = "\n".join(
+        f'    <add key="vmr-local-{name}" value="{top}/dotnet/{sub}" />'
+        for name, sub in (
+            ("shipping", "artifacts/packages/Release/Shipping"),
+            ("nonshipping", "artifacts/packages/Release/NonShipping"),
+            ("cache", ".packages"),
+        ))
+    m = re.search(r"<packageSources>\s*<clear\s*/>", s)
+    if m:
+        s = s[:m.end()] + "\n" + feeds + s[m.end():]
+    else:
+        s = s.replace("<packageSources>", "<packageSources>\n" + feeds, 1)
+    with open(path, "w") as f:
+        f.write(s)
+PYEOF
+
         # The unofficial linux-musl-riscv64 runtime/host/crossgen2 packs are not
         # on any public NuGet feed (for preview bands their exact versions do not
         # exist publicly at all), but the main source-build already produced them
