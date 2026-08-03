@@ -30,6 +30,14 @@
     built at preview.7). Updating by identity touches every per-TFM variant, which
     is fine — only the current TFM is ever resolved here.
   -->
+  <!-- The NativeAOT runtime pack (Microsoft.NETCore.App.Runtime.NativeAOT.<rid>,
+       pulled by ILCompiler_publish's PublishAot) takes its version from
+       RuntimeFrameworkVersion, not from the KnownRuntimePack metadata below, so
+       set that too — scoped to riscv64 so the x64 host tools are untouched. -->
+  <PropertyGroup Condition="'$(PinFrameworkPackVersion)' != '' and $(RuntimeIdentifier.Contains('riscv64'))">
+    <RuntimeFrameworkVersion>$(PinFrameworkPackVersion)</RuntimeFrameworkVersion>
+  </PropertyGroup>
+
   <ItemGroup Condition="'$(PinFrameworkPackVersion)' != '' and $(RuntimeIdentifier.Contains('riscv64'))">
     <KnownFrameworkReference Update="Microsoft.NETCore.App;Microsoft.AspNetCore.App">
       <LatestRuntimeFrameworkVersion>$(PinFrameworkPackVersion)</LatestRuntimeFrameworkVersion>
