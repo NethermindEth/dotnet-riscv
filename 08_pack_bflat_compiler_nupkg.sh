@@ -109,6 +109,14 @@ PYEOF
             echo "WARNING: could not determine VMR framework-pack version; stage-one restore may fail" >&2
         fi
 
+        # The build-tool projects (installer.tasks etc.) multi-target
+        # $(NetCoreAppToolCurrent);$(NetFrameworkToolCurrent) and are built as a
+        # prerequisite before any subset. On some bands the net472 flavour fails
+        # to restore/resolve on Linux (e.g. an MSB3277 System.Buffers 4.0.2 vs
+        # 4.0.3 conflict) and aborts the whole build before ILCompiler is even
+        # compiled. We only need the managed (NetCoreAppToolCurrent) ILCompiler
+        # assemblies and never a full-framework build task, so empty
+        # NetFrameworkToolCurrent to drop the net472 target entirely.
         ./build.sh -s clr+clr.aot+clr.tools \
                    -c Release \
                    -rc Release \
@@ -117,6 +125,7 @@ PYEOF
                    -arch riscv64 \
                    -cross \
                    -p:StageOneBuild=true \
+                   -p:NetFrameworkToolCurrent= \
                    -p:RestoreAdditionalProjectSources="${local_packs}" \
                    "${version_args[@]}"
     popd
@@ -194,9 +203,14 @@ function pack_bflat_compiler_nupkg()
     if [ "$refreshed" -eq 0 ] || [ "$missing" -ne 0 ] ; then
         echo "ERROR: refusing to pack ${file} — ${missing} ILCompiler assembly(ies) missing," \
              "${refreshed} refreshed; this would ship the stale .NET 10 template compiler." >&2
-        echo "Freshly-built ILCompiler assemblies available under ${artifactpath}/bin:" >&2
+        # Broad, unrestricted dump so the log reveals where the build actually
+        # put ILCompiler assemblies (or shows none were produced — e.g. the
+        # stage-one build aborted before compiling them).
+        echo "All ILCompiler*.dll under ${artifactpath}/bin (excluding obj/):" >&2
         find "${artifactpath}/bin" -type f -name 'ILCompiler*.dll' \
-             -path '*/riscv64/Release/*' ! -path '*/obj/*' 2>/dev/null | sort -u >&2
+             ! -path '*/obj/*' 2>/dev/null | sort -u >&2
+        echo "(if the list above is empty, the stage-one build did not build ILCompiler --" \
+             "check the build.sh output earlier in this step for the real failure)" >&2
         ret="1"
         return 1
     fi
