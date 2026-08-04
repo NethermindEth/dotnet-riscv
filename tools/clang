@@ -93,8 +93,27 @@ for arg in "$@"; do
     if [ "$prev" = "-o" ]; then
         # ninja passes object paths relative to the build root (nativeaot/...),
         # make passes them absolute (.../obj/.../nativeaot/...) — match both.
+        #
+        # Neither form appears when make builds a NativeAOT target from sources
+        # OUTSIDE the nativeaot tree — the GC (src/coreclr/gc), llvm-libunwind
+        # (src/native/external) and the shared runtime asm (src/coreclr/runtime).
+        # make cd's into the target's build directory first, so the object path
+        # it passes is just CMakeFiles/Runtime.<target>.dir/... with no
+        # nativeaot/ component, and the source argument is an absolute path in
+        # one of those other trees, so neither rule fires and the object is
+        # built rv64imafd. It still lands in the client's libRuntime.*GC.a: on
+        # .NET 10 that is where the guest's remaining floating point (32 in
+        # llvm-libunwind's UnwindRegisters{Save,Restore}) and atomics
+        # (WriteBarriers, asyncsafethreadmap) come from — 14 of 79 objects.
+        #
+        # So match the NativeAOT target directory itself, which is present
+        # under either generator. CMakeFiles/Runtime.*.dir belongs exclusively
+        # to the NativeAOT runtime archives (Runtime.WorkstationGC,
+        # Runtime.ServerGC, plus Runtime.AsmHelpers / Runtime.PrivateLibunwind
+        # on .NET 11); the SDK-side copies of the very same sources build as
+        # clrgc.dir / cee_wks_core.dir / cee_dac.dir and keep rv64imafd/lp64d.
         case $arg in
-        */nativeaot/*|nativeaot/*)
+        */nativeaot/*|nativeaot/*|*CMakeFiles/Runtime.*.dir/*)
             client=1
             ;;
         esac
