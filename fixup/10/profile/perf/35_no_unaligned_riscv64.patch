@@ -1,9 +1,9 @@
 --- a/src/coreclr/jit/jitconfigvalues.h
 +++ b/src/coreclr/jit/jitconfigvalues.h
-@@ -459,6 +459,13 @@
- // no LR/SC) and elides every memory barrier (no fence). Set 0 to restore the stock
- // atomic/fence codegen -- required on any real multi-hart RISC-V hardware.
- RELEASE_CONFIG_INTEGER(RiscV64NoAtomics,            "RiscV64NoAtomics",          1)
+@@ -454,6 +454,13 @@ RELEASE_CONFIG_INTEGER(JitRiscV64DmaCompare,        "JitRiscV64DmaCompare",
+ // addi per bounds-checked array element load -- a cost reth/Rust slices never pay.
+ // Prototype: default ON to measure; flip to 0 before shipping if the win is small.
+ RELEASE_CONFIG_INTEGER(JitRiscV64FoldIndexOffset,   "JitRiscV64FoldIndexOffset", 1)
 +// Some targets require every memory access to be naturally aligned (the executor
 +// asserts addr % width == 0). When 1, the riscv64 JIT never emits a wide load/store
 +// for an access the front end flagged unaligned (Unsafe.Read/WriteUnaligned, the
