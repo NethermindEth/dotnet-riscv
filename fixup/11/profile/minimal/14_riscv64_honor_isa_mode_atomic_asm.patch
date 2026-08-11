@@ -1,7 +1,7 @@
 diff --git a/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S b/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S
 --- a/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S
 +++ b/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S
-@@ -501,7 +501,14 @@
+@@ -519,7 +519,14 @@ LOCAL_LABEL(NotHijacked):
          addi  t3, a5, OFFSETOF__Thread__m_ThreadStateFlags
  
          addiw  a6, zero, -17  // Mask value (0xFFFFFFEF)
@@ -16,7 +16,7 @@ diff --git a/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S b/src/cor
  
          // Set preserved regs to the values expected by the funclet
          RESTORE_PRESERVED_REGISTERS a2
-@@ -633,7 +640,14 @@
+@@ -633,7 +640,14 @@ LOCAL_LABEL(DonePopping):
          // Set the DoNotTriggerGc flag
          addi  t3, a2, OFFSETOF__Thread__m_ThreadStateFlags
          addiw  a3, zero, -17  // Mask value (0xFFFFFFEF)
@@ -31,7 +31,7 @@ diff --git a/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S b/src/cor
  
          // Restore preserved registers
          RESTORE_PRESERVED_REGISTERS a1
-@@ -656,7 +670,14 @@
+@@ -656,7 +670,14 @@ LOCAL_LABEL(DonePopping):
  
          addi  t3, a2, OFFSETOF__Thread__m_ThreadStateFlags
          addiw  a3, zero, 16  // Mask value (0x10)
@@ -45,8 +45,8 @@ diff --git a/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S b/src/cor
 +#endif
  
          // Restore floating-point registers
- #if __riscv_flen != 0
-@@ -790,7 +811,14 @@
+ #if __riscv_flen >= 64
+@@ -790,7 +811,14 @@ LOCAL_LABEL(DonePopping):
          addi  t3, a5, OFFSETOF__Thread__m_ThreadStateFlags
  
          addiw  a6, zero, -17  // Mask value (0xFFFFFFEF)
@@ -64,7 +64,7 @@ diff --git a/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S b/src/cor
 diff --git a/src/coreclr/runtime/riscv64/WriteBarriers.S b/src/coreclr/runtime/riscv64/WriteBarriers.S
 --- a/src/coreclr/runtime/riscv64/WriteBarriers.S
 +++ b/src/coreclr/runtime/riscv64/WriteBarriers.S
-@@ -306,6 +306,7 @@
+@@ -277,6 +277,7 @@ LEAF_END RhpAssignRef, _TEXT
  LEAF_ENTRY RhpCheckedLockCmpXchg
  
  LOCAL_LABEL(CmpXchgRetry):
@@ -72,7 +72,7 @@ diff --git a/src/coreclr/runtime/riscv64/WriteBarriers.S b/src/coreclr/runtime/r
          // Load the current value at the destination address.
          lr.d.aqrl    t0, (a0)       // t0 = *dest (load with acquire-release ordering)
          // Compare the loaded value with the comparand.
-@@ -314,6 +315,12 @@
+@@ -285,6 +286,12 @@ LOCAL_LABEL(CmpXchgRetry):
          // Attempt to store the exchange value at the destination address.
          sc.d.rl    t1, a1, (a0)  // t1 = (store conditional result: 0 if successful, with release ordering)
          bnez    t1, LOCAL_LABEL(CmpXchgRetry) // if store conditional failed, retry
@@ -85,7 +85,7 @@ diff --git a/src/coreclr/runtime/riscv64/WriteBarriers.S b/src/coreclr/runtime/r
  
          // See comment at the top of PalInterlockedOperationBarrier method for explanation why this memory
          // barrier is necessary.
-@@ -350,7 +357,13 @@
+@@ -321,7 +328,13 @@ LEAF_END RhpCheckedLockCmpXchg
  //  t1, t6: trashed
  //
  LEAF_ENTRY RhpCheckedXchg
