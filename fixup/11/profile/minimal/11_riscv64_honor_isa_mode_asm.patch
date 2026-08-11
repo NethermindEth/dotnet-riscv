@@ -5,7 +5,7 @@ diff --git a/src/coreclr/debug/di/riscv64/floatconversion.S b/src/coreclr/debug/
  //     input: (in A0) the address of the ULONGLONG to be converted to a double
  //     output: the double corresponding to the ULONGLONG input value
  LEAF_ENTRY FPFillR8, .TEXT
-+#if __riscv_flen != 0
++#if __riscv_flen >= 64
          fld  fa0, 0(a0)
 +#endif
          ret
@@ -17,7 +17,7 @@ diff --git a/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S b/src/cor
      .endif
  
      // Safely using available registers for floating-point saves
-+#if __riscv_flen != 0
++#if __riscv_flen >= 64
      fsd  fs0, 0x10(sp)
      fsd  fs1, 0x18(sp)
      fsd  fs2, 0x20(sp)
@@ -33,7 +33,7 @@ diff --git a/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S b/src/cor
          // Load FP preserved registers
          //
          addi t3, \regdisplayReg, OFFSETOF__REGDISPLAY__F   // Base address of floating-point registers
-+#if __riscv_flen != 0
++#if __riscv_flen >= 64
          fld  fs0,  0x40(t3)                                // Load fs0
          fld  fs1,  0x48(t3)                                // Load fs1
          fld  fs2,  0x90(t3)                                // Load fs2
@@ -49,7 +49,7 @@ diff --git a/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S b/src/cor
  
          // Save floating-point registers
          addi  t3, \regdisplayReg, OFFSETOF__REGDISPLAY__F
-+#if __riscv_flen != 0
++#if __riscv_flen >= 64
          fsd  fs0,  0x40(t3)
          fsd  fs1,  0x48(t3)
          fsd  fs2,  0x90(t3)
@@ -61,15 +61,15 @@ diff --git a/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S b/src/cor
  
  .endm
  
-@@ -474,6 +480,7 @@
+@@ -474,6 +480,7 @@ LOCAL_LABEL(NotHijacked):
          ALLOC_CALL_FUNCLET_FRAME 0x90
  
          // Save floating-point registers
-+#if __riscv_flen != 0
++#if __riscv_flen >= 64
          fsd  fs0,  0x00(sp)
          fsd  fs1,  0x08(sp)
          fsd  fs2,  0x10(sp)
-@@ -486,6 +493,7 @@
+@@ -486,6 +493,7 @@ LOCAL_LABEL(NotHijacked):
          fsd  fs9,  0x48(sp)
          fsd  fs10, 0x50(sp)
          fsd  fs11, 0x58(sp)
@@ -77,15 +77,15 @@ diff --git a/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S b/src/cor
  
          // Save integer registers
          sd  a0, 0x60(sp)    // Save a0 to a3
-@@ -593,6 +601,7 @@
+@@ -593,6 +601,7 @@ LOCAL_LABEL(DonePopping):
          ALLOC_CALL_FUNCLET_FRAME 0x80
  
          // Save floating-point registers
-+#if __riscv_flen != 0
++#if __riscv_flen >= 64
          fsd  fs0,  0x00(sp)
          fsd  fs1,  0x08(sp)
          fsd  fs2,  0x10(sp)
-@@ -605,6 +614,7 @@
+@@ -605,6 +614,7 @@ LOCAL_LABEL(DonePopping):
          fsd  fs9,  0x48(sp)
          fsd  fs10, 0x50(sp)
          fsd  fs11, 0x58(sp)
@@ -93,15 +93,15 @@ diff --git a/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S b/src/cor
  
          // Save integer registers
          sd a0, 0x60(sp)  // Save a0 to 0x60
-@@ -649,6 +659,7 @@
+@@ -649,6 +659,7 @@ LOCAL_LABEL(DonePopping):
          amoor.w  a1, a3, (t3)
  
          // Restore floating-point registers
-+#if __riscv_flen != 0
++#if __riscv_flen >= 64
          fld  fs0,  0x00(sp)
          fld  fs1,  0x08(sp)
          fld  fs2,  0x10(sp)
-@@ -661,6 +672,7 @@
+@@ -661,6 +672,7 @@ LOCAL_LABEL(DonePopping):
          fld  fs9,  0x48(sp)
          fld  fs10, 0x50(sp)
          fld  fs11, 0x58(sp)
@@ -109,15 +109,15 @@ diff --git a/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S b/src/cor
  
          // Free call funclet frame
          FREE_CALL_FUNCLET_FRAME 0x80
-@@ -685,6 +697,7 @@
+@@ -685,6 +697,7 @@ LOCAL_LABEL(DonePopping):
  
      NESTED_ENTRY RhpCallFilterFunclet, _TEXT, NoHandler
          ALLOC_CALL_FUNCLET_FRAME 0x60
-+#if __riscv_flen != 0
++#if __riscv_flen >= 64
          fsd  fs0,  0x00(sp)
          fsd  fs1,  0x08(sp)
          fsd  fs2,  0x10(sp)
-@@ -697,6 +710,7 @@
+@@ -697,6 +710,7 @@ LOCAL_LABEL(DonePopping):
          fsd  fs9,  0x48(sp)
          fsd  fs10, 0x50(sp)
          fsd  fs11, 0x58(sp)
@@ -125,15 +125,15 @@ diff --git a/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S b/src/cor
  
          ld  t3, OFFSETOF__REGDISPLAY__pFP(a2)
          ld  fp, 0(t3)
-@@ -709,6 +723,7 @@
+@@ -709,6 +723,7 @@ LOCAL_LABEL(DonePopping):
  
      ALTERNATE_ENTRY RhpCallFilterFunclet2
  
-+#if __riscv_flen != 0
++#if __riscv_flen >= 64
          fld  fs0,  0x00(sp)
          fld  fs1,  0x08(sp)
          fld  fs2,  0x10(sp)
-@@ -721,6 +736,7 @@
+@@ -721,6 +736,7 @@ LOCAL_LABEL(DonePopping):
          fld  fs9,  0x48(sp)
          fld  fs10, 0x50(sp)
          fld  fs11, 0x58(sp)
@@ -148,7 +148,7 @@ diff --git a/src/coreclr/nativeaot/Runtime/riscv64/GcProbe.S b/src/coreclr/nativ
      sd  a2, 0x90(sp)
  
      # Save the FP return registers
-+#if __riscv_flen != 0
++#if __riscv_flen >= 64
      fsd  fa0, 0x98(sp)
      fsd  fa1, 0xa0(sp)
 +#endif
@@ -159,7 +159,7 @@ diff --git a/src/coreclr/nativeaot/Runtime/riscv64/GcProbe.S b/src/coreclr/nativ
      ld  a2, 0x90(sp)
  
      // Restore the FP return registers
-+#if __riscv_flen != 0
++#if __riscv_flen >= 64
      fld  fa0, 0x98(sp)
      fld  fa1, 0xa0(sp)
 +#endif
@@ -173,7 +173,7 @@ diff --git a/src/coreclr/nativeaot/Runtime/riscv64/UniversalTransition.S b/src/c
          PROLOG_SAVE_REG_PAIR_INDEXED fp, ra, STACK_SIZE
  
          # Floating point registers
-+#if __riscv_flen != 0
++#if __riscv_flen >= 64
          fsd         fa0, FLOAT_ARG_OFFSET(sp)
          fsd         fa1, FLOAT_ARG_OFFSET + 0x08(sp)
          fsd         fa2, FLOAT_ARG_OFFSET + 0x10(sp)
@@ -189,7 +189,7 @@ diff --git a/src/coreclr/nativeaot/Runtime/riscv64/UniversalTransition.S b/src/c
  #ifdef TRASH_SAVED_ARGUMENT_REGISTERS
          PREPARE_EXTERNAL_VAR RhpFpTrashValues, a1
  
-+#if __riscv_flen != 0
++#if __riscv_flen >= 64
          fld fa0, 0x00(a1)
          fld fa1, 0x08(a1)
          fld fa2, 0x10(a1)
@@ -201,15 +201,15 @@ diff --git a/src/coreclr/nativeaot/Runtime/riscv64/UniversalTransition.S b/src/c
  
          PREPARE_EXTERNAL_VAR RhpIntegerTrashValues, a1
  
-@@ -143,6 +147,7 @@
+@@ -143,6 +147,7 @@ ALTERNATE_ENTRY ReturnFrom\FunctionName
          mv          t2, a0
  
          # Restore floating point registers
-+#if __riscv_flen != 0
++#if __riscv_flen >= 64
          fld         fa0, FLOAT_ARG_OFFSET(sp)
          fld         fa1, FLOAT_ARG_OFFSET + 0x08(sp)
          fld         fa2, FLOAT_ARG_OFFSET + 0x10(sp)
-@@ -151,6 +156,7 @@
+@@ -151,6 +156,7 @@ ALTERNATE_ENTRY ReturnFrom\FunctionName
          fld         fa5, FLOAT_ARG_OFFSET + 0x28(sp)
          fld         fa6, FLOAT_ARG_OFFSET + 0x30(sp)
          fld         fa7, FLOAT_ARG_OFFSET + 0x38(sp)
@@ -220,7 +220,7 @@ diff --git a/src/coreclr/nativeaot/Runtime/riscv64/UniversalTransition.S b/src/c
 diff --git a/src/coreclr/pal/inc/unixasmmacrosriscv64.inc b/src/coreclr/pal/inc/unixasmmacrosriscv64.inc
 --- a/src/coreclr/pal/inc/unixasmmacrosriscv64.inc
 +++ b/src/coreclr/pal/inc/unixasmmacrosriscv64.inc
-@@ -161,6 +161,11 @@
+@@ -161,6 +161,11 @@ C_FUNC(\Name):
  
  // Reserve 64 bytes of memory before calling  SAVE_FLOAT_ARGUMENT_REGISTERS
  .macro SAVE_FLOAT_ARGUMENT_REGISTERS reg, ofs
@@ -228,11 +228,11 @@ diff --git a/src/coreclr/pal/inc/unixasmmacrosriscv64.inc b/src/coreclr/pal/inc/
 +    // target has a floating-point unit (__riscv_flen != 0). On a soft-float /
 +    // no-FPU build (e.g. -march=rv64ima) these become no-ops; the caller still
 +    // reserves the 64-byte slot so frame offsets are unaffected.
-+#if __riscv_flen != 0
++#if __riscv_flen >= 64
      fsd  fa0, (\ofs)(\reg)
      fsd  fa1, (\ofs + 8)(\reg)
      fsd  fa2, (\ofs + 16)(\reg)
-@@ -169,6 +174,7 @@
+@@ -169,6 +174,7 @@ C_FUNC(\Name):
      fsd  fa5, (\ofs + 40)(\reg)
      fsd  fa6, (\ofs + 48)(\reg)
      fsd  fa7, (\ofs + 56)(\reg)
@@ -240,17 +240,17 @@ diff --git a/src/coreclr/pal/inc/unixasmmacrosriscv64.inc b/src/coreclr/pal/inc/
  .endm
  
  // Reserve 64 bytes of memory before calling  SAVE_FLOAT_CALLEESAVED_REGISTERS
-@@ -199,6 +205,9 @@
+@@ -199,6 +205,9 @@ C_FUNC(\Name):
  .endm
  
  .macro RESTORE_FLOAT_ARGUMENT_REGISTERS reg, ofs
 +    // Honor -march: restore FP argument registers only on an FP-capable target
 +    // (see SAVE_FLOAT_ARGUMENT_REGISTERS). No-op on soft-float builds.
-+#if __riscv_flen != 0
++#if __riscv_flen >= 64
      fld  fa0, (\ofs)(\reg)
      fld  fa1, (\ofs + 8)(\reg)
      fld  fa2, (\ofs + 16)(\reg)
-@@ -207,6 +216,7 @@
+@@ -207,6 +216,7 @@ C_FUNC(\Name):
      fld  fa5, (\ofs + 40)(\reg)
      fld  fa6, (\ofs + 48)(\reg)
      fld  fa7, (\ofs + 56)(\reg)
@@ -258,18 +258,55 @@ diff --git a/src/coreclr/pal/inc/unixasmmacrosriscv64.inc b/src/coreclr/pal/inc/
  .endm
  
  .macro RESTORE_FLOAT_CALLEESAVED_REGISTERS reg, ofs
+@@ -309,7 +319,10 @@ C_FUNC(\Name):
+     .endif
+ 
+     // Save callee-saved floating point registers if requested (fs0-fs11)
++    // Honor -march: see SAVE_FLOAT_ARGUMENT_REGISTERS. The stack slots stay
++    // reserved either way so the frame layout is unaffected.
+     .if (__PWTB_PushCalleeSavedFloatRegs == 1)
++#if __riscv_flen >= 64
+         fsd     fs0, (__PWTB_FloatCalleeSavedRegisters)(sp)
+         fsd     fs1, (__PWTB_FloatCalleeSavedRegisters + 8)(sp)
+         fsd     fs2, (__PWTB_FloatCalleeSavedRegisters + 16)(sp)
+@@ -322,6 +335,7 @@ C_FUNC(\Name):
+         fsd     fs9, (__PWTB_FloatCalleeSavedRegisters + 72)(sp)
+         fsd     fs10, (__PWTB_FloatCalleeSavedRegisters + 80)(sp)
+         fsd     fs11, (__PWTB_FloatCalleeSavedRegisters + 88)(sp)
++#endif
+     .endif
+ 
+ .endm
+@@ -405,6 +419,9 @@ C_FUNC(\Name):
+ 
+     // Save FP callee-saved registers (fs0-fs11 = f8,f9,f18-f27) at offset 0
+     // RISC-V FP callee-saved: fs0=f8, fs1=f9, fs2-fs11=f18-f27
++    // Honor -march: see SAVE_FLOAT_ARGUMENT_REGISTERS. The stack slots stay
++    // reserved either way so the frame layout is unaffected.
++#if __riscv_flen >= 64
+     fsd   fs0,  0(sp)   // f8
+     fsd   fs1,  8(sp)   // f9
+     fsd   fs2,  16(sp)  // f18
+@@ -417,6 +434,7 @@ C_FUNC(\Name):
+     fsd   fs9,  72(sp)  // f25
+     fsd   fs10, 80(sp)  // f26
+     fsd   fs11, 88(sp)  // f27
++#endif
+ 
+     // Set target to TransitionBlock pointer
+     addi  \target, sp, 160
 diff --git a/src/coreclr/pal/src/arch/riscv64/context2.S b/src/coreclr/pal/src/arch/riscv64/context2.S
 --- a/src/coreclr/pal/src/arch/riscv64/context2.S
 +++ b/src/coreclr/pal/src/arch/riscv64/context2.S
-@@ -26,6 +26,7 @@
+@@ -26,6 +26,7 @@ LEAF_ENTRY RtlRestoreContext, _TEXT
      //64-bits FPR.
      addi t0, t4, CONTEXT_FPU_OFFSET
  
-+#if __riscv_flen != 0
++#if __riscv_flen >= 64
      fld  f0, (CONTEXT_F0)(t0)
      fld  f1, (CONTEXT_F1)(t0)
      fld  f2, (CONTEXT_F2)(t0)
-@@ -58,9 +59,12 @@
+@@ -58,9 +59,12 @@ LEAF_ENTRY RtlRestoreContext, _TEXT
      fld  f29, (CONTEXT_F29)(t0)
      fld  f30, (CONTEXT_F30)(t0)
      fld  f31, (CONTEXT_F31)(t0)
@@ -282,15 +319,15 @@ diff --git a/src/coreclr/pal/src/arch/riscv64/context2.S b/src/coreclr/pal/src/a
  
  LOCAL_LABEL(No_Restore_CONTEXT_FLOATING_POINT):
  
-@@ -205,6 +209,7 @@
+@@ -205,6 +209,7 @@ LOCAL_LABEL(Done_CONTEXT_INTEGER):
  
      addi  a0, a0, CONTEXT_FPU_OFFSET
  
-+#if __riscv_flen != 0
++#if __riscv_flen >= 64
      fsd  f0, (CONTEXT_F0)(a0)
      fsd  f1, (CONTEXT_F1)(a0)
      fsd  f2, (CONTEXT_F2)(a0)
-@@ -237,8 +242,11 @@
+@@ -237,8 +242,11 @@ LOCAL_LABEL(Done_CONTEXT_INTEGER):
      fsd  f29, (CONTEXT_F29)(a0)
      fsd  f30, (CONTEXT_F30)(a0)
      fsd  f31, (CONTEXT_F31)(a0)
@@ -302,43 +339,896 @@ diff --git a/src/coreclr/pal/src/arch/riscv64/context2.S b/src/coreclr/pal/src/a
      sd  t0, (CONTEXT_FLOAT_CONTROL_OFFSET)(a0)
  
  LOCAL_LABEL(Done_CONTEXT_FLOATING_POINT):
+diff --git a/src/coreclr/vm/precode.h b/src/coreclr/vm/precode.h
+--- a/src/coreclr/vm/precode.h
++++ b/src/coreclr/vm/precode.h
+@@ -394,7 +394,17 @@ struct FixupPrecode
+     static const int FixupCodeOffset = 12;
+ #elif defined(TARGET_RISCV64)
+     static const SIZE_T CodeSize = 32;
++    // Keep in sync with FixupPrecodeCode in vm/riscv64/thunktemplates.S. The
++    // second half of the thunk (the `fence r,rw`) follows auipc + ld + the tail
++    // jump, so its offset depends on whether that jump is the 2-byte c.jr or the
++    // 4-byte jr. __riscv_compressed is predefined by the compiler from -march,
++    // exactly as in the assembly, so both halves stay consistent - but that also
++    // means the runtime and any DAC built for it must use the same -march.
++#ifdef __riscv_compressed
+     static const int FixupCodeOffset = 10;
++#else
++    static const int FixupCodeOffset = 12;
++#endif
+ #endif // TARGET_AMD64
+ 
+     BYTE m_code[CodeSize];
 diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhelpers.S
 --- a/src/coreclr/vm/riscv64/asmhelpers.S
 +++ b/src/coreclr/vm/riscv64/asmhelpers.S
-@@ -489,8 +489,10 @@
+@@ -489,8 +489,10 @@ NESTED_ENTRY OnHijackTripThread, _TEXT, NoHandler
      sd  a2, 136(sp)
  
      // save any FP/HFA return value(s)
-+#if __riscv_flen != 0
++#if __riscv_flen >= 64
      fsd  f0, 144(sp)
      fsd  f1, 152(sp)
 +#endif
  
      addi  a0, sp, 0
      call  C_FUNC(OnHijackWorker)
-@@ -504,8 +506,10 @@
+@@ -504,8 +506,10 @@ NESTED_ENTRY OnHijackTripThread, _TEXT, NoHandler
      ld  a2, 136(sp)
  
      // restore any FP/HFA return value(s)
-+#if __riscv_flen != 0
++#if __riscv_flen >= 64
      fld  f0, 144(sp)
      fld  f1, 152(sp)
 +#endif
  
      EPILOG_RESTORE_REG_PAIR   s1, s2, 16
      EPILOG_RESTORE_REG_PAIR   s3, s4, 32
+@@ -1244,7 +1248,9 @@ NESTED_ENTRY CallJittedMethodRetDouble, _TEXT, NoHandler
+     ld a4, 24(fp)
+     sd a2, 0(a4)
+     ld a2, 16(fp)
++#if __riscv_flen >= 64
+     fsd fa0, 0(a2)
++#endif
+     EPILOG_STACK_RESTORE
+     EPILOG_RESTORE_REG_PAIR_INDEXED fp, ra, 32
+     EPILOG_RETURN
+@@ -1268,7 +1274,9 @@ NESTED_ENTRY CallJittedMethodRetFloat, _TEXT, NoHandler
+     ld a4, 24(fp)
+     sd a2, 0(a4)
+     ld a2, 16(fp)
++#if __riscv_flen != 0
+     fsw fa0, 0(a2)
++#endif
+     EPILOG_STACK_RESTORE
+     EPILOG_RESTORE_REG_PAIR_INDEXED fp, ra, 32
+     EPILOG_RETURN
+@@ -1317,8 +1325,10 @@ NESTED_ENTRY CallJittedMethodRet2Double, _TEXT, NoHandler
+     ld a4, 24(fp)
+     sd a2, 0(a4)
+     ld a2, 16(fp)
++#if __riscv_flen >= 64
+     fsd fa0, 0(a2)
+     fsd fa1, 8(a2)
++#endif
+     EPILOG_STACK_RESTORE
+     EPILOG_RESTORE_REG_PAIR_INDEXED fp, ra, 32
+     EPILOG_RETURN
+@@ -1342,8 +1352,10 @@ NESTED_ENTRY CallJittedMethodRet2Float, _TEXT, NoHandler
+     ld a4, 24(fp)
+     sd a2, 0(a4)
+     ld a2, 16(fp)
++#if __riscv_flen != 0
+     fsw fa0, 0(a2)
+     fsw fa1, 4(a2)
++#endif
+     EPILOG_STACK_RESTORE
+     EPILOG_RESTORE_REG_PAIR_INDEXED fp, ra, 32
+     EPILOG_RETURN
+@@ -1367,7 +1379,9 @@ NESTED_ENTRY CallJittedMethodRetFloatInt, _TEXT, NoHandler
+     ld a4, 24(fp)
+     sd a2, 0(a4)
+     ld a2, 16(fp)
++#if __riscv_flen >= 64
+     fsd fa0, 0(a2)
++#endif
+     sd a0, 8(a2)
+     EPILOG_STACK_RESTORE
+     EPILOG_RESTORE_REG_PAIR_INDEXED fp, ra, 32
+@@ -1393,7 +1407,9 @@ NESTED_ENTRY CallJittedMethodRetIntFloat, _TEXT, NoHandler
+     sd a2, 0(a4)
+     ld a2, 16(fp)
+     sd a0, 0(a2)
++#if __riscv_flen >= 64
+     fsd fa0, 8(a2)
++#endif
+     EPILOG_STACK_RESTORE
+     EPILOG_RESTORE_REG_PAIR_INDEXED fp, ra, 32
+     EPILOG_RETURN
+@@ -1472,7 +1488,9 @@ NESTED_ENTRY InterpreterStubRetDouble, _TEXT, NoHandler
+     mv a1, s1 // the IR bytecode pointer
+     mv a2, zero
+     call C_FUNC(ExecuteInterpretedMethod)
++#if __riscv_flen >= 64
+     fld fa0, 0(a0)
++#endif
+     EPILOG_RESTORE_REG_PAIR_INDEXED   fp, ra,   16
+     EPILOG_RETURN
+ NESTED_END InterpreterStubRetDouble, _TEXT
+@@ -1508,8 +1526,10 @@ NESTED_ENTRY InterpreterStubRet2Double, _TEXT, NoHandler
+     mv a1, s1 // the IR bytecode pointer
+     mv a2, zero
+     call C_FUNC(ExecuteInterpretedMethod)
++#if __riscv_flen >= 64
+     fld fa0, 0(a0)
+     fld fa1, 8(a0)
++#endif
+     EPILOG_RESTORE_REG_PAIR_INDEXED   fp, ra,   16
+     EPILOG_RETURN
+ NESTED_END InterpreterStubRet2Double, _TEXT
+@@ -1521,7 +1541,9 @@ NESTED_ENTRY InterpreterStubRetFloat, _TEXT, NoHandler
+     mv a1, s1 // the IR bytecode pointer
+     mv a2, zero
+     call C_FUNC(ExecuteInterpretedMethod)
++#if __riscv_flen != 0
+     flw fa0, 0(a0)
++#endif
+     EPILOG_RESTORE_REG_PAIR_INDEXED   fp, ra,   16
+     EPILOG_RETURN
+ NESTED_END InterpreterStubRetFloat, _TEXT
+@@ -1533,8 +1555,10 @@ NESTED_ENTRY InterpreterStubRet2Float, _TEXT, NoHandler
+     mv a1, s1 // the IR bytecode pointer
+     mv a2, zero
+     call C_FUNC(ExecuteInterpretedMethod)
++#if __riscv_flen != 0
+     flw fa0, 0(a0)
+     flw fa1, 4(a0)
++#endif
+     EPILOG_RESTORE_REG_PAIR_INDEXED   fp, ra,   16
+     EPILOG_RETURN
+ NESTED_END InterpreterStubRet2Float, _TEXT
+@@ -1546,7 +1570,9 @@ NESTED_ENTRY InterpreterStubRetFloatInt, _TEXT, NoHandler
+     mv a1, s1 // the IR bytecode pointer
+     mv a2, zero
+     call C_FUNC(ExecuteInterpretedMethod)
++#if __riscv_flen >= 64
+     fld fa0, 0(a0)
++#endif
+     ld a0, 8(a0)
+     EPILOG_RESTORE_REG_PAIR_INDEXED   fp, ra,   16
+     EPILOG_RETURN
+@@ -1560,7 +1586,9 @@ NESTED_ENTRY InterpreterStubRetIntFloat, _TEXT, NoHandler
+     mv a2, zero
+     call C_FUNC(ExecuteInterpretedMethod)
+     ld a1, 0(a0)
++#if __riscv_flen >= 64
+     fld fa0, 8(a0)
++#endif
+     mv a0, a1
+     EPILOG_RESTORE_REG_PAIR_INDEXED   fp, ra,   16
+     EPILOG_RETURN
+@@ -2017,9 +2045,17 @@ ALTERNATE_ENTRY Store_A7
+ LEAF_END Store_A1_A2_A3_A4_A5_A6_A7
+ 
+ // Float point load/store routines
++//
++// Honor the compiler's -march: the FP moves are emitted only on an FP-capable
++// target. The symbols are kept unconditionally because the call stub generator
++// references them; on a target without the D extension the argument classifier
++// never routes anything through fa0-fa7, so these routines are unreachable and
++// only their pointer bookkeeping matters.
+ 
+ LEAF_ENTRY Load_FA0
++#if __riscv_flen >= 64
+     fld fa0, 0(t3)
++#endif
+     addi t3, t3, 8
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2027,8 +2063,10 @@ LEAF_ENTRY Load_FA0
+ LEAF_END Load_FA0
+ 
+ LEAF_ENTRY Load_FA0_FA1
++#if __riscv_flen >= 64
+     fld fa0, 0(t3)
+     fld fa1, 8(t3)
++#endif
+     addi t3, t3, 16
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2036,11 +2074,15 @@ LEAF_ENTRY Load_FA0_FA1
+ LEAF_END Load_FA0_FA1
+ 
+ LEAF_ENTRY Load_FA0_FA1_FA2
++#if __riscv_flen >= 64
+     fld fa0, 0(t3)
+     fld fa1, 8(t3)
++#endif
+     addi t3, t3, 16
+ ALTERNATE_ENTRY Load_FA2
++#if __riscv_flen >= 64
+     fld fa2, 0(t3)
++#endif
+     addi t3, t3, 8
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2048,12 +2090,16 @@ ALTERNATE_ENTRY Load_FA2
+ LEAF_END Load_FA0_FA1_FA2
+ 
+ LEAF_ENTRY Load_FA0_FA1_FA2_FA3
++#if __riscv_flen >= 64
+     fld fa0, 0(t3)
+     fld fa1, 8(t3)
++#endif
+     addi t3, t3, 16
+ ALTERNATE_ENTRY Load_FA2_FA3
++#if __riscv_flen >= 64
+     fld fa2, 0(t3)
+     fld fa3, 8(t3)
++#endif
+     addi t3, t3, 16
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2061,15 +2107,21 @@ ALTERNATE_ENTRY Load_FA2_FA3
+ LEAF_END Load_FA0_FA1_FA2_FA3
+ 
+ LEAF_ENTRY Load_FA0_FA1_FA2_FA3_FA4
++#if __riscv_flen >= 64
+     fld fa0, 0(t3)
+     fld fa1, 8(t3)
++#endif
+     addi t3, t3, 16
+ ALTERNATE_ENTRY Load_FA2_FA3_FA4
++#if __riscv_flen >= 64
+     fld fa2, 0(t3)
+     fld fa3, 8(t3)
++#endif
+     addi t3, t3, 16
+ ALTERNATE_ENTRY Load_FA4
++#if __riscv_flen >= 64
+     fld fa4, 0(t3)
++#endif
+     addi t3, t3, 8
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2077,16 +2129,22 @@ ALTERNATE_ENTRY Load_FA4
+ LEAF_END Load_FA0_FA1_FA2_FA3_FA4
+ 
+ LEAF_ENTRY Load_FA0_FA1_FA2_FA3_FA4_FA5
++#if __riscv_flen >= 64
+     fld fa0, 0(t3)
+     fld fa1, 8(t3)
++#endif
+     addi t3, t3, 16
+ ALTERNATE_ENTRY Load_FA2_FA3_FA4_FA5
++#if __riscv_flen >= 64
+     fld fa2, 0(t3)
+     fld fa3, 8(t3)
++#endif
+     addi t3, t3, 16
+ ALTERNATE_ENTRY Load_FA4_FA5
++#if __riscv_flen >= 64
+     fld fa4, 0(t3)
+     fld fa5, 8(t3)
++#endif
+     addi t3, t3, 16
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2094,19 +2152,27 @@ ALTERNATE_ENTRY Load_FA4_FA5
+ LEAF_END Load_FA0_FA1_FA2_FA3_FA4_FA5
+ 
+ LEAF_ENTRY Load_FA0_FA1_FA2_FA3_FA4_FA5_FA6
++#if __riscv_flen >= 64
+     fld fa0, 0(t3)
+     fld fa1, 8(t3)
++#endif
+     addi t3, t3, 16
+ ALTERNATE_ENTRY Load_FA2_FA3_FA4_FA5_FA6
++#if __riscv_flen >= 64
+     fld fa2, 0(t3)
+     fld fa3, 8(t3)
++#endif
+     addi t3, t3, 16
+ ALTERNATE_ENTRY Load_FA4_FA5_FA6
++#if __riscv_flen >= 64
+     fld fa4, 0(t3)
+     fld fa5, 8(t3)
++#endif
+     addi t3, t3, 16
+ ALTERNATE_ENTRY Load_FA6
++#if __riscv_flen >= 64
+     fld fa6, 0(t3)
++#endif
+     addi t3, t3, 8
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2114,20 +2180,28 @@ ALTERNATE_ENTRY Load_FA6
+ LEAF_END Load_FA0_FA1_FA2_FA3_FA4_FA5_FA6
+ 
+ LEAF_ENTRY Load_FA0_FA1_FA2_FA3_FA4_FA5_FA6_FA7
++#if __riscv_flen >= 64
+     fld fa0, 0(t3)
+     fld fa1, 8(t3)
++#endif
+     addi t3, t3, 16
+ ALTERNATE_ENTRY Load_FA2_FA3_FA4_FA5_FA6_FA7
++#if __riscv_flen >= 64
+     fld fa2, 0(t3)
+     fld fa3, 8(t3)
++#endif
+     addi t3, t3, 16
+ ALTERNATE_ENTRY Load_FA4_FA5_FA6_FA7
++#if __riscv_flen >= 64
+     fld fa4, 0(t3)
+     fld fa5, 8(t3)
++#endif
+     addi t3, t3, 16
+ ALTERNATE_ENTRY Load_FA6_FA7
++#if __riscv_flen >= 64
+     fld fa6, 0(t3)
+     fld fa7, 8(t3)
++#endif
+     addi t3, t3, 16
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2136,7 +2210,9 @@ LEAF_END Load_FA0_FA1_FA2_FA3_FA4_FA5_FA6_FA7
+ 
+ // Additional Load_FA* routines starting from FA1, FA3, FA5, FA7
+ LEAF_ENTRY Load_FA1
++#if __riscv_flen >= 64
+     fld fa1, 0(t3)
++#endif
+     addi t3, t3, 8
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2144,8 +2220,10 @@ LEAF_ENTRY Load_FA1
+ LEAF_END Load_FA1
+ 
+ LEAF_ENTRY Load_FA1_FA2
++#if __riscv_flen >= 64
+     fld fa1, 0(t3)
+     fld fa2, 8(t3)
++#endif
+     addi t3, t3, 16
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2153,9 +2231,11 @@ LEAF_ENTRY Load_FA1_FA2
+ LEAF_END Load_FA1_FA2
+ 
+ LEAF_ENTRY Load_FA1_FA2_FA3
++#if __riscv_flen >= 64
+     fld fa1, 0(t3)
+     fld fa2, 8(t3)
+     fld fa3, 16(t3)
++#endif
+     addi t3, t3, 24
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2163,10 +2243,12 @@ LEAF_ENTRY Load_FA1_FA2_FA3
+ LEAF_END Load_FA1_FA2_FA3
+ 
+ LEAF_ENTRY Load_FA1_FA2_FA3_FA4
++#if __riscv_flen >= 64
+     fld fa1, 0(t3)
+     fld fa2, 8(t3)
+     fld fa3, 16(t3)
+     fld fa4, 24(t3)
++#endif
+     addi t3, t3, 32
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2174,11 +2256,13 @@ LEAF_ENTRY Load_FA1_FA2_FA3_FA4
+ LEAF_END Load_FA1_FA2_FA3_FA4
+ 
+ LEAF_ENTRY Load_FA1_FA2_FA3_FA4_FA5
++#if __riscv_flen >= 64
+     fld fa1, 0(t3)
+     fld fa2, 8(t3)
+     fld fa3, 16(t3)
+     fld fa4, 24(t3)
+     fld fa5, 32(t3)
++#endif
+     addi t3, t3, 40
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2186,12 +2270,14 @@ LEAF_ENTRY Load_FA1_FA2_FA3_FA4_FA5
+ LEAF_END Load_FA1_FA2_FA3_FA4_FA5
+ 
+ LEAF_ENTRY Load_FA1_FA2_FA3_FA4_FA5_FA6
++#if __riscv_flen >= 64
+     fld fa1, 0(t3)
+     fld fa2, 8(t3)
+     fld fa3, 16(t3)
+     fld fa4, 24(t3)
+     fld fa5, 32(t3)
+     fld fa6, 40(t3)
++#endif
+     addi t3, t3, 48
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2199,6 +2285,7 @@ LEAF_ENTRY Load_FA1_FA2_FA3_FA4_FA5_FA6
+ LEAF_END Load_FA1_FA2_FA3_FA4_FA5_FA6
+ 
+ LEAF_ENTRY Load_FA1_FA2_FA3_FA4_FA5_FA6_FA7
++#if __riscv_flen >= 64
+     fld fa1, 0(t3)
+     fld fa2, 8(t3)
+     fld fa3, 16(t3)
+@@ -2206,6 +2293,7 @@ LEAF_ENTRY Load_FA1_FA2_FA3_FA4_FA5_FA6_FA7
+     fld fa5, 32(t3)
+     fld fa6, 40(t3)
+     fld fa7, 48(t3)
++#endif
+     addi t3, t3, 56
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2213,7 +2301,9 @@ LEAF_ENTRY Load_FA1_FA2_FA3_FA4_FA5_FA6_FA7
+ LEAF_END Load_FA1_FA2_FA3_FA4_FA5_FA6_FA7
+ 
+ LEAF_ENTRY Load_FA3
++#if __riscv_flen >= 64
+     fld fa3, 0(t3)
++#endif
+     addi t3, t3, 8
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2221,8 +2311,10 @@ LEAF_ENTRY Load_FA3
+ LEAF_END Load_FA3
+ 
+ LEAF_ENTRY Load_FA3_FA4
++#if __riscv_flen >= 64
+     fld fa3, 0(t3)
+     fld fa4, 8(t3)
++#endif
+     addi t3, t3, 16
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2230,9 +2322,11 @@ LEAF_ENTRY Load_FA3_FA4
+ LEAF_END Load_FA3_FA4
+ 
+ LEAF_ENTRY Load_FA3_FA4_FA5
++#if __riscv_flen >= 64
+     fld fa3, 0(t3)
+     fld fa4, 8(t3)
+     fld fa5, 16(t3)
++#endif
+     addi t3, t3, 24
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2240,10 +2334,12 @@ LEAF_ENTRY Load_FA3_FA4_FA5
+ LEAF_END Load_FA3_FA4_FA5
+ 
+ LEAF_ENTRY Load_FA3_FA4_FA5_FA6
++#if __riscv_flen >= 64
+     fld fa3, 0(t3)
+     fld fa4, 8(t3)
+     fld fa5, 16(t3)
+     fld fa6, 24(t3)
++#endif
+     addi t3, t3, 32
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2251,11 +2347,13 @@ LEAF_ENTRY Load_FA3_FA4_FA5_FA6
+ LEAF_END Load_FA3_FA4_FA5_FA6
+ 
+ LEAF_ENTRY Load_FA3_FA4_FA5_FA6_FA7
++#if __riscv_flen >= 64
+     fld fa3, 0(t3)
+     fld fa4, 8(t3)
+     fld fa5, 16(t3)
+     fld fa6, 24(t3)
+     fld fa7, 32(t3)
++#endif
+     addi t3, t3, 40
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2263,7 +2361,9 @@ LEAF_ENTRY Load_FA3_FA4_FA5_FA6_FA7
+ LEAF_END Load_FA3_FA4_FA5_FA6_FA7
+ 
+ LEAF_ENTRY Load_FA5
++#if __riscv_flen >= 64
+     fld fa5, 0(t3)
++#endif
+     addi t3, t3, 8
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2271,8 +2371,10 @@ LEAF_ENTRY Load_FA5
+ LEAF_END Load_FA5
+ 
+ LEAF_ENTRY Load_FA5_FA6
++#if __riscv_flen >= 64
+     fld fa5, 0(t3)
+     fld fa6, 8(t3)
++#endif
+     addi t3, t3, 16
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2280,9 +2382,11 @@ LEAF_ENTRY Load_FA5_FA6
+ LEAF_END Load_FA5_FA6
+ 
+ LEAF_ENTRY Load_FA5_FA6_FA7
++#if __riscv_flen >= 64
+     fld fa5, 0(t3)
+     fld fa6, 8(t3)
+     fld fa7, 16(t3)
++#endif
+     addi t3, t3, 24
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2290,7 +2394,9 @@ LEAF_ENTRY Load_FA5_FA6_FA7
+ LEAF_END Load_FA5_FA6_FA7
+ 
+ LEAF_ENTRY Load_FA7
++#if __riscv_flen >= 64
+     fld fa7, 0(t3)
++#endif
+     addi t3, t3, 8
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2298,7 +2404,9 @@ LEAF_ENTRY Load_FA7
+ LEAF_END Load_FA7
+ 
+ LEAF_ENTRY Store_FA0
++#if __riscv_flen >= 64
+     fsd fa0, 0(t3)
++#endif
+     addi t3, t3, 8
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2306,8 +2414,10 @@ LEAF_ENTRY Store_FA0
+ LEAF_END Store_FA0
+ 
+ LEAF_ENTRY Store_FA0_FA1
++#if __riscv_flen >= 64
+     fsd fa0, 0(t3)
+     fsd fa1, 8(t3)
++#endif
+     addi t3, t3, 16
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2315,11 +2425,15 @@ LEAF_ENTRY Store_FA0_FA1
+ LEAF_END Store_FA0_FA1
+ 
+ LEAF_ENTRY Store_FA0_FA1_FA2
++#if __riscv_flen >= 64
+     fsd fa0, 0(t3)
+     fsd fa1, 8(t3)
++#endif
+     addi t3, t3, 16
+ ALTERNATE_ENTRY Store_FA2
++#if __riscv_flen >= 64
+     fsd fa2, 0(t3)
++#endif
+     addi t3, t3, 8
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2327,12 +2441,16 @@ ALTERNATE_ENTRY Store_FA2
+ LEAF_END Store_FA0_FA1_FA2
+ 
+ LEAF_ENTRY Store_FA0_FA1_FA2_FA3
++#if __riscv_flen >= 64
+     fsd fa0, 0(t3)
+     fsd fa1, 8(t3)
++#endif
+     addi t3, t3, 16
+ ALTERNATE_ENTRY Store_FA2_FA3
++#if __riscv_flen >= 64
+     fsd fa2, 0(t3)
+     fsd fa3, 8(t3)
++#endif
+     addi t3, t3, 16
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2340,15 +2458,21 @@ ALTERNATE_ENTRY Store_FA2_FA3
+ LEAF_END Store_FA0_FA1_FA2_FA3
+ 
+ LEAF_ENTRY Store_FA0_FA1_FA2_FA3_FA4
++#if __riscv_flen >= 64
+     fsd fa0, 0(t3)
+     fsd fa1, 8(t3)
++#endif
+     addi t3, t3, 16
+ ALTERNATE_ENTRY Store_FA2_FA3_FA4
++#if __riscv_flen >= 64
+     fsd fa2, 0(t3)
+     fsd fa3, 8(t3)
++#endif
+     addi t3, t3, 16
+ ALTERNATE_ENTRY Store_FA4
++#if __riscv_flen >= 64
+     fsd fa4, 0(t3)
++#endif
+     addi t3, t3, 8
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2356,16 +2480,22 @@ ALTERNATE_ENTRY Store_FA4
+ LEAF_END Store_FA0_FA1_FA2_FA3_FA4
+ 
+ LEAF_ENTRY Store_FA0_FA1_FA2_FA3_FA4_FA5
++#if __riscv_flen >= 64
+     fsd fa0, 0(t3)
+     fsd fa1, 8(t3)
++#endif
+     addi t3, t3, 16
+ ALTERNATE_ENTRY Store_FA2_FA3_FA4_FA5
++#if __riscv_flen >= 64
+     fsd fa2, 0(t3)
+     fsd fa3, 8(t3)
++#endif
+     addi t3, t3, 16
+ ALTERNATE_ENTRY Store_FA4_FA5
++#if __riscv_flen >= 64
+     fsd fa4, 0(t3)
+     fsd fa5, 8(t3)
++#endif
+     addi t3, t3, 16
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2373,19 +2503,27 @@ ALTERNATE_ENTRY Store_FA4_FA5
+ LEAF_END Store_FA0_FA1_FA2_FA3_FA4_FA5
+ 
+ LEAF_ENTRY Store_FA0_FA1_FA2_FA3_FA4_FA5_FA6
++#if __riscv_flen >= 64
+     fsd fa0, 0(t3)
+     fsd fa1, 8(t3)
++#endif
+     addi t3, t3, 16
+ ALTERNATE_ENTRY Store_FA2_FA3_FA4_FA5_FA6
++#if __riscv_flen >= 64
+     fsd fa2, 0(t3)
+     fsd fa3, 8(t3)
++#endif
+     addi t3, t3, 16
+ ALTERNATE_ENTRY Store_FA4_FA5_FA6
++#if __riscv_flen >= 64
+     fsd fa4, 0(t3)
+     fsd fa5, 8(t3)
++#endif
+     addi t3, t3, 16
+ ALTERNATE_ENTRY Store_FA6
++#if __riscv_flen >= 64
+     fsd fa6, 0(t3)
++#endif
+     addi t3, t3, 8
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2393,20 +2531,28 @@ ALTERNATE_ENTRY Store_FA6
+ LEAF_END Store_FA0_FA1_FA2_FA3_FA4_FA5_FA6
+ 
+ LEAF_ENTRY Store_FA0_FA1_FA2_FA3_FA4_FA5_FA6_FA7
++#if __riscv_flen >= 64
+     fsd fa0, 0(t3)
+     fsd fa1, 8(t3)
++#endif
+     addi t3, t3, 16
+ ALTERNATE_ENTRY Store_FA2_FA3_FA4_FA5_FA6_FA7
++#if __riscv_flen >= 64
+     fsd fa2, 0(t3)
+     fsd fa3, 8(t3)
++#endif
+     addi t3, t3, 16
+ ALTERNATE_ENTRY Store_FA4_FA5_FA6_FA7
++#if __riscv_flen >= 64
+     fsd fa4, 0(t3)
+     fsd fa5, 8(t3)
++#endif
+     addi t3, t3, 16
+ ALTERNATE_ENTRY Store_FA6_FA7
++#if __riscv_flen >= 64
+     fsd fa6, 0(t3)
+     fsd fa7, 8(t3)
++#endif
+     addi t3, t3, 16
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2415,7 +2561,9 @@ LEAF_END Store_FA0_FA1_FA2_FA3_FA4_FA5_FA6_FA7
+ 
+ // Additional Store_FA* routines starting from FA1, FA3, FA5, FA7
+ LEAF_ENTRY Store_FA1
++#if __riscv_flen >= 64
+     fsd fa1, 0(t3)
++#endif
+     addi t3, t3, 8
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2423,8 +2571,10 @@ LEAF_ENTRY Store_FA1
+ LEAF_END Store_FA1
+ 
+ LEAF_ENTRY Store_FA1_FA2
++#if __riscv_flen >= 64
+     fsd fa1, 0(t3)
+     fsd fa2, 8(t3)
++#endif
+     addi t3, t3, 16
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2432,9 +2582,11 @@ LEAF_ENTRY Store_FA1_FA2
+ LEAF_END Store_FA1_FA2
+ 
+ LEAF_ENTRY Store_FA1_FA2_FA3
++#if __riscv_flen >= 64
+     fsd fa1, 0(t3)
+     fsd fa2, 8(t3)
+     fsd fa3, 16(t3)
++#endif
+     addi t3, t3, 24
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2442,10 +2594,12 @@ LEAF_ENTRY Store_FA1_FA2_FA3
+ LEAF_END Store_FA1_FA2_FA3
+ 
+ LEAF_ENTRY Store_FA1_FA2_FA3_FA4
++#if __riscv_flen >= 64
+     fsd fa1, 0(t3)
+     fsd fa2, 8(t3)
+     fsd fa3, 16(t3)
+     fsd fa4, 24(t3)
++#endif
+     addi t3, t3, 32
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2453,11 +2607,13 @@ LEAF_ENTRY Store_FA1_FA2_FA3_FA4
+ LEAF_END Store_FA1_FA2_FA3_FA4
+ 
+ LEAF_ENTRY Store_FA1_FA2_FA3_FA4_FA5
++#if __riscv_flen >= 64
+     fsd fa1, 0(t3)
+     fsd fa2, 8(t3)
+     fsd fa3, 16(t3)
+     fsd fa4, 24(t3)
+     fsd fa5, 32(t3)
++#endif
+     addi t3, t3, 40
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2465,12 +2621,14 @@ LEAF_ENTRY Store_FA1_FA2_FA3_FA4_FA5
+ LEAF_END Store_FA1_FA2_FA3_FA4_FA5
+ 
+ LEAF_ENTRY Store_FA1_FA2_FA3_FA4_FA5_FA6
++#if __riscv_flen >= 64
+     fsd fa1, 0(t3)
+     fsd fa2, 8(t3)
+     fsd fa3, 16(t3)
+     fsd fa4, 24(t3)
+     fsd fa5, 32(t3)
+     fsd fa6, 40(t3)
++#endif
+     addi t3, t3, 48
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2478,6 +2636,7 @@ LEAF_ENTRY Store_FA1_FA2_FA3_FA4_FA5_FA6
+ LEAF_END Store_FA1_FA2_FA3_FA4_FA5_FA6
+ 
+ LEAF_ENTRY Store_FA1_FA2_FA3_FA4_FA5_FA6_FA7
++#if __riscv_flen >= 64
+     fsd fa1, 0(t3)
+     fsd fa2, 8(t3)
+     fsd fa3, 16(t3)
+@@ -2485,6 +2644,7 @@ LEAF_ENTRY Store_FA1_FA2_FA3_FA4_FA5_FA6_FA7
+     fsd fa5, 32(t3)
+     fsd fa6, 40(t3)
+     fsd fa7, 48(t3)
++#endif
+     addi t3, t3, 56
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2492,7 +2652,9 @@ LEAF_ENTRY Store_FA1_FA2_FA3_FA4_FA5_FA6_FA7
+ LEAF_END Store_FA1_FA2_FA3_FA4_FA5_FA6_FA7
+ 
+ LEAF_ENTRY Store_FA3
++#if __riscv_flen >= 64
+     fsd fa3, 0(t3)
++#endif
+     addi t3, t3, 8
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2500,8 +2662,10 @@ LEAF_ENTRY Store_FA3
+ LEAF_END Store_FA3
+ 
+ LEAF_ENTRY Store_FA3_FA4
++#if __riscv_flen >= 64
+     fsd fa3, 0(t3)
+     fsd fa4, 8(t3)
++#endif
+     addi t3, t3, 16
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2509,9 +2673,11 @@ LEAF_ENTRY Store_FA3_FA4
+ LEAF_END Store_FA3_FA4
+ 
+ LEAF_ENTRY Store_FA3_FA4_FA5
++#if __riscv_flen >= 64
+     fsd fa3, 0(t3)
+     fsd fa4, 8(t3)
+     fsd fa5, 16(t3)
++#endif
+     addi t3, t3, 24
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2519,10 +2685,12 @@ LEAF_ENTRY Store_FA3_FA4_FA5
+ LEAF_END Store_FA3_FA4_FA5
+ 
+ LEAF_ENTRY Store_FA3_FA4_FA5_FA6
++#if __riscv_flen >= 64
+     fsd fa3, 0(t3)
+     fsd fa4, 8(t3)
+     fsd fa5, 16(t3)
+     fsd fa6, 24(t3)
++#endif
+     addi t3, t3, 32
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2530,11 +2698,13 @@ LEAF_ENTRY Store_FA3_FA4_FA5_FA6
+ LEAF_END Store_FA3_FA4_FA5_FA6
+ 
+ LEAF_ENTRY Store_FA3_FA4_FA5_FA6_FA7
++#if __riscv_flen >= 64
+     fsd fa3, 0(t3)
+     fsd fa4, 8(t3)
+     fsd fa5, 16(t3)
+     fsd fa6, 24(t3)
+     fsd fa7, 32(t3)
++#endif
+     addi t3, t3, 40
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2542,7 +2712,9 @@ LEAF_ENTRY Store_FA3_FA4_FA5_FA6_FA7
+ LEAF_END Store_FA3_FA4_FA5_FA6_FA7
+ 
+ LEAF_ENTRY Store_FA5
++#if __riscv_flen >= 64
+     fsd fa5, 0(t3)
++#endif
+     addi t3, t3, 8
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2550,8 +2722,10 @@ LEAF_ENTRY Store_FA5
+ LEAF_END Store_FA5
+ 
+ LEAF_ENTRY Store_FA5_FA6
++#if __riscv_flen >= 64
+     fsd fa5, 0(t3)
+     fsd fa6, 8(t3)
++#endif
+     addi t3, t3, 16
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2559,9 +2733,11 @@ LEAF_ENTRY Store_FA5_FA6
+ LEAF_END Store_FA5_FA6
+ 
+ LEAF_ENTRY Store_FA5_FA6_FA7
++#if __riscv_flen >= 64
+     fsd fa5, 0(t3)
+     fsd fa6, 8(t3)
+     fsd fa7, 16(t3)
++#endif
+     addi t3, t3, 24
+     ld t4, 0(t2)
+     addi t2, t2, 8
+@@ -2569,7 +2745,9 @@ LEAF_ENTRY Store_FA5_FA6_FA7
+ LEAF_END Store_FA5_FA6_FA7
+ 
+ LEAF_ENTRY Store_FA7
++#if __riscv_flen >= 64
+     fsd fa7, 0(t3)
++#endif
+     addi t3, t3, 8
+     ld t4, 0(t2)
+     addi t2, t2, 8
 diff --git a/src/coreclr/vm/riscv64/calldescrworkerriscv64.S b/src/coreclr/vm/riscv64/calldescrworkerriscv64.S
 --- a/src/coreclr/vm/riscv64/calldescrworkerriscv64.S
 +++ b/src/coreclr/vm/riscv64/calldescrworkerriscv64.S
-@@ -44,6 +44,7 @@
+@@ -44,6 +44,7 @@ LOCAL_LABEL(donestack):
      ld t4, CallDescrData__pFloatArgumentRegisters(s1)
      beq t4, zero, LOCAL_LABEL(NoFloatingPoint)
  
-+#if __riscv_flen != 0
++#if __riscv_flen >= 64
      fld fa0, 0(t4)
      fld fa1, 8(t4)
      fld fa2, 16(t4)
-@@ -52,6 +53,7 @@
+@@ -52,6 +53,7 @@ LOCAL_LABEL(donestack):
      fld fa5, 40(t4)
      fld fa6, 48(t4)
      fld fa7, 56(t4)
@@ -346,21 +1236,21 @@ diff --git a/src/coreclr/vm/riscv64/calldescrworkerriscv64.S b/src/coreclr/vm/ri
  
  LOCAL_LABEL(NoFloatingPoint):
      // Copy [pArgumentRegisters, ..., pArgumentRegisters + 56]
-@@ -80,7 +82,9 @@
+@@ -80,7 +82,9 @@ LOCAL_LABEL(CallDescrWorkerInternalReturnAddress):
      // Just save the returned registers (fa0, fa1/a0) and let CopyReturnedFpStructFromRegisters worry about placing
      // the fields as they were originally laid out in memory.
  
-+#if __riscv_flen != 0
++#if __riscv_flen >= 64
      fsd fa0, CallDescrData__returnValue(s1) // fa0 is always occupied; we have at least one floating field
 +#endif
  
      andi a3, a3, FpStruct__BothFloat
      bne  a3, zero, LOCAL_LABEL(SecondFieldFloatReturn)
-@@ -91,7 +95,9 @@
+@@ -91,7 +95,9 @@ LOCAL_LABEL(CallDescrWorkerInternalReturnAddress):
      j  LOCAL_LABEL(ReturnDone)
  
  LOCAL_LABEL(SecondFieldFloatReturn):
-+#if __riscv_flen != 0
++#if __riscv_flen >= 64
      fsd fa1, (CallDescrData__returnValue + 8)(s1)
 +#endif
      j  LOCAL_LABEL(ReturnDone)
@@ -369,7 +1259,7 @@ diff --git a/src/coreclr/vm/riscv64/calldescrworkerriscv64.S b/src/coreclr/vm/ri
 diff --git a/src/coreclr/vm/riscv64/thunktemplates.S b/src/coreclr/vm/riscv64/thunktemplates.S
 --- a/src/coreclr/vm/riscv64/thunktemplates.S
 +++ b/src/coreclr/vm/riscv64/thunktemplates.S
-@@ -14,6 +14,13 @@
+@@ -14,6 +14,13 @@ LEAF_END_MARKED StubPrecodeCode
  LEAF_ENTRY FixupPrecodeCode
      auipc t2, 0x4
      ld t2, (FixupPrecodeData__Target)(t2)
@@ -383,7 +1273,7 @@ diff --git a/src/coreclr/vm/riscv64/thunktemplates.S b/src/coreclr/vm/riscv64/th
      c.jr t2
  
      fence r,rw
-@@ -21,6 +28,15 @@
+@@ -21,6 +28,15 @@ LEAF_ENTRY FixupPrecodeCode
      ld t1, (FixupPrecodeData__PrecodeFixupThunk - 0xe)(t2)
      ld t2, (FixupPrecodeData__MethodDesc - 0xe)(t2)
      jr t1
