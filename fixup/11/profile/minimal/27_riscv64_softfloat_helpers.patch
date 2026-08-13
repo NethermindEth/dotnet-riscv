@@ -37,37 +37,16 @@ diff --git a/src/coreclr/inc/corinfo.h b/src/coreclr/inc/corinfo.h
 diff --git a/src/coreclr/inc/jiteeversionguid.h b/src/coreclr/inc/jiteeversionguid.h
 --- a/src/coreclr/inc/jiteeversionguid.h
 +++ b/src/coreclr/inc/jiteeversionguid.h
-@@ -16,32 +16,11 @@
- // Note that this file is parsed by some tools, namely superpmi.py, so make sure the first line is exactly
- // of the form:
- //
--//   constexpr GUID JITEEVersionIdentifier = { /* 1776ab48-edfa-49be-a11f-ec216b28174c */
--//
--// (without the leading slashes or spaces).
--//
--// See docs/project/updating-jitinterface.md for details
--//
--// **** NOTE TO INTEGRATORS:
--//
--// If there is a merge conflict here, because the version changed in two different places, you must
--// create a **NEW** GUID, not simply choose one or the other!
--//
--// NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE
--//
--//////////////////////////////////////////////////////////////////////////////////////////////////////////
--//
--
--#ifndef JIT_EE_VERSIONING_GUID_H
--#define JIT_EE_VERSIONING_GUID_H
--
--#include <minipal/guid.h>
--
+@@ -37,11 +37,11 @@
+ 
+ #include <minipal/guid.h>
+ 
 -constexpr GUID JITEEVersionIdentifier = { /* 2348bb76-27d3-449f-824f-1e51c888a151 */
 -    0x2348bb76,
 -    0x27d3,
 -    0x449f,
 -    {0x82, 0x4f, 0x1e, 0x51, 0xc8, 0x88, 0xa1, 0x51}
-+//   constexpr GUID JITEEVersionIdentifier = { /* 50e3028f-96b4-4253-a93c-218c3443e2f2 */
++constexpr GUID JITEEVersionIdentifier = { /* 50e3028f-96b4-4253-a93c-218c3443e2f2 */
 +    0x50e3028f,
 +    0x96b4,
 +    0x4253,
