@@ -197,9 +197,9 @@ diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
 +            {
 +                GenTreeCall* const call = tree->AsCall();
 +                call->gtType            = type == TYP_FLOAT ? TYP_INT : TYP_LONG;
-+                call->GetReturnTypeDesc()->Reset();
-+                call->GetReturnTypeDesc()->InitializeReturnType(this, call->gtType, call->gtRetClsHnd,
-+                                                                call->GetUnmanagedCallConv());
++                call->gtReturnTypeDesc.Reset();
++                call->gtReturnTypeDesc.InitializeReturnType(this, call->gtType, call->gtRetClsHnd,
++                                                            call->GetUnmanagedCallConv());
 +            }
 +            return tree;
 +
