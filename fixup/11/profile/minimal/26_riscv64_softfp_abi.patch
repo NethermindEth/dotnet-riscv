@@ -1,0 +1,59 @@
+diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
+--- a/src/coreclr/jit/compiler.h
++++ b/src/coreclr/jit/compiler.h
+@@ -11465,7 +11465,9 @@ public:
+         int compJitSaveFpLrWithCalleeSavedRegisters;
+ #endif // defined(TARGET_ARM64)
+ 
+-#ifdef CONFIGURABLE_ARM_ABI
++#if defined(CONFIGURABLE_ARM_ABI) || defined(TARGET_RISCV64)
++        // On RISCV64 the lp64 soft-float ABI is selected per compilation by
++        // JIT_FLAG_SOFTFP_ABI (no-F targets); see compInitOptions.
+         bool compUseSoftFP = false;
+ #else
+ #ifdef ARM_SOFTFP
+diff --git a/src/coreclr/jit/compiler.cpp b/src/coreclr/jit/compiler.cpp
+--- a/src/coreclr/jit/compiler.cpp
++++ b/src/coreclr/jit/compiler.cpp
+@@ -863,7 +863,7 @@ var_types Compiler::getReturnTypeForStruct(CORINFO_CLASS_HANDLE     clsHnd,
+         useType             = TYP_UNKNOWN;
+     }
+ #elif defined(TARGET_RISCV64) || defined(TARGET_LOONGARCH64)
+-    if (structSize <= (TARGET_POINTER_SIZE * 2))
++    if ((structSize <= (TARGET_POINTER_SIZE * 2)) && !opts.compUseSoftFP)
+     {
+         const CORINFO_FPSTRUCT_LOWERING* lowering = GetFpStructLowering(clsHnd);
+         if (!lowering->byIntegerCallConv)
+@@ -3008,6 +3008,11 @@ void Compiler::compInitOptions(JitFlags* jitFlags)
+     }
+ 
+     GlobalJitOptions::compFeatureHfa = !opts.compUseSoftFP;
++#elif defined(TARGET_RISCV64)
++    // lp64 soft-float ABI: FP scalars and FP struct fields are passed by the
++    // integer calling convention and fa* registers are never used. Set by the
++    // VM / AOT driver for targets without the F extension.
++    opts.compUseSoftFP = jitFlags->IsSet(JitFlags::JIT_FLAG_SOFTFP_ABI);
+ #elif defined(ARM_SOFTFP) && defined(TARGET_ARM)
+     // Armel is unconditionally enabled in the JIT. Verify that the VM side agrees.
+     assert(jitFlags->IsSet(JitFlags::JIT_FLAG_SOFTFP_ABI));
+diff --git a/src/coreclr/jit/targetriscv64.cpp b/src/coreclr/jit/targetriscv64.cpp
+--- a/src/coreclr/jit/targetriscv64.cpp
++++ b/src/coreclr/jit/targetriscv64.cpp
+@@ -72,7 +72,7 @@ ABIPassingInformation RiscV64Classifier::Classify(Compiler*    comp,
+             passedByRef = true;
+             passedSize  = TARGET_POINTER_SIZE;
+         }
+-        else if (!structLayout->IsBlockLayout())
++        else if (!structLayout->IsBlockLayout() && !comp->opts.compUseSoftFP)
+         {
+             lowering = comp->GetFpStructLowering(structLayout->GetClassHandle());
+             if (!lowering->byIntegerCallConv)
+@@ -94,7 +94,7 @@ ABIPassingInformation RiscV64Classifier::Classify(Compiler*    comp,
+     {
+         passedSize = genTypeSize(type);
+         assert(passedSize <= TARGET_POINTER_SIZE);
+-        floatFields = varTypeIsFloating(type) ? 1 : 0;
++        floatFields = (varTypeIsFloating(type) && !comp->opts.compUseSoftFP) ? 1 : 0;
+     }
+ 
+     assert((floatFields > 0) || (intFields == 0));
