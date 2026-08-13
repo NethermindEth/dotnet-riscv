@@ -1,0 +1,517 @@
+diff --git a/src/coreclr/inc/corinfo.h b/src/coreclr/inc/corinfo.h
+--- a/src/coreclr/inc/corinfo.h
++++ b/src/coreclr/inc/corinfo.h
+@@ -342,6 +342,32 @@ enum CorInfoHelpFunc
+     CORINFO_HELP_FLTREM,
+     CORINFO_HELP_DBLREM,
+ 
++    /* Soft-float helpers for targets without an FPU (e.g. RISC-V rv64im).
++       Arithmetic maps to the compiler-rt/libgcc builtins; the compare helpers
++       follow the libgcc tri-state conventions (lt/le return +1 on unordered,
++       gt/ge return -1, eq returns nonzero), which lets the JIT express every
++       ordered/unordered IL comparison with a single call. */
++    CORINFO_HELP_FLTADD,
++    CORINFO_HELP_FLTSUB,
++    CORINFO_HELP_FLTMUL,
++    CORINFO_HELP_FLTDIV,
++    CORINFO_HELP_DBLADD,
++    CORINFO_HELP_DBLSUB,
++    CORINFO_HELP_DBLMUL,
++    CORINFO_HELP_DBLDIV,
++    CORINFO_HELP_FLTCMP_EQ,
++    CORINFO_HELP_FLTCMP_LT,
++    CORINFO_HELP_FLTCMP_LE,
++    CORINFO_HELP_FLTCMP_GT,
++    CORINFO_HELP_FLTCMP_GE,
++    CORINFO_HELP_DBLCMP_EQ,
++    CORINFO_HELP_DBLCMP_LT,
++    CORINFO_HELP_DBLCMP_LE,
++    CORINFO_HELP_DBLCMP_GT,
++    CORINFO_HELP_DBLCMP_GE,
++    CORINFO_HELP_FLT2DBL,
++    CORINFO_HELP_DBL2FLT,
++
+     /* Allocating a new object. Always use ICorClassInfo::getNewHelper() to decide
+        which is the right helper to use to allocate an object of a given type. */
+ 
+diff --git a/src/coreclr/inc/jiteeversionguid.h b/src/coreclr/inc/jiteeversionguid.h
+--- a/src/coreclr/inc/jiteeversionguid.h
++++ b/src/coreclr/inc/jiteeversionguid.h
+@@ -16,32 +16,11 @@
+ // Note that this file is parsed by some tools, namely superpmi.py, so make sure the first line is exactly
+ // of the form:
+ //
+-//   constexpr GUID JITEEVersionIdentifier = { /* 1776ab48-edfa-49be-a11f-ec216b28174c */
+-//
+-// (without the leading slashes or spaces).
+-//
+-// See docs/project/updating-jitinterface.md for details
+-//
+-// **** NOTE TO INTEGRATORS:
+-//
+-// If there is a merge conflict here, because the version changed in two different places, you must
+-// create a **NEW** GUID, not simply choose one or the other!
+-//
+-// NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE
+-//
+-//////////////////////////////////////////////////////////////////////////////////////////////////////////
+-//
+-
+-#ifndef JIT_EE_VERSIONING_GUID_H
+-#define JIT_EE_VERSIONING_GUID_H
+-
+-#include <minipal/guid.h>
+-
+-constexpr GUID JITEEVersionIdentifier = { /* 2348bb76-27d3-449f-824f-1e51c888a151 */
+-    0x2348bb76,
+-    0x27d3,
+-    0x449f,
+-    {0x82, 0x4f, 0x1e, 0x51, 0xc8, 0x88, 0xa1, 0x51}
++//   constexpr GUID JITEEVersionIdentifier = { /* 50e3028f-96b4-4253-a93c-218c3443e2f2 */
++    0x50e3028f,
++    0x96b4,
++    0x4253,
++    {0xa9, 0x3c, 0x21, 0x8c, 0x34, 0x43, 0xe2, 0xf2}
+   };
+ 
+ #endif // JIT_EE_VERSIONING_GUID_H
+diff --git a/src/coreclr/inc/jithelpers.h b/src/coreclr/inc/jithelpers.h
+--- a/src/coreclr/inc/jithelpers.h
++++ b/src/coreclr/inc/jithelpers.h
+@@ -95,6 +95,26 @@
+     DYNAMICJITHELPER(CORINFO_HELP_DBL2ULNG_OVF, NULL,               METHOD__MATH__CONVERT_TO_UINT64_CHECKED)
+     JITHELPER(CORINFO_HELP_FLTREM,              JIT_FltRem,         METHOD__NIL)
+     JITHELPER(CORINFO_HELP_DBLREM,              JIT_DblRem,         METHOD__NIL)
++    JITHELPER(CORINFO_HELP_FLTADD,              JIT_FltAdd,         METHOD__NIL)
++    JITHELPER(CORINFO_HELP_FLTSUB,              JIT_FltSub,         METHOD__NIL)
++    JITHELPER(CORINFO_HELP_FLTMUL,              JIT_FltMul,         METHOD__NIL)
++    JITHELPER(CORINFO_HELP_FLTDIV,              JIT_FltDiv,         METHOD__NIL)
++    JITHELPER(CORINFO_HELP_DBLADD,              JIT_DblAdd,         METHOD__NIL)
++    JITHELPER(CORINFO_HELP_DBLSUB,              JIT_DblSub,         METHOD__NIL)
++    JITHELPER(CORINFO_HELP_DBLMUL,              JIT_DblMul,         METHOD__NIL)
++    JITHELPER(CORINFO_HELP_DBLDIV,              JIT_DblDiv,         METHOD__NIL)
++    JITHELPER(CORINFO_HELP_FLTCMP_EQ,           JIT_FltCmpEq,       METHOD__NIL)
++    JITHELPER(CORINFO_HELP_FLTCMP_LT,           JIT_FltCmpLt,       METHOD__NIL)
++    JITHELPER(CORINFO_HELP_FLTCMP_LE,           JIT_FltCmpLe,       METHOD__NIL)
++    JITHELPER(CORINFO_HELP_FLTCMP_GT,           JIT_FltCmpGt,       METHOD__NIL)
++    JITHELPER(CORINFO_HELP_FLTCMP_GE,           JIT_FltCmpGe,       METHOD__NIL)
++    JITHELPER(CORINFO_HELP_DBLCMP_EQ,           JIT_DblCmpEq,       METHOD__NIL)
++    JITHELPER(CORINFO_HELP_DBLCMP_LT,           JIT_DblCmpLt,       METHOD__NIL)
++    JITHELPER(CORINFO_HELP_DBLCMP_LE,           JIT_DblCmpLe,       METHOD__NIL)
++    JITHELPER(CORINFO_HELP_DBLCMP_GT,           JIT_DblCmpGt,       METHOD__NIL)
++    JITHELPER(CORINFO_HELP_DBLCMP_GE,           JIT_DblCmpGe,       METHOD__NIL)
++    JITHELPER(CORINFO_HELP_FLT2DBL,             JIT_Flt2Dbl,        METHOD__NIL)
++    JITHELPER(CORINFO_HELP_DBL2FLT,             JIT_Dbl2Flt,        METHOD__NIL)
+ 
+     // Allocating a new object
+     JITHELPER(CORINFO_HELP_NEWFAST,                     RhpNew,                   METHOD__NIL)
+diff --git a/src/coreclr/vm/jithelpers.cpp b/src/coreclr/vm/jithelpers.cpp
+--- a/src/coreclr/vm/jithelpers.cpp
++++ b/src/coreclr/vm/jithelpers.cpp
+@@ -242,6 +242,151 @@ HCIMPL2_VV(double, JIT_DblRem, double dividend, double divisor)
+ }
+ HCIMPLEND
+ 
++/*********************************************************************/
++// Soft-float helpers (no-FPU targets). On hard-float hosts these fold to the
++// native FP instructions. The compare helpers follow the libgcc tri-state
++// conventions: lt/le return +1 on unordered, gt/ge return -1, eq nonzero.
++
++HCIMPL2_VV(float, JIT_FltAdd, float a, float b)
++{
++    FCALL_CONTRACT;
++    return a + b;
++}
++HCIMPLEND
++
++HCIMPL2_VV(float, JIT_FltSub, float a, float b)
++{
++    FCALL_CONTRACT;
++    return a - b;
++}
++HCIMPLEND
++
++HCIMPL2_VV(float, JIT_FltMul, float a, float b)
++{
++    FCALL_CONTRACT;
++    return a * b;
++}
++HCIMPLEND
++
++HCIMPL2_VV(float, JIT_FltDiv, float a, float b)
++{
++    FCALL_CONTRACT;
++    return a / b;
++}
++HCIMPLEND
++
++HCIMPL2_VV(double, JIT_DblAdd, double a, double b)
++{
++    FCALL_CONTRACT;
++    return a + b;
++}
++HCIMPLEND
++
++HCIMPL2_VV(double, JIT_DblSub, double a, double b)
++{
++    FCALL_CONTRACT;
++    return a - b;
++}
++HCIMPLEND
++
++HCIMPL2_VV(double, JIT_DblMul, double a, double b)
++{
++    FCALL_CONTRACT;
++    return a * b;
++}
++HCIMPLEND
++
++HCIMPL2_VV(double, JIT_DblDiv, double a, double b)
++{
++    FCALL_CONTRACT;
++    return a / b;
++}
++HCIMPLEND
++
++HCIMPL2_VV(int32_t, JIT_FltCmpEq, float a, float b)
++{
++    FCALL_CONTRACT;
++    return (a == b) ? 0 : 1;
++}
++HCIMPLEND
++
++HCIMPL2_VV(int32_t, JIT_FltCmpLt, float a, float b)
++{
++    FCALL_CONTRACT;
++    return (a < b) ? -1 : ((a == b) ? 0 : 1);
++}
++HCIMPLEND
++
++HCIMPL2_VV(int32_t, JIT_FltCmpLe, float a, float b)
++{
++    FCALL_CONTRACT;
++    return (a < b) ? -1 : ((a == b) ? 0 : 1);
++}
++HCIMPLEND
++
++HCIMPL2_VV(int32_t, JIT_FltCmpGt, float a, float b)
++{
++    FCALL_CONTRACT;
++    return (a > b) ? 1 : ((a == b) ? 0 : -1);
++}
++HCIMPLEND
++
++HCIMPL2_VV(int32_t, JIT_FltCmpGe, float a, float b)
++{
++    FCALL_CONTRACT;
++    return (a > b) ? 1 : ((a == b) ? 0 : -1);
++}
++HCIMPLEND
++
++HCIMPL2_VV(int32_t, JIT_DblCmpEq, double a, double b)
++{
++    FCALL_CONTRACT;
++    return (a == b) ? 0 : 1;
++}
++HCIMPLEND
++
++HCIMPL2_VV(int32_t, JIT_DblCmpLt, double a, double b)
++{
++    FCALL_CONTRACT;
++    return (a < b) ? -1 : ((a == b) ? 0 : 1);
++}
++HCIMPLEND
++
++HCIMPL2_VV(int32_t, JIT_DblCmpLe, double a, double b)
++{
++    FCALL_CONTRACT;
++    return (a < b) ? -1 : ((a == b) ? 0 : 1);
++}
++HCIMPLEND
++
++HCIMPL2_VV(int32_t, JIT_DblCmpGt, double a, double b)
++{
++    FCALL_CONTRACT;
++    return (a > b) ? 1 : ((a == b) ? 0 : -1);
++}
++HCIMPLEND
++
++HCIMPL2_VV(int32_t, JIT_DblCmpGe, double a, double b)
++{
++    FCALL_CONTRACT;
++    return (a > b) ? 1 : ((a == b) ? 0 : -1);
++}
++HCIMPLEND
++
++HCIMPL1_V(double, JIT_Flt2Dbl, float val)
++{
++    FCALL_CONTRACT;
++    return (double)val;
++}
++HCIMPLEND
++
++HCIMPL1_V(float, JIT_Dbl2Flt, double val)
++{
++    FCALL_CONTRACT;
++    return (float)val;
++}
++HCIMPLEND
++
+ #include <optdefault.h>
+ 
+ // Helper for the managed InitClass implementations
+diff --git a/src/coreclr/jit/utils.cpp b/src/coreclr/jit/utils.cpp
+--- a/src/coreclr/jit/utils.cpp
++++ b/src/coreclr/jit/utils.cpp
+@@ -1469,6 +1469,26 @@ void HelperCallProperties::init()
+             case CORINFO_HELP_DBL2ULNG:
+             case CORINFO_HELP_FLTREM:
+             case CORINFO_HELP_DBLREM:
++            case CORINFO_HELP_FLTADD:
++            case CORINFO_HELP_FLTSUB:
++            case CORINFO_HELP_FLTMUL:
++            case CORINFO_HELP_FLTDIV:
++            case CORINFO_HELP_DBLADD:
++            case CORINFO_HELP_DBLSUB:
++            case CORINFO_HELP_DBLMUL:
++            case CORINFO_HELP_DBLDIV:
++            case CORINFO_HELP_FLTCMP_EQ:
++            case CORINFO_HELP_FLTCMP_LT:
++            case CORINFO_HELP_FLTCMP_LE:
++            case CORINFO_HELP_FLTCMP_GT:
++            case CORINFO_HELP_FLTCMP_GE:
++            case CORINFO_HELP_DBLCMP_EQ:
++            case CORINFO_HELP_DBLCMP_LT:
++            case CORINFO_HELP_DBLCMP_LE:
++            case CORINFO_HELP_DBLCMP_GT:
++            case CORINFO_HELP_DBLCMP_GE:
++            case CORINFO_HELP_FLT2DBL:
++            case CORINFO_HELP_DBL2FLT:
+                 isPure     = true;
+                 exceptions = ExceptionSetFlags::None;
+                 break;
+diff --git a/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs b/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs
+--- a/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs
++++ b/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs
+@@ -41,6 +41,28 @@ namespace Internal.JitInterface
+         CORINFO_HELP_FLTREM,
+         CORINFO_HELP_DBLREM,
+ 
++        // Soft-float helpers (no-FPU targets); see corinfo.h for conventions
++        CORINFO_HELP_FLTADD,
++        CORINFO_HELP_FLTSUB,
++        CORINFO_HELP_FLTMUL,
++        CORINFO_HELP_FLTDIV,
++        CORINFO_HELP_DBLADD,
++        CORINFO_HELP_DBLSUB,
++        CORINFO_HELP_DBLMUL,
++        CORINFO_HELP_DBLDIV,
++        CORINFO_HELP_FLTCMP_EQ,
++        CORINFO_HELP_FLTCMP_LT,
++        CORINFO_HELP_FLTCMP_LE,
++        CORINFO_HELP_FLTCMP_GT,
++        CORINFO_HELP_FLTCMP_GE,
++        CORINFO_HELP_DBLCMP_EQ,
++        CORINFO_HELP_DBLCMP_LT,
++        CORINFO_HELP_DBLCMP_LE,
++        CORINFO_HELP_DBLCMP_GT,
++        CORINFO_HELP_DBLCMP_GE,
++        CORINFO_HELP_FLT2DBL,
++        CORINFO_HELP_DBL2FLT,
++
+         /* Allocating a new object. Always use ICorClassInfo::getNewHelper() to decide
+            which is the right helper to use to allocate an object of a given type. */
+ 
+diff --git a/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs b/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
+--- a/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
++++ b/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
+@@ -4708,6 +4708,13 @@ namespace Internal.JitInterface
+                 flags.Set(CorJitFlag.CORJIT_FLAG_SOFTFP_ABI);
+             }
+ 
++            if ((this.MethodBeingCompiled.Context.Target.Architecture == TargetArchitecture.RiscV64)
++                && !_compilation.InstructionSetSupport.IsInstructionSetSupported(InstructionSet.RiscV64_F))
++            {
++                // lp64 soft-float ABI for RISC-V targets built without the F extension
++                flags.Set(CorJitFlag.CORJIT_FLAG_SOFTFP_ABI);
++            }
++
+             if (this.MethodBeingCompiled.IsAsyncCall()
+ #if !READYTORUN
+                 || (_compilation.TypeSystemContext.IsSpecialUnboxingThunk(this.MethodBeingCompiled) && _compilation.TypeSystemContext.GetTargetOfSpecialUnboxingThunk(this.MethodBeingCompiled).IsAsyncCall())
+diff --git a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs
+--- a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs
++++ b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs
+@@ -401,6 +401,29 @@ namespace Internal.ReadyToRunConstants
+         TypeHandleToRuntimeType,
+         GetRefAny,
+         TypeHandleToRuntimeTypeHandle,
++
++        // Soft-float (no-FPU targets, e.g. rv64im) arithmetic/compare/convert.
++        // NativeAOT-only; resolved to compiler-rt builtins by JitHelper.
++        FltAdd,
++        FltSub,
++        FltMul,
++        FltDiv,
++        DblAdd,
++        DblSub,
++        DblMul,
++        DblDiv,
++        FltCmpEq,
++        FltCmpLt,
++        FltCmpLe,
++        FltCmpGt,
++        FltCmpGe,
++        DblCmpEq,
++        DblCmpLt,
++        DblCmpLe,
++        DblCmpGt,
++        DblCmpGe,
++        Flt2Dbl,
++        Dbl2Flt,
+     }
+ 
+     // Enum used for HFA type recognition.
+diff --git a/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs b/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs
+--- a/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs
++++ b/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs
+@@ -734,6 +734,66 @@ namespace Internal.JitInterface
+                 case CorInfoHelpFunc.CORINFO_HELP_DBLREM:
+                     id = ReadyToRunHelper.DblRem;
+                     break;
++                case CorInfoHelpFunc.CORINFO_HELP_FLTADD:
++                    id = ReadyToRunHelper.FltAdd;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_FLTSUB:
++                    id = ReadyToRunHelper.FltSub;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_FLTMUL:
++                    id = ReadyToRunHelper.FltMul;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_FLTDIV:
++                    id = ReadyToRunHelper.FltDiv;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_DBLADD:
++                    id = ReadyToRunHelper.DblAdd;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_DBLSUB:
++                    id = ReadyToRunHelper.DblSub;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_DBLMUL:
++                    id = ReadyToRunHelper.DblMul;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_DBLDIV:
++                    id = ReadyToRunHelper.DblDiv;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_FLTCMP_EQ:
++                    id = ReadyToRunHelper.FltCmpEq;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_FLTCMP_LT:
++                    id = ReadyToRunHelper.FltCmpLt;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_FLTCMP_LE:
++                    id = ReadyToRunHelper.FltCmpLe;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_FLTCMP_GT:
++                    id = ReadyToRunHelper.FltCmpGt;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_FLTCMP_GE:
++                    id = ReadyToRunHelper.FltCmpGe;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_DBLCMP_EQ:
++                    id = ReadyToRunHelper.DblCmpEq;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_DBLCMP_LT:
++                    id = ReadyToRunHelper.DblCmpLt;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_DBLCMP_LE:
++                    id = ReadyToRunHelper.DblCmpLe;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_DBLCMP_GT:
++                    id = ReadyToRunHelper.DblCmpGt;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_DBLCMP_GE:
++                    id = ReadyToRunHelper.DblCmpGe;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_FLT2DBL:
++                    id = ReadyToRunHelper.Flt2Dbl;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_DBL2FLT:
++                    id = ReadyToRunHelper.Dbl2Flt;
++                    break;
+ 
+                 case CorInfoHelpFunc.CORINFO_HELP_JIT_PINVOKE_BEGIN:
+                     id = ReadyToRunHelper.PInvokeBegin;
+diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs
+--- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs
++++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs
+@@ -216,6 +216,69 @@ namespace ILCompiler
+                     mangledName = "fmodf";
+                     break;
+ 
++                // Soft-float (no-FPU targets): compiler-rt/libgcc builtins,
++                // linked from the toolchain's builtins library.
++                case ReadyToRunHelper.FltAdd:
++                    mangledName = "__addsf3";
++                    break;
++                case ReadyToRunHelper.FltSub:
++                    mangledName = "__subsf3";
++                    break;
++                case ReadyToRunHelper.FltMul:
++                    mangledName = "__mulsf3";
++                    break;
++                case ReadyToRunHelper.FltDiv:
++                    mangledName = "__divsf3";
++                    break;
++                case ReadyToRunHelper.DblAdd:
++                    mangledName = "__adddf3";
++                    break;
++                case ReadyToRunHelper.DblSub:
++                    mangledName = "__subdf3";
++                    break;
++                case ReadyToRunHelper.DblMul:
++                    mangledName = "__muldf3";
++                    break;
++                case ReadyToRunHelper.DblDiv:
++                    mangledName = "__divdf3";
++                    break;
++                case ReadyToRunHelper.FltCmpEq:
++                    mangledName = "__eqsf2";
++                    break;
++                case ReadyToRunHelper.FltCmpLt:
++                    mangledName = "__ltsf2";
++                    break;
++                case ReadyToRunHelper.FltCmpLe:
++                    mangledName = "__lesf2";
++                    break;
++                case ReadyToRunHelper.FltCmpGt:
++                    mangledName = "__gtsf2";
++                    break;
++                case ReadyToRunHelper.FltCmpGe:
++                    mangledName = "__gesf2";
++                    break;
++                case ReadyToRunHelper.DblCmpEq:
++                    mangledName = "__eqdf2";
++                    break;
++                case ReadyToRunHelper.DblCmpLt:
++                    mangledName = "__ltdf2";
++                    break;
++                case ReadyToRunHelper.DblCmpLe:
++                    mangledName = "__ledf2";
++                    break;
++                case ReadyToRunHelper.DblCmpGt:
++                    mangledName = "__gtdf2";
++                    break;
++                case ReadyToRunHelper.DblCmpGe:
++                    mangledName = "__gedf2";
++                    break;
++                case ReadyToRunHelper.Flt2Dbl:
++                    mangledName = "__extendsfdf2";
++                    break;
++                case ReadyToRunHelper.Dbl2Flt:
++                    mangledName = "__truncdfsf2";
++                    break;
++
+                 case ReadyToRunHelper.LMul:
+                     mangledName = "RhpLMul";
+                     break;
