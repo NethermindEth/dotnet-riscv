@@ -1,23 +1,12 @@
-diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
---- a/src/coreclr/jit/jitconfigvalues.h
-+++ b/src/coreclr/jit/jitconfigvalues.h
-@@ -458,6 +458,7 @@
- RELEASE_CONFIG_INTEGER(EnableRiscV64Zbs,            "EnableRiscV64Zbs",          1) // Allows RiscV64 Zbs hardware intrinsics to be disabled
- RELEASE_CONFIG_INTEGER(EnableRiscV64Zicond,         "EnableRiscV64Zicond",       1) // Allows RiscV64 Zicond hardware intrinsics to be disabled
- RELEASE_CONFIG_INTEGER(EnableRiscV64Compressed,     "EnableRiscV64Compressed",   1) // Allows RiscV64 compressed (C) instruction emission to be disabled (0 for no-C zkVM targets)
-+RELEASE_CONFIG_INTEGER(EnableRiscV64Atomic,         "EnableRiscV64Atomic",       1) // Allows RiscV64 atomic (A: lr/sc, amo*) emission to be disabled; 0 lowers interlocked ops to plain load/modify/store (single-hart zkVM)
- #endif
- 
- RELEASE_CONFIG_INTEGER(EnableEmbeddedBroadcast,     "EnableEmbeddedBroadcast",   1) // Allows embedded broadcasts to be disabled
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 --- a/src/coreclr/jit/codegenriscv64.cpp
 +++ b/src/coreclr/jit/codegenriscv64.cpp
-@@ -2187,7 +2187,51 @@
+@@ -2187,7 +2187,51 @@ void CodeGen::genLockedInstructions(GenTreeOp* treeNode)
          default:
              noway_assert(!"Unexpected treeNode->gtOper");
      }
 -    GetEmitter()->emitIns_R_R_R(ins, dataSize, targetReg, addrReg, dataReg);
-+    if (JitConfig.EnableRiscV64Atomic() == 0)
++    if (!m_compiler->compOpportunisticallyDependsOn(InstructionSet_A))
 +    {
 +        // Single-hart target: no amo. Plain read/modify/store. XCHG needs no
 +        // scratch; the arithmetic/bitwise forms compute the new value in an
@@ -65,7 +54,7 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
  
      if (targetReg != REG_ZERO)
      {
-@@ -2250,19 +2294,31 @@
+@@ -2250,19 +2294,31 @@ void CodeGen::genCodeForCmpXchg(GenTreeCmpXchg* treeNode)
      // so mark the location register as a GC pointer until code generation for this node is finished.
      gcInfo.gcMarkRegPtrVal(loc, locOp->TypeGet());
  
@@ -83,7 +72,7 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
 -    e->emitIns_R_R_R(is4 ? INS_sc_w : INS_sc_d, size, storeErr, loc, val);  // try to update
 -    e->emitIns_J_cond_la(INS_bnez, retry, storeErr);                        // retry if update failed
 -    genDefineTempLabel(fail);
-+    if (JitConfig.EnableRiscV64Atomic() == 0)
++    if (!m_compiler->compOpportunisticallyDependsOn(InstructionSet_A))
 +    {
 +        // Single-hart target: no lr/sc reservation. Plain compare-and-swap.
 +        // old = *loc; if (old == comparand) *loc = val; result = old.
@@ -108,7 +97,7 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
 diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
 --- a/src/coreclr/jit/lsrariscv64.cpp
 +++ b/src/coreclr/jit/lsrariscv64.cpp
-@@ -561,18 +561,40 @@
+@@ -561,18 +561,40 @@ int LinearScan::BuildNode(GenTree* tree)
              GenTree* data = tree->gtGetOp2();
              assert(!addr->isContained());
  
@@ -117,7 +106,7 @@ diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
 +            // and data registers after the first instruction, so their lifetimes
 +            // must be extended past the def; the arithmetic/bitwise forms also
 +            // need one scratch register for the new value.
-+            const bool plainAtomic = (JitConfig.EnableRiscV64Atomic() == 0);
++            const bool plainAtomic = !m_compiler->compOpportunisticallyDependsOn(InstructionSet_A);
 +
              srcCount = 1;
 -            BuildUse(addr);
