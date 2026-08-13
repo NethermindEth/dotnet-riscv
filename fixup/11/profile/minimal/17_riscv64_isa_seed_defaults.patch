@@ -1,0 +1,151 @@
+diff --git a/src/coreclr/inc/clrconfigvalues.h b/src/coreclr/inc/clrconfigvalues.h
+--- a/src/coreclr/inc/clrconfigvalues.h
++++ b/src/coreclr/inc/clrconfigvalues.h
+@@ -719,6 +719,10 @@ RETAIL_CONFIG_DWORD_INFO(EXTERNAL_EnableRiscV64Zba,             W("EnableRiscV64
+ RETAIL_CONFIG_DWORD_INFO(EXTERNAL_EnableRiscV64Zbb,             W("EnableRiscV64Zbb"),          1, "Allows RiscV64 Zbb hardware intrinsics to be disabled")
+ RETAIL_CONFIG_DWORD_INFO(EXTERNAL_EnableRiscV64Zbs,             W("EnableRiscV64Zbs"),          1, "Allows RiscV64 Zbs hardware intrinsics to be disabled")
+ RETAIL_CONFIG_DWORD_INFO(EXTERNAL_EnableRiscV64Zicond,          W("EnableRiscV64Zicond"),       1, "Allows RiscV64 Zicond hardware intrinsics to be disabled")
++RETAIL_CONFIG_DWORD_INFO(EXTERNAL_EnableRiscV64F,               W("EnableRiscV64F"),            1, "Allows the RiscV64 F (single-precision FP) instruction set to be disabled")
++RETAIL_CONFIG_DWORD_INFO(EXTERNAL_EnableRiscV64D,               W("EnableRiscV64D"),            1, "Allows the RiscV64 D (double-precision FP) instruction set to be disabled")
++RETAIL_CONFIG_DWORD_INFO(EXTERNAL_EnableRiscV64Compressed,      W("EnableRiscV64Compressed"),   1, "Allows the RiscV64 C (compressed) instruction set to be disabled")
++RETAIL_CONFIG_DWORD_INFO(EXTERNAL_EnableRiscV64Atomic,          W("EnableRiscV64Atomic"),       1, "Allows the RiscV64 A (atomic) instruction set to be disabled")
+ #endif
+ 
+ ///
+diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
+--- a/src/coreclr/jit/jitconfigvalues.h
++++ b/src/coreclr/jit/jitconfigvalues.h
+@@ -457,6 +457,10 @@ RELEASE_CONFIG_INTEGER(EnableRiscV64Zba,            "EnableRiscV64Zba",
+ RELEASE_CONFIG_INTEGER(EnableRiscV64Zbb,            "EnableRiscV64Zbb",          1) // Allows RiscV64 Zbb hardware intrinsics to be disabled
+ RELEASE_CONFIG_INTEGER(EnableRiscV64Zbs,            "EnableRiscV64Zbs",          1) // Allows RiscV64 Zbs hardware intrinsics to be disabled
+ RELEASE_CONFIG_INTEGER(EnableRiscV64Zicond,         "EnableRiscV64Zicond",       1) // Allows RiscV64 Zicond hardware intrinsics to be disabled
++RELEASE_CONFIG_INTEGER(EnableRiscV64F,              "EnableRiscV64F",            1) // Allows the RiscV64 F (single-precision FP) instruction set to be disabled
++RELEASE_CONFIG_INTEGER(EnableRiscV64D,              "EnableRiscV64D",            1) // Allows the RiscV64 D (double-precision FP) instruction set to be disabled
++RELEASE_CONFIG_INTEGER(EnableRiscV64Compressed,     "EnableRiscV64Compressed",   1) // Allows RiscV64 compressed (C) instruction emission to be disabled (0 for no-C zkVM targets)
++RELEASE_CONFIG_INTEGER(EnableRiscV64Atomic,         "EnableRiscV64Atomic",       1) // Allows RiscV64 atomic (A: lr/sc, amo*) emission to be disabled; 0 lowers interlocked ops to plain load/modify/store (single-hart zkVM)
+ #endif
+ 
+ RELEASE_CONFIG_INTEGER(EnableEmbeddedBroadcast,     "EnableEmbeddedBroadcast",   1) // Allows embedded broadcasts to be disabled
+diff --git a/src/coreclr/jit/compiler.cpp b/src/coreclr/jit/compiler.cpp
+--- a/src/coreclr/jit/compiler.cpp
++++ b/src/coreclr/jit/compiler.cpp
+@@ -2031,6 +2031,35 @@ void Compiler::compSetProcessor()
+ 
+     // Add virtual vector ISA. Vector128 is part of the required Wasm SIMD baseline.
+     instructionSetFlags.AddInstructionSet(InstructionSet_Vector128);
++#elif defined(TARGET_RISCV64)
++    // Ensure the required baseline ISA is supported in JIT code, even if not passed in by the VM.
++    instructionSetFlags.AddInstructionSet(InstructionSet_RiscV64Base);
++
++    // F/D/C/A are part of the rv64gc baseline the VM (or AOT driver) seeds by
++    // default. Honor explicit config opt-outs here, so reduced-ISA targets can
++    // drop them with the DOTNET_/-codegenopt knobs no matter how the flags were
++    // seeded; the validity pass below also drops D when F is disabled.
++    if (JitConfig.EnableRiscV64F() == 0)
++    {
++        instructionSetFlags.RemoveInstructionSet(InstructionSet_F);
++    }
++
++    if (JitConfig.EnableRiscV64D() == 0)
++    {
++        instructionSetFlags.RemoveInstructionSet(InstructionSet_D);
++    }
++
++    if (JitConfig.EnableRiscV64Compressed() == 0)
++    {
++        instructionSetFlags.RemoveInstructionSet(InstructionSet_C);
++    }
++
++    if (JitConfig.EnableRiscV64Atomic() == 0)
++    {
++        instructionSetFlags.RemoveInstructionSet(InstructionSet_A);
++    }
++
++    instructionSetFlags = EnsureInstructionSetFlagsAreValid(instructionSetFlags);
+ #endif // TARGET_ARM64
+ 
+     assert(instructionSetFlags.Equals(EnsureInstructionSetFlagsAreValid(instructionSetFlags)));
+@@ -6263,6 +6292,26 @@ int Compiler::compCompileAfterInit(CORINFO_MODULE_HANDLE classPtr,
+         {
+             instructionSetFlags.AddInstructionSet(InstructionSet_Zicond);
+         }
++
++        if (JitConfig.EnableRiscV64F() != 0)
++        {
++            instructionSetFlags.AddInstructionSet(InstructionSet_F);
++        }
++
++        if (JitConfig.EnableRiscV64D() != 0)
++        {
++            instructionSetFlags.AddInstructionSet(InstructionSet_D);
++        }
++
++        if (JitConfig.EnableRiscV64Compressed() != 0)
++        {
++            instructionSetFlags.AddInstructionSet(InstructionSet_C);
++        }
++
++        if (JitConfig.EnableRiscV64Atomic() != 0)
++        {
++            instructionSetFlags.AddInstructionSet(InstructionSet_A);
++        }
+ #endif
+ 
+         // These calls are important and explicitly ordered to ensure that the flags are correct in
+diff --git a/src/coreclr/vm/codeman.cpp b/src/coreclr/vm/codeman.cpp
+--- a/src/coreclr/vm/codeman.cpp
++++ b/src/coreclr/vm/codeman.cpp
+@@ -1708,6 +1708,33 @@ void EEJitManager::SetCpuInfo()
+     if (g_pConfig->EnableHWIntrinsic())
+     {
+         CPUCompileFlags.Set(InstructionSet_RiscV64Base);
++
++        // F/D/C/A belong to the rv64gc baseline and are not reported through
++        // hwprobe; the floor is the ISA this runtime itself was built for.
++#if defined(__riscv_flen) && __riscv_flen >= 32
++        if (CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableRiscV64F))
++        {
++            CPUCompileFlags.Set(InstructionSet_F);
++        }
++#endif
++#if defined(__riscv_flen) && __riscv_flen >= 64
++        if (CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableRiscV64D))
++        {
++            CPUCompileFlags.Set(InstructionSet_D);
++        }
++#endif
++#ifdef __riscv_compressed
++        if (CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableRiscV64Compressed))
++        {
++            CPUCompileFlags.Set(InstructionSet_C);
++        }
++#endif
++#ifdef __riscv_atomic
++        if (CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableRiscV64Atomic))
++        {
++            CPUCompileFlags.Set(InstructionSet_A);
++        }
++#endif
+     }
+ 
+     if (((cpuFeatures & RiscV64IntrinsicConstants_Zba) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableRiscV64Zba))
+diff --git a/src/coreclr/tools/Common/InstructionSetHelpers.cs b/src/coreclr/tools/Common/InstructionSetHelpers.cs
+--- a/src/coreclr/tools/Common/InstructionSetHelpers.cs
++++ b/src/coreclr/tools/Common/InstructionSetHelpers.cs
+@@ -99,6 +99,16 @@ namespace System.CommandLine
+                 instructionSetSupportBuilder.AddSupportedInstructionSet("base");
+                 instructionSetSupportBuilder.AddSupportedInstructionSet("simd128");
+             }
++            else if (targetArchitecture == TargetArchitecture.RiscV64)
++            {
++                // The rv64gc baseline: D implies F, so "d", "c" and "a" cover
++                // the G+C extensions. Reduced-ISA targets (e.g. zkVM guests)
++                // opt out with --instruction-set=-a,-c,-d,-f.
++                instructionSetSupportBuilder.AddSupportedInstructionSet("base");
++                instructionSetSupportBuilder.AddSupportedInstructionSet("d");
++                instructionSetSupportBuilder.AddSupportedInstructionSet("c");
++                instructionSetSupportBuilder.AddSupportedInstructionSet("a");
++            }
+ 
+             bool throttleAvx512 = false;
+ 
