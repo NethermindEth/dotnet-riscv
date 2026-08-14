@@ -19,7 +19,7 @@ diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
 diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
 --- a/src/coreclr/jit/morph.cpp
 +++ b/src/coreclr/jit/morph.cpp
-@@ -14021,12 +14021,456 @@ void Compiler::fgMorphBlock(BasicBlock* block, MorphUnreachableInfo* unreachable
+@@ -14021,12 +14021,476 @@ void Compiler::fgMorphBlock(BasicBlock* block, MorphUnreachableInfo* unreachable
  //   Morph almost always changes IR, so we don't actually bother to
  //   track if it made any changes.
  //
@@ -396,27 +396,47 @@ diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
 +            }
 +            else if (wide == TYP_INT)
 +            {
-+                // val > INT32_MAX ? INT32_MAX : (val < INT32_MIN ? INT32_MIN : (int)val)
++                // Saturate the int64 helper result to int32 branchlessly.
++                // GT_SELECT cannot be used: on riscv64 it is only legal when
++                // Zicond is available, and the reduced targets have no Zicond.
++                //   maskHi = -(val > INT32_MAX);  maskLo = -(val < INT32_MIN);
++                //   in     = trunc & ~(maskHi | maskLo);
++                //   result = in | (INT32_MAX & maskHi) | (INT32_MIN & maskLo)
 +                GenTree* val  = cvt;
 +                GenTree* valB = fgMakeMultiUse(&val);
 +                GenTree* valC = fgMakeMultiUse(&valB);
 +
-+                GenTree* trunc = gtNewCastNode(TYP_INT, valC, false, TYP_INT);
-+                GenTree* isLo  = gtNewOperNode(GT_LT, TYP_INT, valB, gtNewLconNode(INT32_MIN));
-+                GenTree* selLo = gtNewConditionalNode(GT_SELECT, isLo, gtNewIconNode(INT32_MIN, TYP_INT), trunc, TYP_INT);
-+                GenTree* isHi  = gtNewOperNode(GT_GT, TYP_INT, val, gtNewLconNode(INT32_MAX));
-+                result         = gtNewConditionalNode(GT_SELECT, isHi, gtNewIconNode(INT32_MAX, TYP_INT), selLo, TYP_INT);
++                GenTree* trunc  = gtNewCastNode(TYP_INT, valC, false, TYP_INT);
++                GenTree* isHi   = gtNewOperNode(GT_GT, TYP_INT, val, gtNewLconNode(INT32_MAX));
++                GenTree* maskHi = gtNewOperNode(GT_NEG, TYP_INT, isHi);
++                GenTree* isLo   = gtNewOperNode(GT_LT, TYP_INT, valB, gtNewLconNode(INT32_MIN));
++                GenTree* maskLo = gtNewOperNode(GT_NEG, TYP_INT, isLo);
++
++                GenTree* maskHiB = fgMakeMultiUse(&maskHi);
++                GenTree* maskLoB = fgMakeMultiUse(&maskLo);
++
++                GenTree* outMask = gtNewOperNode(GT_OR, TYP_INT, maskHi, maskLo);
++                GenTree* inVal   = gtNewOperNode(GT_AND, TYP_INT, trunc,
++                                                 gtNewOperNode(GT_NOT, TYP_INT, outMask));
++                GenTree* hiVal   = gtNewOperNode(GT_AND, TYP_INT, gtNewIconNode(INT32_MAX, TYP_INT), maskHiB);
++                GenTree* loVal   = gtNewOperNode(GT_AND, TYP_INT, gtNewIconNode(INT32_MIN, TYP_INT), maskLoB);
++                result           = gtNewOperNode(GT_OR, TYP_INT,
++                                                 gtNewOperNode(GT_OR, TYP_INT, inVal, hiVal), loVal);
 +            }
 +            else
 +            {
-+                // TYP_UINT: val > UINT32_MAX ? UINT32_MAX : (uint)val
++                // TYP_UINT: branchless (uint)min(val, UINT32_MAX); val >= 0
++                // is guaranteed by the unsigned helper.
++                //   mask   = -(val > UINT32_MAX);
++                //   result = trunc | mask
 +                GenTree* val  = cvt;
 +                GenTree* valB = fgMakeMultiUse(&val);
 +
 +                GenTree* trunc = gtNewCastNode(TYP_INT, valB, false, TYP_UINT);
 +                GenTree* isHi  = gtNewOperNode(GT_GT, TYP_INT, val, gtNewLconNode((int64_t)UINT32_MAX));
 +                isHi->gtFlags |= GTF_UNSIGNED;
-+                result = gtNewConditionalNode(GT_SELECT, isHi, gtNewIconNode(-1, TYP_INT), trunc, TYP_INT);
++                GenTree* mask = gtNewOperNode(GT_NEG, TYP_INT, isHi);
++                result        = gtNewOperNode(GT_OR, TYP_INT, trunc, mask);
 +            }
 +        }
 +
