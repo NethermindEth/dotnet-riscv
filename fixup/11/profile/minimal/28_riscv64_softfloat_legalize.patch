@@ -19,7 +19,7 @@ diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
 diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
 --- a/src/coreclr/jit/morph.cpp
 +++ b/src/coreclr/jit/morph.cpp
-@@ -14021,12 +14021,476 @@ void Compiler::fgMorphBlock(BasicBlock* block, MorphUnreachableInfo* unreachable
+@@ -14021,12 +14021,495 @@ void Compiler::fgMorphBlock(BasicBlock* block, MorphUnreachableInfo* unreachable
  //   Morph almost always changes IR, so we don't actually bother to
  //   track if it made any changes.
  //
@@ -400,28 +400,42 @@ diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
 +                // GT_SELECT cannot be used: on riscv64 it is only legal when
 +                // Zicond is available, and the reduced targets have no Zicond.
 +                //   maskHi = -(val > INT32_MAX);  maskLo = -(val < INT32_MIN);
-+                //   in     = trunc & ~(maskHi | maskLo);
-+                //   result = in | (INT32_MAX & maskHi) | (INT32_MIN & maskLo)
-+                GenTree* val  = cvt;
-+                GenTree* valB = fgMakeMultiUse(&val);
-+                GenTree* valC = fgMakeMultiUse(&valB);
++                //   result = (trunc & ~(maskHi | maskLo))
++                //          | (INT32_MAX & maskHi) | (INT32_MIN & maskLo)
++                //
++                // The value and both masks are needed more than once, so they
++                // go into temps whose stores sit in the first-evaluated
++                // position of an explicit COMMA chain. Leaving a store inside
++                // one of the operands, as fgMakeMultiUse does, would leave the
++                // store-before-use dependency unexpressed in the IR and make
++                // correctness depend on which operand the cost heuristics
++                // decide to evaluate first.
++                TempInfo tmpVal = fgMakeTemp(cvt);
++                GenTree* valTrunc = tmpVal.load;
++                GenTree* valHi    = gtCloneExpr(valTrunc);
++                GenTree* valLo    = gtCloneExpr(valTrunc);
 +
-+                GenTree* trunc  = gtNewCastNode(TYP_INT, valC, false, TYP_INT);
-+                GenTree* isHi   = gtNewOperNode(GT_GT, TYP_INT, val, gtNewLconNode(INT32_MAX));
-+                GenTree* maskHi = gtNewOperNode(GT_NEG, TYP_INT, isHi);
-+                GenTree* isLo   = gtNewOperNode(GT_LT, TYP_INT, valB, gtNewLconNode(INT32_MIN));
-+                GenTree* maskLo = gtNewOperNode(GT_NEG, TYP_INT, isLo);
++                TempInfo tmpHi =
++                    fgMakeTemp(gtNewOperNode(GT_NEG, TYP_INT,
++                                             gtNewOperNode(GT_GT, TYP_INT, valHi, gtNewLconNode(INT32_MAX))));
++                TempInfo tmpLo =
++                    fgMakeTemp(gtNewOperNode(GT_NEG, TYP_INT,
++                                             gtNewOperNode(GT_LT, TYP_INT, valLo, gtNewLconNode(INT32_MIN))));
 +
-+                GenTree* maskHiB = fgMakeMultiUse(&maskHi);
-+                GenTree* maskLoB = fgMakeMultiUse(&maskLo);
++                GenTree* trunc   = gtNewCastNode(TYP_INT, valTrunc, false, TYP_INT);
++                GenTree* outMask = gtNewOperNode(GT_OR, TYP_INT, tmpHi.load, tmpLo.load);
++                GenTree* inVal =
++                    gtNewOperNode(GT_AND, TYP_INT, trunc, gtNewOperNode(GT_NOT, TYP_INT, outMask));
++                GenTree* hiVal = gtNewOperNode(GT_AND, TYP_INT, gtNewIconNode(INT32_MAX, TYP_INT),
++                                               gtCloneExpr(tmpHi.load));
++                GenTree* loVal = gtNewOperNode(GT_AND, TYP_INT, gtNewIconNode(INT32_MIN, TYP_INT),
++                                               gtCloneExpr(tmpLo.load));
++                GenTree* expr =
++                    gtNewOperNode(GT_OR, TYP_INT, gtNewOperNode(GT_OR, TYP_INT, inVal, hiVal), loVal);
 +
-+                GenTree* outMask = gtNewOperNode(GT_OR, TYP_INT, maskHi, maskLo);
-+                GenTree* inVal   = gtNewOperNode(GT_AND, TYP_INT, trunc,
-+                                                 gtNewOperNode(GT_NOT, TYP_INT, outMask));
-+                GenTree* hiVal   = gtNewOperNode(GT_AND, TYP_INT, gtNewIconNode(INT32_MAX, TYP_INT), maskHiB);
-+                GenTree* loVal   = gtNewOperNode(GT_AND, TYP_INT, gtNewIconNode(INT32_MIN, TYP_INT), maskLoB);
-+                result           = gtNewOperNode(GT_OR, TYP_INT,
-+                                                 gtNewOperNode(GT_OR, TYP_INT, inVal, hiVal), loVal);
++                result = gtNewOperNode(GT_COMMA, TYP_INT, tmpVal.store,
++                                       gtNewOperNode(GT_COMMA, TYP_INT, tmpHi.store,
++                                                     gtNewOperNode(GT_COMMA, TYP_INT, tmpLo.store, expr)));
 +            }
 +            else
 +            {
@@ -429,14 +443,19 @@ diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
 +                // is guaranteed by the unsigned helper.
 +                //   mask   = -(val > UINT32_MAX);
 +                //   result = trunc | mask
-+                GenTree* val  = cvt;
-+                GenTree* valB = fgMakeMultiUse(&val);
++                // Same explicit ordering as the signed case above.
++                TempInfo tmpVal   = fgMakeTemp(cvt);
++                GenTree* valTrunc = tmpVal.load;
++                GenTree* valHi    = gtCloneExpr(valTrunc);
 +
-+                GenTree* trunc = gtNewCastNode(TYP_INT, valB, false, TYP_UINT);
-+                GenTree* isHi  = gtNewOperNode(GT_GT, TYP_INT, val, gtNewLconNode((int64_t)UINT32_MAX));
++                GenTree* isHi = gtNewOperNode(GT_GT, TYP_INT, valHi, gtNewLconNode((int64_t)UINT32_MAX));
 +                isHi->gtFlags |= GTF_UNSIGNED;
-+                GenTree* mask = gtNewOperNode(GT_NEG, TYP_INT, isHi);
-+                result        = gtNewOperNode(GT_OR, TYP_INT, trunc, mask);
++
++                GenTree* trunc = gtNewCastNode(TYP_INT, valTrunc, false, TYP_UINT);
++                GenTree* expr =
++                    gtNewOperNode(GT_OR, TYP_INT, trunc, gtNewOperNode(GT_NEG, TYP_INT, isHi));
++
++                result = gtNewOperNode(GT_COMMA, TYP_INT, tmpVal.store, expr);
 +            }
 +        }
 +
