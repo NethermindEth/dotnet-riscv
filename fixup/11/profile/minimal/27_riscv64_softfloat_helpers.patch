@@ -278,7 +278,7 @@ diff --git a/src/coreclr/jit/utils.cpp b/src/coreclr/jit/utils.cpp
 diff --git a/src/coreclr/jit/valuenumfuncs.h b/src/coreclr/jit/valuenumfuncs.h
 --- a/src/coreclr/jit/valuenumfuncs.h
 +++ b/src/coreclr/jit/valuenumfuncs.h
-@@ -213,6 +213,38 @@ ValueNumFuncDef(HWI_INTRINSIC_END, -1, false, false)
+@@ -213,6 +213,53 @@ ValueNumFuncDef(HWI_INTRINSIC_END, -1, false, false)
      ValueNumFuncDef(MaxInt, 2, true, false)
      ValueNumFuncDef(MinInt_UN, 2, true, false)
      ValueNumFuncDef(MaxInt_UN, 2, true, false)
@@ -314,13 +314,28 @@ diff --git a/src/coreclr/jit/valuenumfuncs.h b/src/coreclr/jit/valuenumfuncs.h
 +    ValueNumFuncDef(SoftFPCmpGeDbl, 2, false, false)
 +    ValueNumFuncDef(SoftFPFlt2Dbl, 1, false, false)
 +    ValueNumFuncDef(SoftFPDbl2Flt, 1, false, false)
++
++    // The FP<->integer conversion helpers are shared with other targets, where
++    // they are modelled as casts. Under soft-float their operand and result
++    // are integer bit patterns, so the cast model would claim that (long)d and
++    // the bit pattern of d are the same value; they get opaque VNFuncs too.
++    ValueNumFuncDef(SoftFPLng2Flt, 1, false, false)
++    ValueNumFuncDef(SoftFPLng2Dbl, 1, false, false)
++    ValueNumFuncDef(SoftFPULng2Flt, 1, false, false)
++    ValueNumFuncDef(SoftFPULng2Dbl, 1, false, false)
++    ValueNumFuncDef(SoftFPDbl2Lng, 1, false, false)
++    ValueNumFuncDef(SoftFPDbl2ULng, 1, false, false)
++    ValueNumFuncDef(SoftFPDbl2IntOvf, 1, false, false)
++    ValueNumFuncDef(SoftFPDbl2LngOvf, 1, false, false)
++    ValueNumFuncDef(SoftFPDbl2UIntOvf, 1, false, false)
++    ValueNumFuncDef(SoftFPDbl2ULngOvf, 1, false, false)
  #endif // TARGET_RISCV64
  
  // clang-format on
 diff --git a/src/coreclr/jit/valuenum.cpp b/src/coreclr/jit/valuenum.cpp
 --- a/src/coreclr/jit/valuenum.cpp
 +++ b/src/coreclr/jit/valuenum.cpp
-@@ -14998,6 +14998,72 @@ VNFunc Compiler::fgValueNumberJitHelperMethodVNFunc(CorInfoHelpFunc helpFunc)
+@@ -14998,6 +14998,104 @@ VNFunc Compiler::fgValueNumberJitHelperMethodVNFunc(CorInfoHelpFunc helpFunc)
              vnf = VNF_ReadyToRunVirtualFuncPtr;
              break;
  
@@ -388,11 +403,61 @@ diff --git a/src/coreclr/jit/valuenum.cpp b/src/coreclr/jit/valuenum.cpp
 +        case CORINFO_HELP_DBL2FLT:
 +            vnf = VNF_SoftFPDbl2Flt;
 +            break;
++        // Reached only under soft-float; on every other configuration these
++        // are handled by fgValueNumberCastHelper above.
++        case CORINFO_HELP_LNG2FLT:
++            vnf = VNF_SoftFPLng2Flt;
++            break;
++        case CORINFO_HELP_LNG2DBL:
++            vnf = VNF_SoftFPLng2Dbl;
++            break;
++        case CORINFO_HELP_ULNG2FLT:
++            vnf = VNF_SoftFPULng2Flt;
++            break;
++        case CORINFO_HELP_ULNG2DBL:
++            vnf = VNF_SoftFPULng2Dbl;
++            break;
++        case CORINFO_HELP_DBL2LNG:
++            vnf = VNF_SoftFPDbl2Lng;
++            break;
++        case CORINFO_HELP_DBL2ULNG:
++            vnf = VNF_SoftFPDbl2ULng;
++            break;
++        case CORINFO_HELP_DBL2INT_OVF:
++            vnf = VNF_SoftFPDbl2IntOvf;
++            break;
++        case CORINFO_HELP_DBL2LNG_OVF:
++            vnf = VNF_SoftFPDbl2LngOvf;
++            break;
++        case CORINFO_HELP_DBL2UINT_OVF:
++            vnf = VNF_SoftFPDbl2UIntOvf;
++            break;
++        case CORINFO_HELP_DBL2ULNG_OVF:
++            vnf = VNF_SoftFPDbl2ULngOvf;
++            break;
 +#endif // TARGET_RISCV64
 +
          default:
              unreached();
      }
+@@ -15022,6 +15120,17 @@ bool Compiler::fgValueNumberHelperCall(GenTreeCall* call)
+         case CORINFO_HELP_DBL2UINT_OVF:
+         case CORINFO_HELP_DBL2ULNG:
+         case CORINFO_HELP_DBL2ULNG_OVF:
++#ifdef TARGET_RISCV64
++            // Under soft-float these helpers take and return the integer bit
++            // patterns of the FP values, so the cast model would derive the
++            // source type from an integer VN and conclude that (long)d and the
++            // bit pattern of d are the same value. Use the opaque soft-float
++            // VNFuncs instead.
++            if (opts.compUseSoftFP)
++            {
++                break;
++            }
++#endif // TARGET_RISCV64
+             fgValueNumberCastHelper(call);
+             return false;
+ 
 diff --git a/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs b/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs
 --- a/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs
 +++ b/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs
