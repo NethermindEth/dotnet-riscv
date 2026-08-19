@@ -242,10 +242,15 @@ diff --git a/src/coreclr/vm/jithelpers.cpp b/src/coreclr/vm/jithelpers.cpp
 diff --git a/src/coreclr/jit/utils.cpp b/src/coreclr/jit/utils.cpp
 --- a/src/coreclr/jit/utils.cpp
 +++ b/src/coreclr/jit/utils.cpp
-@@ -1469,6 +1469,26 @@ void HelperCallProperties::init()
+@@ -1469,6 +1469,32 @@ void HelperCallProperties::init()
              case CORINFO_HELP_DBL2ULNG:
              case CORINFO_HELP_FLTREM:
              case CORINFO_HELP_DBLREM:
++#ifdef TARGET_RISCV64
++            // Soft-float helpers. Purity is claimed only where the JIT can
++            // actually emit them, because a pure helper must also have a
++            // VNFunc (see fgValueNumberJitHelperMethodVNFunc); keeping the two
++            // in step target by target makes that invariant checkable.
 +            case CORINFO_HELP_FLTADD:
 +            case CORINFO_HELP_FLTSUB:
 +            case CORINFO_HELP_FLTMUL:
@@ -266,9 +271,128 @@ diff --git a/src/coreclr/jit/utils.cpp b/src/coreclr/jit/utils.cpp
 +            case CORINFO_HELP_DBLCMP_GE:
 +            case CORINFO_HELP_FLT2DBL:
 +            case CORINFO_HELP_DBL2FLT:
++#endif // TARGET_RISCV64
                  isPure     = true;
                  exceptions = ExceptionSetFlags::None;
                  break;
+diff --git a/src/coreclr/jit/valuenumfuncs.h b/src/coreclr/jit/valuenumfuncs.h
+--- a/src/coreclr/jit/valuenumfuncs.h
++++ b/src/coreclr/jit/valuenumfuncs.h
+@@ -213,6 +213,38 @@ ValueNumFuncDef(HWI_INTRINSIC_END, -1, false, false)
+     ValueNumFuncDef(MaxInt, 2, true, false)
+     ValueNumFuncDef(MinInt_UN, 2, true, false)
+     ValueNumFuncDef(MaxInt_UN, 2, true, false)
++
++    // Soft-float helper calls (no-F targets). These are pure, so they need a
++    // VNFunc to be CSE-able, but they must stay opaque to the evaluator: their
++    // operands are the *integer bit patterns* of the FP values, so reusing
++    // VNF_ADD and friends would let VN constant-fold them with integer
++    // arithmetic and produce wrong results. None of these appears in
++    // VNEvalCanFoldBinaryFunc, so no folding is attempted.
++    // Add and multiply are marked commutative, matching how VN already treats
++    // the hardware FP forms.
++    ValueNumFuncDef(SoftFPAddFlt, 2, true, false)
++    ValueNumFuncDef(SoftFPAddDbl, 2, true, false)
++    ValueNumFuncDef(SoftFPSubFlt, 2, false, false)
++    ValueNumFuncDef(SoftFPSubDbl, 2, false, false)
++    ValueNumFuncDef(SoftFPMulFlt, 2, true, false)
++    ValueNumFuncDef(SoftFPMulDbl, 2, true, false)
++    ValueNumFuncDef(SoftFPDivFlt, 2, false, false)
++    ValueNumFuncDef(SoftFPDivDbl, 2, false, false)
++    // Tri-state comparisons: swapping the operands negates the result, so
++    // none of them is commutative (not even the eq form, which is an alias of
++    // the le form in compiler-rt).
++    ValueNumFuncDef(SoftFPCmpEqFlt, 2, false, false)
++    ValueNumFuncDef(SoftFPCmpEqDbl, 2, false, false)
++    ValueNumFuncDef(SoftFPCmpLtFlt, 2, false, false)
++    ValueNumFuncDef(SoftFPCmpLtDbl, 2, false, false)
++    ValueNumFuncDef(SoftFPCmpLeFlt, 2, false, false)
++    ValueNumFuncDef(SoftFPCmpLeDbl, 2, false, false)
++    ValueNumFuncDef(SoftFPCmpGtFlt, 2, false, false)
++    ValueNumFuncDef(SoftFPCmpGtDbl, 2, false, false)
++    ValueNumFuncDef(SoftFPCmpGeFlt, 2, false, false)
++    ValueNumFuncDef(SoftFPCmpGeDbl, 2, false, false)
++    ValueNumFuncDef(SoftFPFlt2Dbl, 1, false, false)
++    ValueNumFuncDef(SoftFPDbl2Flt, 1, false, false)
+ #endif // TARGET_RISCV64
+ 
+ // clang-format on
+diff --git a/src/coreclr/jit/valuenum.cpp b/src/coreclr/jit/valuenum.cpp
+--- a/src/coreclr/jit/valuenum.cpp
++++ b/src/coreclr/jit/valuenum.cpp
+@@ -14998,6 +14998,72 @@ VNFunc Compiler::fgValueNumberJitHelperMethodVNFunc(CorInfoHelpFunc helpFunc)
+             vnf = VNF_ReadyToRunVirtualFuncPtr;
+             break;
+ 
++#ifdef TARGET_RISCV64
++        // Soft-float helpers: pure, hence numbered, but deliberately opaque -
++        // see the note in valuenumfuncs.h on why they cannot share the VNFuncs
++        // of the hardware FP operations.
++        case CORINFO_HELP_FLTADD:
++            vnf = VNF_SoftFPAddFlt;
++            break;
++        case CORINFO_HELP_DBLADD:
++            vnf = VNF_SoftFPAddDbl;
++            break;
++        case CORINFO_HELP_FLTSUB:
++            vnf = VNF_SoftFPSubFlt;
++            break;
++        case CORINFO_HELP_DBLSUB:
++            vnf = VNF_SoftFPSubDbl;
++            break;
++        case CORINFO_HELP_FLTMUL:
++            vnf = VNF_SoftFPMulFlt;
++            break;
++        case CORINFO_HELP_DBLMUL:
++            vnf = VNF_SoftFPMulDbl;
++            break;
++        case CORINFO_HELP_FLTDIV:
++            vnf = VNF_SoftFPDivFlt;
++            break;
++        case CORINFO_HELP_DBLDIV:
++            vnf = VNF_SoftFPDivDbl;
++            break;
++        case CORINFO_HELP_FLTCMP_EQ:
++            vnf = VNF_SoftFPCmpEqFlt;
++            break;
++        case CORINFO_HELP_DBLCMP_EQ:
++            vnf = VNF_SoftFPCmpEqDbl;
++            break;
++        case CORINFO_HELP_FLTCMP_LT:
++            vnf = VNF_SoftFPCmpLtFlt;
++            break;
++        case CORINFO_HELP_DBLCMP_LT:
++            vnf = VNF_SoftFPCmpLtDbl;
++            break;
++        case CORINFO_HELP_FLTCMP_LE:
++            vnf = VNF_SoftFPCmpLeFlt;
++            break;
++        case CORINFO_HELP_DBLCMP_LE:
++            vnf = VNF_SoftFPCmpLeDbl;
++            break;
++        case CORINFO_HELP_FLTCMP_GT:
++            vnf = VNF_SoftFPCmpGtFlt;
++            break;
++        case CORINFO_HELP_DBLCMP_GT:
++            vnf = VNF_SoftFPCmpGtDbl;
++            break;
++        case CORINFO_HELP_FLTCMP_GE:
++            vnf = VNF_SoftFPCmpGeFlt;
++            break;
++        case CORINFO_HELP_DBLCMP_GE:
++            vnf = VNF_SoftFPCmpGeDbl;
++            break;
++        case CORINFO_HELP_FLT2DBL:
++            vnf = VNF_SoftFPFlt2Dbl;
++            break;
++        case CORINFO_HELP_DBL2FLT:
++            vnf = VNF_SoftFPDbl2Flt;
++            break;
++#endif // TARGET_RISCV64
++
+         default:
+             unreached();
+     }
 diff --git a/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs b/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs
 --- a/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs
 +++ b/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs
