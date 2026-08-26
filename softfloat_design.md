@@ -46,9 +46,16 @@ instruction sets: `--instruction-set=-f,-d` описывает допустим�
 `EF_RISCV_FLOAT_ABI_SOFT` в `e_flags` объектов (`ElfObjectWriter` раньше
 ставил `FLOAT_ABI_DOUBLE` безусловно, и bflat правил заголовок вручную) —
 lld отказывается линковать объекты с разным float-ABI. Валидация в
-`RyuJitCompilation`: lp64d без F или D — ошибка «unsupported configuration»
-(lp64f не поддерживается). bflat выбирает ABI, когда у zisk-таргета нет F
-или D (рефлексивно, чтобы собираться и со старыми пакетами).
+`RyuJitCompilation` в обе стороны: lp64d без F или D — ошибка «unsupported
+configuration» (lp64f не поддерживается); lp64 с F или D в instruction sets —
+тоже ошибка (у soft-таргета их нет по определению). ISA-дефолты следуют ABI:
+`ConfigureInstructionSetSupport` получает `TargetAbi`, и для `riscv64-lp64`
+`d`/`f` в baseline не добавляются — одного `--targetarch riscv64-lp64`
+достаточно. `e_flags` собираются из двух независимых свойств:
+`EF_RISCV_FLOAT_ABI_*` из ABI и `EF_RISCV_RVC` только при наличии C
+(`ObjectWritingOptions.RiscV64Compressed`, из `InstructionSetSupport`).
+bflat выбирает ABI, когда у zisk-таргета нет F или D (рефлексивно, чтобы
+собираться и со старыми пакетами).
 
 ## Слой 2 — FP-значения в целочисленных регистрах (патч 28)
 
@@ -214,3 +221,15 @@ long, uint — zero-extend, что точно в знаковом хелпере
    видит её как trailing whitespace в *файле патча*. Так выглядят все патчи
    репозитория (например `fixup/10/.../15_*.patch`); в апстрим уходят
    git-коммиты, а не эти файлы.
+
+### Третье ревью
+
+5. **`riscv64-lp64` по умолчанию объявлял F/D.** ISA-дефолты теперь строятся с
+   учётом `TargetAbi` (без `d`/`f` для soft-таргета), плюс обратная валидация
+   «soft-таргет не содержит F/D» в `RyuJitCompilation`.
+6. **`EF_RISCV_RVC` безусловно.** RVC-бит выставляется только при поддержке C
+   (через `ObjectWritingOptions.RiscV64Compressed`).
+
+Не сделано (для апстрима): CLI-тест итогового `InstructionSetSupport` для
+`--targetarch riscv64-lp64` и object-header-тест `{lp64, lp64d} × {C, no-C}`;
+`PerfMapAbiToken` для нового ABI.
