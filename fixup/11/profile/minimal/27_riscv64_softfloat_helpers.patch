@@ -243,14 +243,17 @@ diff --git a/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs b/src/core
 diff --git a/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs b/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
 --- a/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
 +++ b/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
-@@ -4708,6 +4708,13 @@ private uint getJitFlags(ref CORJIT_FLAGS flags, uint sizeInBytes)
+@@ -4708,6 +4708,16 @@ private uint getJitFlags(ref CORJIT_FLAGS flags, uint sizeInBytes)
                  flags.Set(CorJitFlag.CORJIT_FLAG_SOFTFP_ABI);
              }
  
 +            if ((this.MethodBeingCompiled.Context.Target.Architecture == TargetArchitecture.RiscV64)
-+                && !_compilation.InstructionSetSupport.IsInstructionSetSupported(InstructionSet.RiscV64_F))
++                && (!_compilation.InstructionSetSupport.IsInstructionSetSupported(InstructionSet.RiscV64_F)
++                    || !_compilation.InstructionSetSupport.IsInstructionSetSupported(InstructionSet.RiscV64_D)))
 +            {
-+                // No FPU: lp64 (soft-float) ABI, with FP arithmetic through the soft-float helpers.
++                // Without the F and D extensions the target uses the lp64 (soft-float) ABI and
++                // the FP arithmetic goes through the soft-float helpers. The lp64f ABI (F
++                // without D) is not supported: such a target is compiled soft-float as well.
 +                flags.Set(CorJitFlag.CORJIT_FLAG_SOFTFP_ABI);
 +            }
 +
