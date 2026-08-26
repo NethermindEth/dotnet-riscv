@@ -281,9 +281,13 @@ long, uint — zero-extend, что точно в знаковом хелпере
    call-узел (со сворачиванием констант как у оригиналов); операнды разной
    ширины (на IL-стеке один тип F) приводятся к типу узла.
 
-Отложено до валидации (CQ, не корректность): пометить 14 чистых хелперов
-`isNoGC` в `HelperCallProperties` по прецеденту `CORINFO_HELP_LLSH` — это leaf
-C-функции compiler-rt, GC-переход на вызове не нужен.
+Остатки ревью закрыты (2026-08-27): 14 хелперов помечены `isNoGC` (группа
+`CORINFO_HELP_LLSH`); `ElfObjectWriter.GetRiscV64ElfFlags(abi, options)` +
+`ILCompiler.Compiler.Tests/RiscV64ObjectWriterTests` (4 комбинации
+`{lp64, lp64d} × {C, no-C}`, `InternalsVisibleTo` для тестов);
+`ILCompiler.ReadyToRun.Tests`: `RiscV64SoftFloatTargetIsRejected` — раннер
+получил `CrossgenCompilation.ExpectedFailure`. Открытым остаётся только
+`PerfMapAbiToken` (решение владельцев, вынесено в RFC).
 
 libm: rootfs с коммита `36bc08b` собирает musl под rv64im, и `musl/libc.a`
 в пакете SDK имеет `e_flags=0x0` у всех членов — libm (sqrt/floor/…)

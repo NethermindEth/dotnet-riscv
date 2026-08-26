@@ -81,10 +81,11 @@ diff --git a/src/coreclr/inc/jithelpers.h b/src/coreclr/inc/jithelpers.h
 diff --git a/src/coreclr/jit/utils.cpp b/src/coreclr/jit/utils.cpp
 --- a/src/coreclr/jit/utils.cpp
 +++ b/src/coreclr/jit/utils.cpp
-@@ -1469,6 +1469,20 @@ void HelperCallProperties::init()
-             case CORINFO_HELP_DBL2ULNG:
-             case CORINFO_HELP_FLTREM:
-             case CORINFO_HELP_DBLREM:
+@@ -1458,6 +1458,21 @@ void HelperCallProperties::init()
+             case CORINFO_HELP_LLSH:
+             case CORINFO_HELP_LRSH:
+             case CORINFO_HELP_LRSZ:
++            // Soft-float helpers: leaf compiler-rt routines, no GC interaction.
 +            case CORINFO_HELP_FLTADD:
 +            case CORINFO_HELP_FLTSUB:
 +            case CORINFO_HELP_FLTMUL:
@@ -99,9 +100,9 @@ diff --git a/src/coreclr/jit/utils.cpp b/src/coreclr/jit/utils.cpp
 +            case CORINFO_HELP_DBLCMP_GE:
 +            case CORINFO_HELP_FLT2DBL:
 +            case CORINFO_HELP_DBL2FLT:
-                 isPure     = true;
-                 exceptions = ExceptionSetFlags::None;
-                 break;
+                 isNoGC = true;
+                 FALLTHROUGH;
+             case CORINFO_HELP_LMUL:
 diff --git a/src/coreclr/jit/valuenum.cpp b/src/coreclr/jit/valuenum.cpp
 --- a/src/coreclr/jit/valuenum.cpp
 +++ b/src/coreclr/jit/valuenum.cpp
@@ -220,26 +221,54 @@ diff --git a/src/coreclr/tools/Common/CommandLineHelpers.cs b/src/coreclr/tools/
 diff --git a/src/coreclr/tools/Common/Compiler/ObjectWriter/ElfObjectWriter.cs b/src/coreclr/tools/Common/Compiler/ObjectWriter/ElfObjectWriter.cs
 --- a/src/coreclr/tools/Common/Compiler/ObjectWriter/ElfObjectWriter.cs
 +++ b/src/coreclr/tools/Common/Compiler/ObjectWriter/ElfObjectWriter.cs
-@@ -67,7 +67,8 @@ public ElfObjectWriter(NodeFactory factory, ObjectWritingOptions options)
-                 _ => throw new NotSupportedException("Unsupported architecture")
+@@ -41,6 +41,7 @@ internal sealed partial class ElfObjectWriter : UnixObjectWriter
+         private readonly bool _useInlineRelocationAddends;
+         private readonly ushort _machine;
+         private readonly bool _useSoftFPAbi;
++        private readonly uint _riscV64ElfFlags;
+         private readonly List<ElfSectionDefinition> _sections = new();
+         private readonly List<ElfSymbol> _symbols = new();
+         private uint _localSymbolCount;
+@@ -53,6 +54,25 @@ internal sealed partial class ElfObjectWriter : UnixObjectWriter
+         private static readonly ObjectNodeSection ArmTextThunkSection = new ObjectNodeSection(".text.thunks", SectionType.Executable);
+         private static readonly ObjectNodeSection CommentSection = new ObjectNodeSection(".comment", SectionType.ReadOnly);
+ 
++        /// <summary>
++        /// RISC-V ELF header flags: the floating-point ABI comes from the target ABI
++        /// (EF_RISCV_FLOAT_ABI_DOUBLE for lp64d, EF_RISCV_FLOAT_ABI_SOFT for lp64 - the
++        /// linker rejects objects with mixed floating-point ABIs), EF_RISCV_RVC is set
++        /// when the target has the C extension.
++        /// </summary>
++        internal static uint GetRiscV64ElfFlags(TargetAbi abi, ObjectWritingOptions options)
++        {
++            const uint EF_RISCV_RVC = 0x0001;
++            const uint EF_RISCV_FLOAT_ABI_DOUBLE = 0x0004;
++
++            uint flags = abi == TargetAbi.NativeAotRiscV64SoftFloat ? 0u : EF_RISCV_FLOAT_ABI_DOUBLE;
++            if (options.HasFlag(ObjectWritingOptions.RiscV64Compressed))
++            {
++                flags |= EF_RISCV_RVC;
++            }
++            return flags;
++        }
++
+         public ElfObjectWriter(NodeFactory factory, ObjectWritingOptions options)
+             : base(factory, options)
+         {
+@@ -68,6 +88,7 @@ public ElfObjectWriter(NodeFactory factory, ObjectWritingOptions options)
              };
              _useInlineRelocationAddends = _machine is EM_386 or EM_ARM;
--            _useSoftFPAbi = _machine is EM_ARM && factory.Target.Abi == TargetAbi.NativeAotArmel;
-+            _useSoftFPAbi = (_machine is EM_ARM && factory.Target.Abi == TargetAbi.NativeAotArmel) ||
-+                            (_machine is EM_RISCV && factory.Target.Abi == TargetAbi.NativeAotRiscV64SoftFloat);
+             _useSoftFPAbi = _machine is EM_ARM && factory.Target.Abi == TargetAbi.NativeAotArmel;
++            _riscV64ElfFlags = GetRiscV64ElfFlags(factory.Target.Abi, options);
  
              // By convention the symbol table starts with empty symbol
              _symbols.Add(new ElfSymbol {});
-@@ -765,7 +766,11 @@ private void EmitObjectFile<TSize>(Stream outputFileStream)
+@@ -765,7 +786,7 @@ private void EmitObjectFile<TSize>(Stream outputFileStream)
                  {
                      EM_ARM => 0x05000000u, // For ARM32 claim conformance with the EABI specification
                      EM_LOONGARCH => 0x43u, // For LoongArch ELF psABI specify the ABI version (1) and modifiers (64-bit GPRs, 64-bit FPRs)
 -                    EM_RISCV => 0x0005u, // EF_RISCV_RVC (RVC ABI) | EF_RISCV_FLOAT_ABI_DOUBLE (double precision floating-point ABI).
-+                    // EF_RISCV_RVC (0x1) when the target has the C extension, and the floating-point ABI:
-+                    // EF_RISCV_FLOAT_ABI_DOUBLE (0x4) for lp64d or EF_RISCV_FLOAT_ABI_SOFT (0) for lp64.
-+                    // The linker rejects objects with mixed floating-point ABIs.
-+                    EM_RISCV => (_options.HasFlag(ObjectWritingOptions.RiscV64Compressed) ? 0x0001u : 0u) |
-+                                (_useSoftFPAbi ? 0u : 0x0004u),
++                    EM_RISCV => _riscV64ElfFlags,
                      _ => 0u
                  },
              };
@@ -368,6 +397,48 @@ diff --git a/src/coreclr/tools/Common/TypeSystem/Common/TargetDetails.cs b/src/c
      }
  
      /// <summary>
+diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler.Tests/ILCompiler.Compiler.Tests.csproj b/src/coreclr/tools/aot/ILCompiler.Compiler.Tests/ILCompiler.Compiler.Tests.csproj
+--- a/src/coreclr/tools/aot/ILCompiler.Compiler.Tests/ILCompiler.Compiler.Tests.csproj
++++ b/src/coreclr/tools/aot/ILCompiler.Compiler.Tests/ILCompiler.Compiler.Tests.csproj
+@@ -42,6 +42,7 @@
+   <ItemGroup>
+     <Compile Include="DependencyGraphTests.cs" />
+     <Compile Include="DevirtualizationTests.cs" />
++    <Compile Include="RiscV64ObjectWriterTests.cs" />
+     <Compile Include="SwiftLoweringTests.cs" />
+   </ItemGroup>
+ </Project>
+diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler.Tests/RiscV64ObjectWriterTests.cs b/src/coreclr/tools/aot/ILCompiler.Compiler.Tests/RiscV64ObjectWriterTests.cs
+new file mode 100644
+--- /dev/null
++++ b/src/coreclr/tools/aot/ILCompiler.Compiler.Tests/RiscV64ObjectWriterTests.cs
+@@ -0,0 +1,26 @@
++// Licensed to the .NET Foundation under one or more agreements.
++// The .NET Foundation licenses this file to you under the MIT license.
++
++using ILCompiler.ObjectWriter;
++using Internal.TypeSystem;
++using Xunit;
++
++namespace ILCompiler.Compiler.Tests
++{
++    public class RiscV64ObjectWriterTests
++    {
++        // e_flags of a RISC-V object: EF_RISCV_RVC (0x1) only when the target has the C
++        // extension, EF_RISCV_FLOAT_ABI_DOUBLE (0x4) for lp64d and EF_RISCV_FLOAT_ABI_SOFT (0)
++        // for the lp64 (soft-float) ABI.
++        [Theory]
++        [InlineData(TargetAbi.NativeAot, false, 0x4u)]
++        [InlineData(TargetAbi.NativeAot, true, 0x5u)]
++        [InlineData(TargetAbi.NativeAotRiscV64SoftFloat, false, 0x0u)]
++        [InlineData(TargetAbi.NativeAotRiscV64SoftFloat, true, 0x1u)]
++        public void ElfFlagsFollowTheTarget(TargetAbi abi, bool compressed, uint expectedFlags)
++        {
++            ObjectWritingOptions options = compressed ? ObjectWritingOptions.RiscV64Compressed : ObjectWritingOptions.None;
++            Assert.Equal(expectedFlags, ElfObjectWriter.GetRiscV64ElfFlags(abi, options));
++        }
++    }
++}
 diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs
 --- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs
@@ -422,6 +493,17 @@ diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs b/s
                  case ReadyToRunHelper.LMul:
                      mangledName = "RhpLMul";
                      break;
+diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/ILCompiler.Compiler.csproj b/src/coreclr/tools/aot/ILCompiler.Compiler/ILCompiler.Compiler.csproj
+--- a/src/coreclr/tools/aot/ILCompiler.Compiler/ILCompiler.Compiler.csproj
++++ b/src/coreclr/tools/aot/ILCompiler.Compiler/ILCompiler.Compiler.csproj
+@@ -813,4 +813,7 @@
+   <Import Project="..\..\..\..\tools\illink\src\ILLink.Shared\ILLink.Shared.projitems" Label="Shared" />
+   <Import Project="..\..\Common\Compiler\GenericCycleDetection\GenericCycleDetection.projitems" />
+ 
++  <ItemGroup>
++    <InternalsVisibleTo Include="ILCompiler.Compiler.Tests" />
++  </ItemGroup>
+ </Project>
 diff --git a/src/coreclr/tools/aot/ILCompiler.Diagnostics/PerfMapWriter.cs b/src/coreclr/tools/aot/ILCompiler.Diagnostics/PerfMapWriter.cs
 --- a/src/coreclr/tools/aot/ILCompiler.Diagnostics/PerfMapWriter.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.Diagnostics/PerfMapWriter.cs
@@ -432,6 +514,72 @@ diff --git a/src/coreclr/tools/aot/ILCompiler.Diagnostics/PerfMapWriter.cs b/src
 +                TargetAbi.NativeAotRiscV64SoftFloat => PerfMapAbiToken.Default,
                  _ => throw new NotImplementedException(details.Abi.ToString())
              };
+ 
+diff --git a/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCases/R2RTestSuites.cs b/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCases/R2RTestSuites.cs
+--- a/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCases/R2RTestSuites.cs
++++ b/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCases/R2RTestSuites.cs
+@@ -62,6 +62,34 @@ static void Validate(ReadyToRunReader reader)
+         }
+     }
+ 
++    [Fact]
++    public void RiscV64SoftFloatTargetIsRejected()
++    {
++        // The riscv64-lp64 (soft-float) ABI is NativeAOT-only: crossgen2 rejects it on the
++        // command line instead of compiling with helpers that have no ReadyToRun encoding.
++        var module = new CompiledAssembly
++        {
++            AssemblyName = nameof(RiscV64SoftFloatTargetIsRejected),
++            SourceResourceNames = ["ThumbBit/HotColdSplitting.cs"],
++        };
++
++        new R2RTestRunner(_output).Run(new R2RTestCase(
++            nameof(RiscV64SoftFloatTargetIsRejected),
++            [
++                new(nameof(RiscV64SoftFloatTargetIsRejected), [new CrossgenAssembly(module)])
++                {
++                    AdditionalArgs =
++                    {
++                        "--targetarch",
++                        "riscv64-lp64",
++                        "--targetos",
++                        "linux",
++                    },
++                    ExpectedFailure = "is not supported by ReadyToRun",
++                },
++            ]));
++    }
++
+     [Fact]
+     public void WasmWebcilModule()
+     {
+diff --git a/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCasesRunner/R2RTestRunner.cs b/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCasesRunner/R2RTestRunner.cs
+--- a/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCasesRunner/R2RTestRunner.cs
++++ b/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCasesRunner/R2RTestRunner.cs
+@@ -94,6 +94,11 @@ internal sealed class CrossgenCompilation(string name, List<CrossgenAssembly> as
+     /// </summary>
+     public Action<ReadyToRunReader>? Validate { get; init; }
+ 
++    /// <summary>
++    /// When set, crossgen2 is expected to fail and its standard error must contain this text.
++    /// </summary>
++    public string? ExpectedFailure { get; init; }
++
+     public string Name => name;
+ 
+     public bool IsComposite => Options.Contains(Crossgen2Option.Composite);
+@@ -320,6 +325,12 @@ private static string RunCrossgenCompilation(
+         args.Add($"--out");
+         args.Add($"{outputFile}");
+         var result = driver.Compile(args);
++        if (compilation.ExpectedFailure is string expectedFailure)
++        {
++            Assert.False(result.Success, $"crossgen2 unexpectedly succeeded for '{testName}'");
++            Assert.Contains(expectedFailure, result.StandardError);
++            return outputFile;
++        }
+         Assert.True(result.Success,
+             $"crossgen2 failed for '{testName}':\n{result.StandardError}\n{result.StandardOutput}");
  
 diff --git a/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs b/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs
 --- a/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs
