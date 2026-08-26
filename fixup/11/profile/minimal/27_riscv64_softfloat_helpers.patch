@@ -1,15 +1,17 @@
 diff --git a/src/coreclr/inc/corinfo.h b/src/coreclr/inc/corinfo.h
 --- a/src/coreclr/inc/corinfo.h
 +++ b/src/coreclr/inc/corinfo.h
-@@ -342,6 +342,32 @@ enum CorInfoHelpFunc
+@@ -342,6 +342,28 @@ enum CorInfoHelpFunc
      CORINFO_HELP_FLTREM,
      CORINFO_HELP_DBLREM,
  
-+    /* Soft-float helpers for targets without an FPU (e.g. RISC-V rv64im).
-+       Arithmetic maps to the compiler-rt/libgcc builtins; the compare helpers
-+       follow the libgcc tri-state conventions (lt/le return +1 on unordered,
-+       gt/ge return -1, eq returns nonzero), which lets the JIT express every
-+       ordered/unordered IL comparison with a single call. */
++    /* Soft-float helpers, for targets without a floating-point unit (RISC-V
++       without the F/D extensions). The arithmetic helpers have the same
++       semantics as the corresponding IL instructions. The compare helpers
++       return a three-way result (< 0, 0, > 0 for less, equal, greater) and
++       differ only for unordered operands: CMP_LE returns 1 and CMP_GE returns
++       -1 (the libgcc __le*f2/__ge*f2 conventions), so that every ordered and
++       unordered IL comparison maps onto a single call. */
 +    CORINFO_HELP_FLTADD,
 +    CORINFO_HELP_FLTSUB,
 +    CORINFO_HELP_FLTMUL,
@@ -18,15 +20,9 @@ diff --git a/src/coreclr/inc/corinfo.h b/src/coreclr/inc/corinfo.h
 +    CORINFO_HELP_DBLSUB,
 +    CORINFO_HELP_DBLMUL,
 +    CORINFO_HELP_DBLDIV,
-+    CORINFO_HELP_FLTCMP_EQ,
-+    CORINFO_HELP_FLTCMP_LT,
 +    CORINFO_HELP_FLTCMP_LE,
-+    CORINFO_HELP_FLTCMP_GT,
 +    CORINFO_HELP_FLTCMP_GE,
-+    CORINFO_HELP_DBLCMP_EQ,
-+    CORINFO_HELP_DBLCMP_LT,
 +    CORINFO_HELP_DBLCMP_LE,
-+    CORINFO_HELP_DBLCMP_GT,
 +    CORINFO_HELP_DBLCMP_GE,
 +    CORINFO_HELP_FLT2DBL,
 +    CORINFO_HELP_DBL2FLT,
@@ -46,211 +42,49 @@ diff --git a/src/coreclr/inc/jiteeversionguid.h b/src/coreclr/inc/jiteeversiongu
 -    0x27d3,
 -    0x449f,
 -    {0x82, 0x4f, 0x1e, 0x51, 0xc8, 0x88, 0xa1, 0x51}
-+constexpr GUID JITEEVersionIdentifier = { /* 50e3028f-96b4-4253-a93c-218c3443e2f2 */
-+    0x50e3028f,
-+    0x96b4,
-+    0x4253,
-+    {0xa9, 0x3c, 0x21, 0x8c, 0x34, 0x43, 0xe2, 0xf2}
++constexpr GUID JITEEVersionIdentifier = { /* ad6f1601-8ca2-48b7-804e-2cbd0cd36a5f */
++    0xad6f1601,
++    0x8ca2,
++    0x48b7,
++    {0x80, 0x4e, 0x2c, 0xbd, 0x0c, 0xd3, 0x6a, 0x5f}
    };
  
  #endif // JIT_EE_VERSIONING_GUID_H
 diff --git a/src/coreclr/inc/jithelpers.h b/src/coreclr/inc/jithelpers.h
 --- a/src/coreclr/inc/jithelpers.h
 +++ b/src/coreclr/inc/jithelpers.h
-@@ -95,6 +95,26 @@
-     DYNAMICJITHELPER(CORINFO_HELP_DBL2ULNG_OVF, NULL,               METHOD__MATH__CONVERT_TO_UINT64_CHECKED)
+@@ -96,6 +96,24 @@
      JITHELPER(CORINFO_HELP_FLTREM,              JIT_FltRem,         METHOD__NIL)
      JITHELPER(CORINFO_HELP_DBLREM,              JIT_DblRem,         METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_FLTADD,              JIT_FltAdd,         METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_FLTSUB,              JIT_FltSub,         METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_FLTMUL,              JIT_FltMul,         METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_FLTDIV,              JIT_FltDiv,         METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_DBLADD,              JIT_DblAdd,         METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_DBLSUB,              JIT_DblSub,         METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_DBLMUL,              JIT_DblMul,         METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_DBLDIV,              JIT_DblDiv,         METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_FLTCMP_EQ,           JIT_FltCmpEq,       METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_FLTCMP_LT,           JIT_FltCmpLt,       METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_FLTCMP_LE,           JIT_FltCmpLe,       METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_FLTCMP_GT,           JIT_FltCmpGt,       METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_FLTCMP_GE,           JIT_FltCmpGe,       METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_DBLCMP_EQ,           JIT_DblCmpEq,       METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_DBLCMP_LT,           JIT_DblCmpLt,       METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_DBLCMP_LE,           JIT_DblCmpLe,       METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_DBLCMP_GT,           JIT_DblCmpGt,       METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_DBLCMP_GE,           JIT_DblCmpGe,       METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_FLT2DBL,             JIT_Flt2Dbl,        METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_DBL2FLT,             JIT_Dbl2Flt,        METHOD__NIL)
  
++    // Soft-float helpers. The JIT only requests them under CORJIT_FLAG_SOFTFP_ABI on
++    // targets without an FPU (NativeAOT for RISC-V without F/D, where the AOT
++    // compiler binds them to the compiler-rt builtins); the VM never sets that flag.
++    JITHELPER(CORINFO_HELP_FLTADD,                 NULL,               METHOD__NIL)
++    JITHELPER(CORINFO_HELP_FLTSUB,                 NULL,               METHOD__NIL)
++    JITHELPER(CORINFO_HELP_FLTMUL,                 NULL,               METHOD__NIL)
++    JITHELPER(CORINFO_HELP_FLTDIV,                 NULL,               METHOD__NIL)
++    JITHELPER(CORINFO_HELP_DBLADD,                 NULL,               METHOD__NIL)
++    JITHELPER(CORINFO_HELP_DBLSUB,                 NULL,               METHOD__NIL)
++    JITHELPER(CORINFO_HELP_DBLMUL,                 NULL,               METHOD__NIL)
++    JITHELPER(CORINFO_HELP_DBLDIV,                 NULL,               METHOD__NIL)
++    JITHELPER(CORINFO_HELP_FLTCMP_LE,              NULL,               METHOD__NIL)
++    JITHELPER(CORINFO_HELP_FLTCMP_GE,              NULL,               METHOD__NIL)
++    JITHELPER(CORINFO_HELP_DBLCMP_LE,              NULL,               METHOD__NIL)
++    JITHELPER(CORINFO_HELP_DBLCMP_GE,              NULL,               METHOD__NIL)
++    JITHELPER(CORINFO_HELP_FLT2DBL,                NULL,               METHOD__NIL)
++    JITHELPER(CORINFO_HELP_DBL2FLT,                NULL,               METHOD__NIL)
++
      // Allocating a new object
      JITHELPER(CORINFO_HELP_NEWFAST,                     RhpNew,                   METHOD__NIL)
-diff --git a/src/coreclr/vm/jithelpers.cpp b/src/coreclr/vm/jithelpers.cpp
---- a/src/coreclr/vm/jithelpers.cpp
-+++ b/src/coreclr/vm/jithelpers.cpp
-@@ -242,6 +242,151 @@ HCIMPL2_VV(double, JIT_DblRem, double dividend, double divisor)
- }
- HCIMPLEND
- 
-+/*********************************************************************/
-+// Soft-float helpers (no-FPU targets). On hard-float hosts these fold to the
-+// native FP instructions. The compare helpers follow the libgcc tri-state
-+// conventions: lt/le return +1 on unordered, gt/ge return -1, eq nonzero.
-+
-+HCIMPL2_VV(float, JIT_FltAdd, float a, float b)
-+{
-+    FCALL_CONTRACT;
-+    return a + b;
-+}
-+HCIMPLEND
-+
-+HCIMPL2_VV(float, JIT_FltSub, float a, float b)
-+{
-+    FCALL_CONTRACT;
-+    return a - b;
-+}
-+HCIMPLEND
-+
-+HCIMPL2_VV(float, JIT_FltMul, float a, float b)
-+{
-+    FCALL_CONTRACT;
-+    return a * b;
-+}
-+HCIMPLEND
-+
-+HCIMPL2_VV(float, JIT_FltDiv, float a, float b)
-+{
-+    FCALL_CONTRACT;
-+    return a / b;
-+}
-+HCIMPLEND
-+
-+HCIMPL2_VV(double, JIT_DblAdd, double a, double b)
-+{
-+    FCALL_CONTRACT;
-+    return a + b;
-+}
-+HCIMPLEND
-+
-+HCIMPL2_VV(double, JIT_DblSub, double a, double b)
-+{
-+    FCALL_CONTRACT;
-+    return a - b;
-+}
-+HCIMPLEND
-+
-+HCIMPL2_VV(double, JIT_DblMul, double a, double b)
-+{
-+    FCALL_CONTRACT;
-+    return a * b;
-+}
-+HCIMPLEND
-+
-+HCIMPL2_VV(double, JIT_DblDiv, double a, double b)
-+{
-+    FCALL_CONTRACT;
-+    return a / b;
-+}
-+HCIMPLEND
-+
-+HCIMPL2_VV(int32_t, JIT_FltCmpEq, float a, float b)
-+{
-+    FCALL_CONTRACT;
-+    return (a == b) ? 0 : 1;
-+}
-+HCIMPLEND
-+
-+HCIMPL2_VV(int32_t, JIT_FltCmpLt, float a, float b)
-+{
-+    FCALL_CONTRACT;
-+    return (a < b) ? -1 : ((a == b) ? 0 : 1);
-+}
-+HCIMPLEND
-+
-+HCIMPL2_VV(int32_t, JIT_FltCmpLe, float a, float b)
-+{
-+    FCALL_CONTRACT;
-+    return (a < b) ? -1 : ((a == b) ? 0 : 1);
-+}
-+HCIMPLEND
-+
-+HCIMPL2_VV(int32_t, JIT_FltCmpGt, float a, float b)
-+{
-+    FCALL_CONTRACT;
-+    return (a > b) ? 1 : ((a == b) ? 0 : -1);
-+}
-+HCIMPLEND
-+
-+HCIMPL2_VV(int32_t, JIT_FltCmpGe, float a, float b)
-+{
-+    FCALL_CONTRACT;
-+    return (a > b) ? 1 : ((a == b) ? 0 : -1);
-+}
-+HCIMPLEND
-+
-+HCIMPL2_VV(int32_t, JIT_DblCmpEq, double a, double b)
-+{
-+    FCALL_CONTRACT;
-+    return (a == b) ? 0 : 1;
-+}
-+HCIMPLEND
-+
-+HCIMPL2_VV(int32_t, JIT_DblCmpLt, double a, double b)
-+{
-+    FCALL_CONTRACT;
-+    return (a < b) ? -1 : ((a == b) ? 0 : 1);
-+}
-+HCIMPLEND
-+
-+HCIMPL2_VV(int32_t, JIT_DblCmpLe, double a, double b)
-+{
-+    FCALL_CONTRACT;
-+    return (a < b) ? -1 : ((a == b) ? 0 : 1);
-+}
-+HCIMPLEND
-+
-+HCIMPL2_VV(int32_t, JIT_DblCmpGt, double a, double b)
-+{
-+    FCALL_CONTRACT;
-+    return (a > b) ? 1 : ((a == b) ? 0 : -1);
-+}
-+HCIMPLEND
-+
-+HCIMPL2_VV(int32_t, JIT_DblCmpGe, double a, double b)
-+{
-+    FCALL_CONTRACT;
-+    return (a > b) ? 1 : ((a == b) ? 0 : -1);
-+}
-+HCIMPLEND
-+
-+HCIMPL1_V(double, JIT_Flt2Dbl, float val)
-+{
-+    FCALL_CONTRACT;
-+    return (double)val;
-+}
-+HCIMPLEND
-+
-+HCIMPL1_V(float, JIT_Dbl2Flt, double val)
-+{
-+    FCALL_CONTRACT;
-+    return (float)val;
-+}
-+HCIMPLEND
-+
- #include <optdefault.h>
- 
- // Helper for the managed InitClass implementations
+     JITHELPER(CORINFO_HELP_NEWFAST_MAYBEFROZEN,         RhpNewMaybeFrozen,        METHOD__NIL)
 diff --git a/src/coreclr/jit/utils.cpp b/src/coreclr/jit/utils.cpp
 --- a/src/coreclr/jit/utils.cpp
 +++ b/src/coreclr/jit/utils.cpp
-@@ -1469,6 +1469,32 @@ void HelperCallProperties::init()
+@@ -1469,6 +1469,20 @@ void HelperCallProperties::init()
              case CORINFO_HELP_DBL2ULNG:
              case CORINFO_HELP_FLTREM:
              case CORINFO_HELP_DBLREM:
-+#ifdef TARGET_RISCV64
-+            // Soft-float helpers. Purity is claimed only where the JIT can
-+            // actually emit them, because a pure helper must also have a
-+            // VNFunc (see fgValueNumberJitHelperMethodVNFunc); keeping the two
-+            // in step target by target makes that invariant checkable.
 +            case CORINFO_HELP_FLTADD:
 +            case CORINFO_HELP_FLTSUB:
 +            case CORINFO_HELP_FLTMUL:
@@ -259,213 +93,135 @@ diff --git a/src/coreclr/jit/utils.cpp b/src/coreclr/jit/utils.cpp
 +            case CORINFO_HELP_DBLSUB:
 +            case CORINFO_HELP_DBLMUL:
 +            case CORINFO_HELP_DBLDIV:
-+            case CORINFO_HELP_FLTCMP_EQ:
-+            case CORINFO_HELP_FLTCMP_LT:
 +            case CORINFO_HELP_FLTCMP_LE:
-+            case CORINFO_HELP_FLTCMP_GT:
 +            case CORINFO_HELP_FLTCMP_GE:
-+            case CORINFO_HELP_DBLCMP_EQ:
-+            case CORINFO_HELP_DBLCMP_LT:
 +            case CORINFO_HELP_DBLCMP_LE:
-+            case CORINFO_HELP_DBLCMP_GT:
 +            case CORINFO_HELP_DBLCMP_GE:
 +            case CORINFO_HELP_FLT2DBL:
 +            case CORINFO_HELP_DBL2FLT:
-+#endif // TARGET_RISCV64
                  isPure     = true;
                  exceptions = ExceptionSetFlags::None;
                  break;
-diff --git a/src/coreclr/jit/valuenumfuncs.h b/src/coreclr/jit/valuenumfuncs.h
---- a/src/coreclr/jit/valuenumfuncs.h
-+++ b/src/coreclr/jit/valuenumfuncs.h
-@@ -213,6 +213,53 @@ ValueNumFuncDef(HWI_INTRINSIC_END, -1, false, false)
-     ValueNumFuncDef(MaxInt, 2, true, false)
-     ValueNumFuncDef(MinInt_UN, 2, true, false)
-     ValueNumFuncDef(MaxInt_UN, 2, true, false)
-+
-+    // Soft-float helper calls (no-F targets). These are pure, so they need a
-+    // VNFunc to be CSE-able, but they must stay opaque to the evaluator: their
-+    // operands are the *integer bit patterns* of the FP values, so reusing
-+    // VNF_ADD and friends would let VN constant-fold them with integer
-+    // arithmetic and produce wrong results. None of these appears in
-+    // VNEvalCanFoldBinaryFunc, so no folding is attempted.
-+    // Add and multiply are marked commutative, matching how VN already treats
-+    // the hardware FP forms.
-+    ValueNumFuncDef(SoftFPAddFlt, 2, true, false)
-+    ValueNumFuncDef(SoftFPAddDbl, 2, true, false)
-+    ValueNumFuncDef(SoftFPSubFlt, 2, false, false)
-+    ValueNumFuncDef(SoftFPSubDbl, 2, false, false)
-+    ValueNumFuncDef(SoftFPMulFlt, 2, true, false)
-+    ValueNumFuncDef(SoftFPMulDbl, 2, true, false)
-+    ValueNumFuncDef(SoftFPDivFlt, 2, false, false)
-+    ValueNumFuncDef(SoftFPDivDbl, 2, false, false)
-+    // Tri-state comparisons: swapping the operands negates the result, so
-+    // none of them is commutative (not even the eq form, which is an alias of
-+    // the le form in compiler-rt).
-+    ValueNumFuncDef(SoftFPCmpEqFlt, 2, false, false)
-+    ValueNumFuncDef(SoftFPCmpEqDbl, 2, false, false)
-+    ValueNumFuncDef(SoftFPCmpLtFlt, 2, false, false)
-+    ValueNumFuncDef(SoftFPCmpLtDbl, 2, false, false)
-+    ValueNumFuncDef(SoftFPCmpLeFlt, 2, false, false)
-+    ValueNumFuncDef(SoftFPCmpLeDbl, 2, false, false)
-+    ValueNumFuncDef(SoftFPCmpGtFlt, 2, false, false)
-+    ValueNumFuncDef(SoftFPCmpGtDbl, 2, false, false)
-+    ValueNumFuncDef(SoftFPCmpGeFlt, 2, false, false)
-+    ValueNumFuncDef(SoftFPCmpGeDbl, 2, false, false)
-+    ValueNumFuncDef(SoftFPFlt2Dbl, 1, false, false)
-+    ValueNumFuncDef(SoftFPDbl2Flt, 1, false, false)
-+
-+    // The FP<->integer conversion helpers are shared with other targets, where
-+    // they are modelled as casts. Under soft-float their operand and result
-+    // are integer bit patterns, so the cast model would claim that (long)d and
-+    // the bit pattern of d are the same value; they get opaque VNFuncs too.
-+    ValueNumFuncDef(SoftFPLng2Flt, 1, false, false)
-+    ValueNumFuncDef(SoftFPLng2Dbl, 1, false, false)
-+    ValueNumFuncDef(SoftFPULng2Flt, 1, false, false)
-+    ValueNumFuncDef(SoftFPULng2Dbl, 1, false, false)
-+    ValueNumFuncDef(SoftFPDbl2Lng, 1, false, false)
-+    ValueNumFuncDef(SoftFPDbl2ULng, 1, false, false)
-+    ValueNumFuncDef(SoftFPDbl2IntOvf, 1, false, false)
-+    ValueNumFuncDef(SoftFPDbl2LngOvf, 1, false, false)
-+    ValueNumFuncDef(SoftFPDbl2UIntOvf, 1, false, false)
-+    ValueNumFuncDef(SoftFPDbl2ULngOvf, 1, false, false)
- #endif // TARGET_RISCV64
- 
- // clang-format on
 diff --git a/src/coreclr/jit/valuenum.cpp b/src/coreclr/jit/valuenum.cpp
 --- a/src/coreclr/jit/valuenum.cpp
 +++ b/src/coreclr/jit/valuenum.cpp
-@@ -14998,6 +14998,104 @@ VNFunc Compiler::fgValueNumberJitHelperMethodVNFunc(CorInfoHelpFunc helpFunc)
-             vnf = VNF_ReadyToRunVirtualFuncPtr;
+@@ -14711,6 +14711,14 @@ void Compiler::fgValueNumberCastHelper(GenTreeCall* call)
+             castFromType     = TYP_DOUBLE;
+             hasOverflowCheck = true;
              break;
- 
-+#ifdef TARGET_RISCV64
-+        // Soft-float helpers: pure, hence numbered, but deliberately opaque -
-+        // see the note in valuenumfuncs.h on why they cannot share the VNFuncs
-+        // of the hardware FP operations.
-+        case CORINFO_HELP_FLTADD:
-+            vnf = VNF_SoftFPAddFlt;
-+            break;
-+        case CORINFO_HELP_DBLADD:
-+            vnf = VNF_SoftFPAddDbl;
-+            break;
-+        case CORINFO_HELP_FLTSUB:
-+            vnf = VNF_SoftFPSubFlt;
-+            break;
-+        case CORINFO_HELP_DBLSUB:
-+            vnf = VNF_SoftFPSubDbl;
-+            break;
-+        case CORINFO_HELP_FLTMUL:
-+            vnf = VNF_SoftFPMulFlt;
-+            break;
-+        case CORINFO_HELP_DBLMUL:
-+            vnf = VNF_SoftFPMulDbl;
-+            break;
-+        case CORINFO_HELP_FLTDIV:
-+            vnf = VNF_SoftFPDivFlt;
-+            break;
-+        case CORINFO_HELP_DBLDIV:
-+            vnf = VNF_SoftFPDivDbl;
-+            break;
-+        case CORINFO_HELP_FLTCMP_EQ:
-+            vnf = VNF_SoftFPCmpEqFlt;
-+            break;
-+        case CORINFO_HELP_DBLCMP_EQ:
-+            vnf = VNF_SoftFPCmpEqDbl;
-+            break;
-+        case CORINFO_HELP_FLTCMP_LT:
-+            vnf = VNF_SoftFPCmpLtFlt;
-+            break;
-+        case CORINFO_HELP_DBLCMP_LT:
-+            vnf = VNF_SoftFPCmpLtDbl;
-+            break;
-+        case CORINFO_HELP_FLTCMP_LE:
-+            vnf = VNF_SoftFPCmpLeFlt;
-+            break;
-+        case CORINFO_HELP_DBLCMP_LE:
-+            vnf = VNF_SoftFPCmpLeDbl;
-+            break;
-+        case CORINFO_HELP_FLTCMP_GT:
-+            vnf = VNF_SoftFPCmpGtFlt;
-+            break;
-+        case CORINFO_HELP_DBLCMP_GT:
-+            vnf = VNF_SoftFPCmpGtDbl;
-+            break;
-+        case CORINFO_HELP_FLTCMP_GE:
-+            vnf = VNF_SoftFPCmpGeFlt;
-+            break;
-+        case CORINFO_HELP_DBLCMP_GE:
-+            vnf = VNF_SoftFPCmpGeDbl;
-+            break;
 +        case CORINFO_HELP_FLT2DBL:
-+            vnf = VNF_SoftFPFlt2Dbl;
++            castToType   = TYP_DOUBLE;
++            castFromType = TYP_FLOAT;
 +            break;
 +        case CORINFO_HELP_DBL2FLT:
-+            vnf = VNF_SoftFPDbl2Flt;
++            castToType   = TYP_FLOAT;
++            castFromType = TYP_DOUBLE;
 +            break;
-+        // Reached only under soft-float; on every other configuration these
-+        // are handled by fgValueNumberCastHelper above.
-+        case CORINFO_HELP_LNG2FLT:
-+            vnf = VNF_SoftFPLng2Flt;
-+            break;
-+        case CORINFO_HELP_LNG2DBL:
-+            vnf = VNF_SoftFPLng2Dbl;
-+            break;
-+        case CORINFO_HELP_ULNG2FLT:
-+            vnf = VNF_SoftFPULng2Flt;
-+            break;
-+        case CORINFO_HELP_ULNG2DBL:
-+            vnf = VNF_SoftFPULng2Dbl;
-+            break;
-+        case CORINFO_HELP_DBL2LNG:
-+            vnf = VNF_SoftFPDbl2Lng;
-+            break;
-+        case CORINFO_HELP_DBL2ULNG:
-+            vnf = VNF_SoftFPDbl2ULng;
-+            break;
-+        case CORINFO_HELP_DBL2INT_OVF:
-+            vnf = VNF_SoftFPDbl2IntOvf;
-+            break;
-+        case CORINFO_HELP_DBL2LNG_OVF:
-+            vnf = VNF_SoftFPDbl2LngOvf;
-+            break;
-+        case CORINFO_HELP_DBL2UINT_OVF:
-+            vnf = VNF_SoftFPDbl2UIntOvf;
-+            break;
-+        case CORINFO_HELP_DBL2ULNG_OVF:
-+            vnf = VNF_SoftFPDbl2ULngOvf;
-+            break;
-+#endif // TARGET_RISCV64
-+
+ 
          default:
              unreached();
-     }
-@@ -15022,6 +15120,17 @@ bool Compiler::fgValueNumberHelperCall(GenTreeCall* call)
+@@ -14778,6 +14786,42 @@ VNFunc Compiler::fgValueNumberJitHelperMethodVNFunc(CorInfoHelpFunc helpFunc)
+         case CORINFO_HELP_DBLREM:
+             vnf = VNF_MOD;
+             break;
++        case CORINFO_HELP_FLTADD:
++            vnf = VNFunc(GT_ADD);
++            break;
++        case CORINFO_HELP_DBLADD:
++            vnf = VNFunc(GT_ADD);
++            break;
++        case CORINFO_HELP_FLTSUB:
++            vnf = VNFunc(GT_SUB);
++            break;
++        case CORINFO_HELP_DBLSUB:
++            vnf = VNFunc(GT_SUB);
++            break;
++        case CORINFO_HELP_FLTMUL:
++            vnf = VNFunc(GT_MUL);
++            break;
++        case CORINFO_HELP_DBLMUL:
++            vnf = VNFunc(GT_MUL);
++            break;
++        case CORINFO_HELP_FLTDIV:
++            vnf = VNFunc(GT_DIV);
++            break;
++        case CORINFO_HELP_DBLDIV:
++            vnf = VNFunc(GT_DIV);
++            break;
++        case CORINFO_HELP_FLTCMP_LE:
++            vnf = VNF_SoftFPCmpLE;
++            break;
++        case CORINFO_HELP_DBLCMP_LE:
++            vnf = VNF_SoftFPCmpLE;
++            break;
++        case CORINFO_HELP_FLTCMP_GE:
++            vnf = VNF_SoftFPCmpGE;
++            break;
++        case CORINFO_HELP_DBLCMP_GE:
++            vnf = VNF_SoftFPCmpGE;
++            break;
+ 
+         // These allocation operations probably require some augmentation -- perhaps allocSiteId,
+         // something about array length...
+@@ -15020,6 +15064,8 @@ bool Compiler::fgValueNumberHelperCall(GenTreeCall* call)
+         case CORINFO_HELP_DBL2LNG:
+         case CORINFO_HELP_DBL2LNG_OVF:
          case CORINFO_HELP_DBL2UINT_OVF:
++        case CORINFO_HELP_FLT2DBL:
++        case CORINFO_HELP_DBL2FLT:
          case CORINFO_HELP_DBL2ULNG:
          case CORINFO_HELP_DBL2ULNG_OVF:
-+#ifdef TARGET_RISCV64
-+            // Under soft-float these helpers take and return the integer bit
-+            // patterns of the FP values, so the cast model would derive the
-+            // source type from an integer VN and conclude that (long)d and the
-+            // bit pattern of d are the same value. Use the opaque soft-float
-+            // VNFuncs instead.
-+            if (opts.compUseSoftFP)
-+            {
-+                break;
-+            }
-+#endif // TARGET_RISCV64
              fgValueNumberCastHelper(call);
-             return false;
+diff --git a/src/coreclr/jit/valuenumfuncs.h b/src/coreclr/jit/valuenumfuncs.h
+--- a/src/coreclr/jit/valuenumfuncs.h
++++ b/src/coreclr/jit/valuenumfuncs.h
+@@ -207,6 +207,12 @@ ValueNumFuncDef(HWI_INTRINSIC_END, -1, false, false)
+ #define VNF_HWI_LAST  (VNF_HWI_INTRINSIC_END - 1)
+ #endif // FEATURE_HW_INTRINSICS
  
++    // Three-way floating-point comparisons of the soft-float compare helpers
++    // (CORINFO_HELP_FLTCMP_LE & co). Not commutative: swapping the operands
++    // negates the result, and the two forms differ for unordered operands.
++    ValueNumFuncDef(SoftFPCmpLE, 2, false, false)
++    ValueNumFuncDef(SoftFPCmpGE, 2, false, false)
++
+ #if defined(TARGET_RISCV64)
+     // Signed/Unsigned integer min/max intrinsics
+     ValueNumFuncDef(MinInt, 2, true, false)
+diff --git a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs
+--- a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs
++++ b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs
+@@ -401,6 +401,22 @@ public enum ReadyToRunHelper
+         TypeHandleToRuntimeType,
+         GetRefAny,
+         TypeHandleToRuntimeTypeHandle,
++
++        // Soft-float arithmetic (targets without an FPU). NativeAOT only.
++        FltAdd,
++        FltSub,
++        FltMul,
++        FltDiv,
++        DblAdd,
++        DblSub,
++        DblMul,
++        DblDiv,
++        FltCmpLe,
++        FltCmpGe,
++        DblCmpLe,
++        DblCmpGe,
++        Flt2Dbl,
++        Dbl2Flt,
+     }
+ 
+     // Enum used for HFA type recognition.
 diff --git a/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs b/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs
 --- a/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs
 +++ b/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs
-@@ -41,6 +41,28 @@ namespace Internal.JitInterface
+@@ -41,6 +41,22 @@ public enum CorInfoHelpFunc
          CORINFO_HELP_FLTREM,
          CORINFO_HELP_DBLREM,
  
-+        // Soft-float helpers (no-FPU targets); see corinfo.h for conventions
++        // Soft-float helpers (targets without an FPU); see corinfo.h
 +        CORINFO_HELP_FLTADD,
 +        CORINFO_HELP_FLTSUB,
 +        CORINFO_HELP_FLTMUL,
@@ -474,15 +230,9 @@ diff --git a/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs b/src/core
 +        CORINFO_HELP_DBLSUB,
 +        CORINFO_HELP_DBLMUL,
 +        CORINFO_HELP_DBLDIV,
-+        CORINFO_HELP_FLTCMP_EQ,
-+        CORINFO_HELP_FLTCMP_LT,
 +        CORINFO_HELP_FLTCMP_LE,
-+        CORINFO_HELP_FLTCMP_GT,
 +        CORINFO_HELP_FLTCMP_GE,
-+        CORINFO_HELP_DBLCMP_EQ,
-+        CORINFO_HELP_DBLCMP_LT,
 +        CORINFO_HELP_DBLCMP_LE,
-+        CORINFO_HELP_DBLCMP_GT,
 +        CORINFO_HELP_DBLCMP_GE,
 +        CORINFO_HELP_FLT2DBL,
 +        CORINFO_HELP_DBL2FLT,
@@ -493,57 +243,78 @@ diff --git a/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs b/src/core
 diff --git a/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs b/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
 --- a/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
 +++ b/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
-@@ -4708,6 +4708,13 @@ namespace Internal.JitInterface
+@@ -4708,6 +4708,13 @@ private uint getJitFlags(ref CORJIT_FLAGS flags, uint sizeInBytes)
                  flags.Set(CorJitFlag.CORJIT_FLAG_SOFTFP_ABI);
              }
  
 +            if ((this.MethodBeingCompiled.Context.Target.Architecture == TargetArchitecture.RiscV64)
 +                && !_compilation.InstructionSetSupport.IsInstructionSetSupported(InstructionSet.RiscV64_F))
 +            {
-+                // lp64 soft-float ABI for RISC-V targets built without the F extension
++                // No FPU: lp64 (soft-float) ABI, with FP arithmetic through the soft-float helpers.
 +                flags.Set(CorJitFlag.CORJIT_FLAG_SOFTFP_ABI);
 +            }
 +
              if (this.MethodBeingCompiled.IsAsyncCall()
  #if !READYTORUN
                  || (_compilation.TypeSystemContext.IsSpecialUnboxingThunk(this.MethodBeingCompiled) && _compilation.TypeSystemContext.GetTargetOfSpecialUnboxingThunk(this.MethodBeingCompiled).IsAsyncCall())
-diff --git a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs
---- a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs
-+++ b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs
-@@ -401,6 +401,29 @@ namespace Internal.ReadyToRunConstants
-         TypeHandleToRuntimeType,
-         GetRefAny,
-         TypeHandleToRuntimeTypeHandle,
-+
-+        // Soft-float (no-FPU targets, e.g. rv64im) arithmetic/compare/convert.
-+        // NativeAOT-only; resolved to compiler-rt builtins by JitHelper.
-+        FltAdd,
-+        FltSub,
-+        FltMul,
-+        FltDiv,
-+        DblAdd,
-+        DblSub,
-+        DblMul,
-+        DblDiv,
-+        FltCmpEq,
-+        FltCmpLt,
-+        FltCmpLe,
-+        FltCmpGt,
-+        FltCmpGe,
-+        DblCmpEq,
-+        DblCmpLt,
-+        DblCmpLe,
-+        DblCmpGt,
-+        DblCmpGe,
-+        Flt2Dbl,
-+        Dbl2Flt,
-     }
+diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs
+--- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs
++++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs
+@@ -216,6 +216,50 @@ public static void GetEntryPoint(TypeSystemContext context, ReadyToRunHelper id,
+                     mangledName = "fmodf";
+                     break;
  
-     // Enum used for HFA type recognition.
++                // Soft-float arithmetic: the compiler-rt/libgcc builtins of the target toolchain
++                case ReadyToRunHelper.FltAdd:
++                    mangledName = "__addsf3";
++                    break;
++                case ReadyToRunHelper.FltSub:
++                    mangledName = "__subsf3";
++                    break;
++                case ReadyToRunHelper.FltMul:
++                    mangledName = "__mulsf3";
++                    break;
++                case ReadyToRunHelper.FltDiv:
++                    mangledName = "__divsf3";
++                    break;
++                case ReadyToRunHelper.DblAdd:
++                    mangledName = "__adddf3";
++                    break;
++                case ReadyToRunHelper.DblSub:
++                    mangledName = "__subdf3";
++                    break;
++                case ReadyToRunHelper.DblMul:
++                    mangledName = "__muldf3";
++                    break;
++                case ReadyToRunHelper.DblDiv:
++                    mangledName = "__divdf3";
++                    break;
++                case ReadyToRunHelper.FltCmpLe:
++                    mangledName = "__lesf2";
++                    break;
++                case ReadyToRunHelper.FltCmpGe:
++                    mangledName = "__gesf2";
++                    break;
++                case ReadyToRunHelper.DblCmpLe:
++                    mangledName = "__ledf2";
++                    break;
++                case ReadyToRunHelper.DblCmpGe:
++                    mangledName = "__gedf2";
++                    break;
++                case ReadyToRunHelper.Flt2Dbl:
++                    mangledName = "__extendsfdf2";
++                    break;
++                case ReadyToRunHelper.Dbl2Flt:
++                    mangledName = "__truncdfsf2";
++                    break;
++
+                 case ReadyToRunHelper.LMul:
+                     mangledName = "RhpLMul";
+                     break;
 diff --git a/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs b/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs
 --- a/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs
-@@ -734,6 +734,66 @@ namespace Internal.JitInterface
+@@ -734,6 +734,48 @@ private ISymbolNode GetHelperFtnUncached(CorInfoHelpFunc ftnNum)
                  case CorInfoHelpFunc.CORINFO_HELP_DBLREM:
                      id = ReadyToRunHelper.DblRem;
                      break;
@@ -571,32 +342,14 @@ diff --git a/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.Ry
 +                case CorInfoHelpFunc.CORINFO_HELP_DBLDIV:
 +                    id = ReadyToRunHelper.DblDiv;
 +                    break;
-+                case CorInfoHelpFunc.CORINFO_HELP_FLTCMP_EQ:
-+                    id = ReadyToRunHelper.FltCmpEq;
-+                    break;
-+                case CorInfoHelpFunc.CORINFO_HELP_FLTCMP_LT:
-+                    id = ReadyToRunHelper.FltCmpLt;
-+                    break;
 +                case CorInfoHelpFunc.CORINFO_HELP_FLTCMP_LE:
 +                    id = ReadyToRunHelper.FltCmpLe;
-+                    break;
-+                case CorInfoHelpFunc.CORINFO_HELP_FLTCMP_GT:
-+                    id = ReadyToRunHelper.FltCmpGt;
 +                    break;
 +                case CorInfoHelpFunc.CORINFO_HELP_FLTCMP_GE:
 +                    id = ReadyToRunHelper.FltCmpGe;
 +                    break;
-+                case CorInfoHelpFunc.CORINFO_HELP_DBLCMP_EQ:
-+                    id = ReadyToRunHelper.DblCmpEq;
-+                    break;
-+                case CorInfoHelpFunc.CORINFO_HELP_DBLCMP_LT:
-+                    id = ReadyToRunHelper.DblCmpLt;
-+                    break;
 +                case CorInfoHelpFunc.CORINFO_HELP_DBLCMP_LE:
 +                    id = ReadyToRunHelper.DblCmpLe;
-+                    break;
-+                case CorInfoHelpFunc.CORINFO_HELP_DBLCMP_GT:
-+                    id = ReadyToRunHelper.DblCmpGt;
 +                    break;
 +                case CorInfoHelpFunc.CORINFO_HELP_DBLCMP_GE:
 +                    id = ReadyToRunHelper.DblCmpGe;
@@ -610,76 +363,3 @@ diff --git a/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.Ry
  
                  case CorInfoHelpFunc.CORINFO_HELP_JIT_PINVOKE_BEGIN:
                      id = ReadyToRunHelper.PInvokeBegin;
-diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs
---- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs
-+++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs
-@@ -216,6 +216,69 @@ namespace ILCompiler
-                     mangledName = "fmodf";
-                     break;
- 
-+                // Soft-float (no-FPU targets): compiler-rt/libgcc builtins,
-+                // linked from the toolchain's builtins library.
-+                case ReadyToRunHelper.FltAdd:
-+                    mangledName = "__addsf3";
-+                    break;
-+                case ReadyToRunHelper.FltSub:
-+                    mangledName = "__subsf3";
-+                    break;
-+                case ReadyToRunHelper.FltMul:
-+                    mangledName = "__mulsf3";
-+                    break;
-+                case ReadyToRunHelper.FltDiv:
-+                    mangledName = "__divsf3";
-+                    break;
-+                case ReadyToRunHelper.DblAdd:
-+                    mangledName = "__adddf3";
-+                    break;
-+                case ReadyToRunHelper.DblSub:
-+                    mangledName = "__subdf3";
-+                    break;
-+                case ReadyToRunHelper.DblMul:
-+                    mangledName = "__muldf3";
-+                    break;
-+                case ReadyToRunHelper.DblDiv:
-+                    mangledName = "__divdf3";
-+                    break;
-+                case ReadyToRunHelper.FltCmpEq:
-+                    mangledName = "__eqsf2";
-+                    break;
-+                case ReadyToRunHelper.FltCmpLt:
-+                    mangledName = "__ltsf2";
-+                    break;
-+                case ReadyToRunHelper.FltCmpLe:
-+                    mangledName = "__lesf2";
-+                    break;
-+                case ReadyToRunHelper.FltCmpGt:
-+                    mangledName = "__gtsf2";
-+                    break;
-+                case ReadyToRunHelper.FltCmpGe:
-+                    mangledName = "__gesf2";
-+                    break;
-+                case ReadyToRunHelper.DblCmpEq:
-+                    mangledName = "__eqdf2";
-+                    break;
-+                case ReadyToRunHelper.DblCmpLt:
-+                    mangledName = "__ltdf2";
-+                    break;
-+                case ReadyToRunHelper.DblCmpLe:
-+                    mangledName = "__ledf2";
-+                    break;
-+                case ReadyToRunHelper.DblCmpGt:
-+                    mangledName = "__gtdf2";
-+                    break;
-+                case ReadyToRunHelper.DblCmpGe:
-+                    mangledName = "__gedf2";
-+                    break;
-+                case ReadyToRunHelper.Flt2Dbl:
-+                    mangledName = "__extendsfdf2";
-+                    break;
-+                case ReadyToRunHelper.Dbl2Flt:
-+                    mangledName = "__truncdfsf2";
-+                    break;
-+
-                 case ReadyToRunHelper.LMul:
-                     mangledName = "RhpLMul";
-                     break;
