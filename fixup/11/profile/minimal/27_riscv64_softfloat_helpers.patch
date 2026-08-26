@@ -191,16 +191,16 @@ diff --git a/src/coreclr/jit/valuenumfuncs.h b/src/coreclr/jit/valuenumfuncs.h
 diff --git a/src/coreclr/tools/Common/CommandLineHelpers.cs b/src/coreclr/tools/Common/CommandLineHelpers.cs
 --- a/src/coreclr/tools/Common/CommandLineHelpers.cs
 +++ b/src/coreclr/tools/Common/CommandLineHelpers.cs
-@@ -26,7 +26,7 @@ internal static partial class Helpers
-         public const string DefaultSystemModule = "System.Private.CoreLib";
+@@ -27,6 +27,8 @@ internal static partial class Helpers
  
          public static string[] ValidOS { get; } = ["windows", "linux", "freebsd", "openbsd", "osx", "maccatalyst", "ios", "iossimulator", "tvos", "tvossimulator", "android", "browser", "wasi"];
--        public static string[] ValidArchitectures { get; } = ["arm", "armel", "arm64", "x86", "x64", "riscv64", "loongarch64", "wasm"];
-+        public static string[] ValidArchitectures { get; } = ["arm", "armel", "arm64", "x86", "x64", "riscv64", "riscv64-lp64", "loongarch64", "wasm"];
+         public static string[] ValidArchitectures { get; } = ["arm", "armel", "arm64", "x86", "x64", "riscv64", "loongarch64", "wasm"];
++        // Targets that only the NativeAOT compiler supports (no ReadyToRun): the RISC-V lp64 soft-float ABI.
++        public static string[] ValidArchitecturesNativeAot { get; } = [.. ValidArchitectures, "riscv64-lp64"];
  
          public static Dictionary<string, string> BuildPathDictionary(IReadOnlyList<Token> tokens, bool strict)
          {
-@@ -119,7 +119,7 @@ public static TargetArchitecture GetTargetArchitecture(string token)
+@@ -119,7 +121,7 @@ public static TargetArchitecture GetTargetArchitecture(string token)
                      "arm64" => TargetArchitecture.ARM64,
                      "wasm" => TargetArchitecture.Wasm32,
                      "loongarch64" => TargetArchitecture.LoongArch64,
@@ -209,7 +209,7 @@ diff --git a/src/coreclr/tools/Common/CommandLineHelpers.cs b/src/coreclr/tools/
                      _ => throw new CommandLineException($"Target architecture '{token}' is not supported")
                  };
              }
-@@ -136,6 +136,7 @@ public static (TargetArchitecture, TargetOS, TargetAbi) GetTargetSpec(string tar
+@@ -136,6 +138,7 @@ public static (TargetArchitecture, TargetOS, TargetAbi) GetTargetSpec(string tar
              {
                  (_, "armel") => TargetAbi.NativeAotArmel,
                  ("android", "arm") => TargetAbi.NativeAotArmel,
@@ -264,7 +264,7 @@ diff --git a/src/coreclr/tools/Common/InstructionSetHelpers.cs b/src/coreclr/too
      {
          public static InstructionSetSupport ConfigureInstructionSetSupport(string instructionSet, int maxVectorTBitWidth, bool isVectorTOptimistic, TargetArchitecture targetArchitecture, TargetOS targetOS,
 -            string mustNotBeMessage, string invalidImplicationMessage, Logger logger, bool allowOptimistic, bool isReadyToRun)
-+            string mustNotBeMessage, string invalidImplicationMessage, Logger logger, bool allowOptimistic, bool isReadyToRun, TargetAbi targetAbi = TargetAbi.NativeAot)
++            string mustNotBeMessage, string invalidImplicationMessage, Logger logger, bool allowOptimistic, bool isReadyToRun, TargetAbi targetAbi)
          {
              InstructionSetSupportBuilder instructionSetSupportBuilder = new(targetArchitecture);
  
@@ -526,6 +526,27 @@ diff --git a/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.Ry
  
                  case CorInfoHelpFunc.CORINFO_HELP_JIT_PINVOKE_BEGIN:
                      id = ReadyToRunHelper.PInvokeBegin;
+diff --git a/src/coreclr/tools/aot/ILCompiler/ILCompilerRootCommand.cs b/src/coreclr/tools/aot/ILCompiler/ILCompilerRootCommand.cs
+--- a/src/coreclr/tools/aot/ILCompiler/ILCompilerRootCommand.cs
++++ b/src/coreclr/tools/aot/ILCompiler/ILCompilerRootCommand.cs
+@@ -352,7 +352,7 @@ public static void PrintExtendedHelp(ParseResult _)
+ 
+             Console.WriteLine("Valid switches for {0} are: '{1}'. The default value is '{2}'\n", "--targetos", string.Join("', '", Helpers.ValidOS), Helpers.GetTargetOS(null).ToString().ToLowerInvariant());
+ 
+-            Console.WriteLine(string.Format("Valid switches for {0} are: '{1}'. The default value is '{2}'\n", "--targetarch", string.Join("', '", Helpers.ValidArchitectures), Helpers.GetTargetArchitecture(null).ToString().ToLowerInvariant()));
++            Console.WriteLine(string.Format("Valid switches for {0} are: '{1}'. The default value is '{2}'\n", "--targetarch", string.Join("', '", Helpers.ValidArchitecturesNativeAot), Helpers.GetTargetArchitecture(null).ToString().ToLowerInvariant()));
+ 
+             Console.WriteLine("The allowable values for the --instruction-set option are described in the table below. Each architecture has a different set of valid " +
+                 "instruction sets, and multiple instruction sets may be specified by separating the instructions sets by a ','. By default other instruction sets not " +
+@@ -360,7 +360,7 @@ public static void PrintExtendedHelp(ParseResult _)
+                 "All such light-up can be disallowed by specifying '-optimistic'. The instruction sets supported by the machine invoking the tool can be targeted by " +
+                 "specifying 'native'. For example 'native', 'avx,aes', 'avx,aes,-avx2', or 'avx,aes,-optimistic'");
+ 
+-            foreach (string arch in Helpers.ValidArchitectures)
++            foreach (string arch in Helpers.ValidArchitecturesNativeAot)
+             {
+                 TargetArchitecture targetArch = Helpers.GetTargetArchitecture(arch);
+                 bool first = true;
 diff --git a/src/coreclr/tools/aot/ILCompiler/Program.cs b/src/coreclr/tools/aot/ILCompiler/Program.cs
 --- a/src/coreclr/tools/aot/ILCompiler/Program.cs
 +++ b/src/coreclr/tools/aot/ILCompiler/Program.cs
@@ -539,3 +560,28 @@ diff --git a/src/coreclr/tools/aot/ILCompiler/Program.cs b/src/coreclr/tools/aot
  
              string systemModuleName = Get(_command.SystemModuleName);
              string reflectionData = Get(_command.ReflectionData);
+diff --git a/src/coreclr/tools/aot/crossgen2/Program.cs b/src/coreclr/tools/aot/crossgen2/Program.cs
+--- a/src/coreclr/tools/aot/crossgen2/Program.cs
++++ b/src/coreclr/tools/aot/crossgen2/Program.cs
+@@ -85,6 +85,11 @@ public int Run()
+ 
+             (TargetArchitecture targetArchitecture, TargetOS targetOS, TargetAbi targetAbi) =
+                 Helpers.GetTargetSpec(Get(_command.TargetArchitecture), Get(_command.TargetOS));
++            if (targetAbi == TargetAbi.NativeAotRiscV64SoftFloat)
++            {
++                // The soft-float helpers have no ReadyToRun encoding; the target is NativeAOT only.
++                throw new CommandLineException($"Target architecture '{Get(_command.TargetArchitecture)}' is not supported by ReadyToRun");
++            }
+             bool allowOptimistic = _command.OptimizationMode != OptimizationMode.PreferSize;
+ 
+             if (targetOS is TargetOS.iOS or TargetOS.tvOS or TargetOS.iOSSimulator or TargetOS.tvOSSimulator or TargetOS.MacCatalyst or TargetOS.Browser or TargetOS.Wasi)
+@@ -98,7 +103,8 @@ public int Run()
+             InstructionSetSupport instructionSetSupport = Helpers.ConfigureInstructionSetSupport(Get(_command.InstructionSet), Get(_command.MaxVectorTBitWidth), isVectorTOptimistic, targetArchitecture, targetOS,
+                 SR.InstructionSetMustNotBe, SR.InstructionSetInvalidImplication, logger,
+                 allowOptimistic: allowOptimistic,
+-                isReadyToRun: true);
++                isReadyToRun: true,
++                targetAbi: targetAbi);
+             SharedGenericsMode genericsMode = SharedGenericsMode.CanonicalReferenceTypes;
+             var targetDetails = new TargetDetails(targetArchitecture, targetOS, targetAbi, instructionSetSupport.GetVectorTSimdVector());
+ 
