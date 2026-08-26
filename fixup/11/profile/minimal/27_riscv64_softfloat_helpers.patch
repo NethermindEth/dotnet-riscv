@@ -230,17 +230,60 @@ diff --git a/src/coreclr/tools/Common/Compiler/ObjectWriter/ElfObjectWriter.cs b
  
              // By convention the symbol table starts with empty symbol
              _symbols.Add(new ElfSymbol {});
-@@ -765,7 +766,9 @@ private void EmitObjectFile<TSize>(Stream outputFileStream)
+@@ -765,7 +766,11 @@ private void EmitObjectFile<TSize>(Stream outputFileStream)
                  {
                      EM_ARM => 0x05000000u, // For ARM32 claim conformance with the EABI specification
                      EM_LOONGARCH => 0x43u, // For LoongArch ELF psABI specify the ABI version (1) and modifiers (64-bit GPRs, 64-bit FPRs)
 -                    EM_RISCV => 0x0005u, // EF_RISCV_RVC (RVC ABI) | EF_RISCV_FLOAT_ABI_DOUBLE (double precision floating-point ABI).
-+                    // EF_RISCV_RVC (RVC ABI) | EF_RISCV_FLOAT_ABI_DOUBLE (double precision floating-point ABI),
-+                    // or EF_RISCV_FLOAT_ABI_SOFT (0) for the lp64 ABI; the linker rejects objects with mixed FP ABIs.
-+                    EM_RISCV => _useSoftFPAbi ? 0x0001u : 0x0005u,
++                    // EF_RISCV_RVC (0x1) when the target has the C extension, and the floating-point ABI:
++                    // EF_RISCV_FLOAT_ABI_DOUBLE (0x4) for lp64d or EF_RISCV_FLOAT_ABI_SOFT (0) for lp64.
++                    // The linker rejects objects with mixed floating-point ABIs.
++                    EM_RISCV => (_options.HasFlag(ObjectWritingOptions.RiscV64Compressed) ? 0x0001u : 0u) |
++                                (_useSoftFPAbi ? 0u : 0x0004u),
                      _ => 0u
                  },
              };
+diff --git a/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWritingOptions.cs b/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWritingOptions.cs
+--- a/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWritingOptions.cs
++++ b/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWritingOptions.cs
+@@ -13,5 +13,9 @@ public enum ObjectWritingOptions
+         ControlFlowGuard = 0x02,
+         UseDwarf5 = 0x4,
+         GenerateUnwindInfo = 0x8,
++        /// <summary>
++        /// RISC-V: the target supports the C (compressed instructions) extension
++        /// </summary>
++        RiscV64Compressed = 0x10,
+     }
+ }
+diff --git a/src/coreclr/tools/Common/InstructionSetHelpers.cs b/src/coreclr/tools/Common/InstructionSetHelpers.cs
+--- a/src/coreclr/tools/Common/InstructionSetHelpers.cs
++++ b/src/coreclr/tools/Common/InstructionSetHelpers.cs
+@@ -17,7 +17,7 @@ namespace System.CommandLine
+     internal static partial class Helpers
+     {
+         public static InstructionSetSupport ConfigureInstructionSetSupport(string instructionSet, int maxVectorTBitWidth, bool isVectorTOptimistic, TargetArchitecture targetArchitecture, TargetOS targetOS,
+-            string mustNotBeMessage, string invalidImplicationMessage, Logger logger, bool allowOptimistic, bool isReadyToRun)
++            string mustNotBeMessage, string invalidImplicationMessage, Logger logger, bool allowOptimistic, bool isReadyToRun, TargetAbi targetAbi = TargetAbi.NativeAot)
+         {
+             InstructionSetSupportBuilder instructionSetSupportBuilder = new(targetArchitecture);
+ 
+@@ -103,9 +103,13 @@ public static InstructionSetSupport ConfigureInstructionSetSupport(string instru
+             {
+                 // The rv64gc baseline: D implies F, so "d", "c" and "a" cover
+                 // the G+C extensions. Reduced-ISA targets (e.g. zkVM guests)
+-                // opt out with --instruction-set=-a,-c,-d,-f.
++                // opt out with --instruction-set=-a,-c,-d,-f. The lp64 (soft-float)
++                // ABI target has no F/D by definition.
+                 instructionSetSupportBuilder.AddSupportedInstructionSet("base");
+-                instructionSetSupportBuilder.AddSupportedInstructionSet("d");
++                if (targetAbi != TargetAbi.NativeAotRiscV64SoftFloat)
++                {
++                    instructionSetSupportBuilder.AddSupportedInstructionSet("d");
++                }
+                 instructionSetSupportBuilder.AddSupportedInstructionSet("c");
+                 instructionSetSupportBuilder.AddSupportedInstructionSet("a");
+             }
 diff --git a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs
 --- a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs
 +++ b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs
@@ -393,25 +436,44 @@ diff --git a/src/coreclr/tools/aot/ILCompiler.Diagnostics/PerfMapWriter.cs b/src
 diff --git a/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs b/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs
 --- a/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs
-@@ -54,6 +54,18 @@ internal RyuJitCompilation(
+@@ -54,6 +54,26 @@ internal RyuJitCompilation(
              _compilationOptions = options;
              InstructionSetSupport = instructionSetSupport;
  
-+            if ((nodeFactory.Target.Architecture == TargetArchitecture.RiscV64)
-+                && (nodeFactory.Target.Abi != TargetAbi.NativeAotRiscV64SoftFloat)
-+                && (!instructionSetSupport.IsInstructionSetSupported(InstructionSet.RiscV64_F)
-+                    || !instructionSetSupport.IsInstructionSetSupported(InstructionSet.RiscV64_D)))
++            if (nodeFactory.Target.Architecture == TargetArchitecture.RiscV64)
 +            {
 +                // The ABI is a property of the target, not of the instruction set: opting out of
-+                // F/D does not make the runtime and the native libraries lp64. The lp64f ABI
-+                // (F without D) is not supported either.
-+                throw new NotSupportedException(
-+                    "The riscv64 lp64d ABI requires the F and D extensions; targets without them must use the riscv64-lp64 (soft-float) ABI.");
++                // F/D does not make the runtime and the native libraries lp64, and the lp64
++                // target has no F/D by definition. The lp64f ABI (F without D) is not supported.
++                bool hasF = instructionSetSupport.IsInstructionSetSupported(InstructionSet.RiscV64_F);
++                bool hasD = instructionSetSupport.IsInstructionSetSupported(InstructionSet.RiscV64_D);
++                if (nodeFactory.Target.Abi == TargetAbi.NativeAotRiscV64SoftFloat)
++                {
++                    if (hasF || hasD)
++                        throw new NotSupportedException(
++                            "The riscv64-lp64 (soft-float) ABI target has no F and D extensions; remove them from the instruction set.");
++                }
++                else if (!hasF || !hasD)
++                {
++                    throw new NotSupportedException(
++                        "The riscv64 lp64d ABI requires the F and D extensions; targets without them must use the riscv64-lp64 (soft-float) ABI.");
++                }
 +            }
 +
              _profileDataManager = profileDataManager;
  
              _methodImportationErrorProvider = errorProvider;
+@@ -116,6 +136,10 @@ protected override void CompileInternal(string outputFile, ObjectDumper dumper)
+             if ((_compilationOptions & RyuJitCompilationOptions.ControlFlowGuardAnnotations) != 0)
+                 options |= ObjectWritingOptions.ControlFlowGuard;
+ 
++            if ((NodeFactory.Target.Architecture == TargetArchitecture.RiscV64)
++                && InstructionSetSupport.IsInstructionSetSupported(InstructionSet.RiscV64_C))
++                options |= ObjectWritingOptions.RiscV64Compressed;
++
+             ObjectWriter.ObjectWriter.EmitObject(outputFile, nodes, NodeFactory, options, dumper, _logger);
+         }
+ 
 diff --git a/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs b/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs
 --- a/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs
@@ -464,3 +526,16 @@ diff --git a/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.Ry
  
                  case CorInfoHelpFunc.CORINFO_HELP_JIT_PINVOKE_BEGIN:
                      id = ReadyToRunHelper.PInvokeBegin;
+diff --git a/src/coreclr/tools/aot/ILCompiler/Program.cs b/src/coreclr/tools/aot/ILCompiler/Program.cs
+--- a/src/coreclr/tools/aot/ILCompiler/Program.cs
++++ b/src/coreclr/tools/aot/ILCompiler/Program.cs
+@@ -109,7 +109,8 @@ public int Run()
+             InstructionSetSupport instructionSetSupport = Helpers.ConfigureInstructionSetSupport(Get(_command.InstructionSet), Get(_command.MaxVectorTBitWidth), isVectorTOptimistic, targetArchitecture, targetOS,
+                 "Unrecognized instruction set {0}", "Unsupported combination of instruction sets: {0}/{1}", logger,
+                 allowOptimistic: _command.OptimizationMode != OptimizationMode.PreferSize,
+-                isReadyToRun: false);
++                isReadyToRun: false,
++                targetAbi: targetAbi);
+ 
+             string systemModuleName = Get(_command.SystemModuleName);
+             string reflectionData = Get(_command.ReflectionData);
