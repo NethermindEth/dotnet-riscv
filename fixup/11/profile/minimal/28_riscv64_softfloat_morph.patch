@@ -60,7 +60,7 @@ diff --git a/src/coreclr/jit/compiler.cpp b/src/coreclr/jit/compiler.cpp
  
  /*****************************************************************************
   *
-@@ -3009,10 +3012,25 @@ void Compiler::compInitOptions(JitFlags* jitFlags)
+@@ -3009,10 +3012,50 @@ void Compiler::compInitOptions(JitFlags* jitFlags)
  
      GlobalJitOptions::compFeatureHfa = !opts.compUseSoftFP;
  #elif defined(TARGET_RISCV64)
@@ -74,17 +74,42 @@ diff --git a/src/coreclr/jit/compiler.cpp b/src/coreclr/jit/compiler.cpp
 +    // class of a type is a process-wide table, so the setting cannot change
 +    // during the lifetime of the process.
      opts.compUseSoftFP = jitFlags->IsSet(JitFlags::JIT_FLAG_SOFTFP_ABI);
-+    if (opts.compUseSoftFP)
++
++    // The first compilation of the process fixes the mode: it claims the
++    // configuration, initializes the table and then publishes the mode. Every
++    // other compilation waits for the publication and must request the same
++    // mode, so the table is never written while another compilation may read it.
++    enum SoftFPConfig : LONG
 +    {
-+        varTypeRegister[TYP_FLOAT]  = VTR_INT;
-+        varTypeRegister[TYP_DOUBLE] = VTR_INT;
++        SoftFPConfigUnset        = 0,
++        SoftFPConfigHard         = 1,
++        SoftFPConfigSoft         = 2,
++        SoftFPConfigInitializing = 3,
++    };
++    const LONG softFPConfig    = opts.compUseSoftFP ? SoftFPConfigSoft : SoftFPConfigHard;
++    LONG       oldSoftFPConfig = InterlockedCompareExchange(&GlobalJitOptions::compUseSoftFPConfigured,
++                                                            SoftFPConfigInitializing, SoftFPConfigUnset);
++    if (oldSoftFPConfig == SoftFPConfigUnset)
++    {
++        if (opts.compUseSoftFP)
++        {
++            varTypeRegister[TYP_FLOAT]  = VTR_INT;
++            varTypeRegister[TYP_DOUBLE] = VTR_INT;
++        }
++        InterlockedExchange(&GlobalJitOptions::compUseSoftFPConfigured, softFPConfig);
 +    }
-+    unsigned int softFPConfig    = opts.compUseSoftFP ? 2 : 1;
-+    unsigned int oldSoftFPConfig =
-+        InterlockedCompareExchange(&GlobalJitOptions::compUseSoftFPConfigured, softFPConfig, 0);
-+    if ((oldSoftFPConfig != softFPConfig) && (oldSoftFPConfig != 0))
++    else
 +    {
-+        NO_WAY("SoftFP setting changed during lifetime of process");
++        while (oldSoftFPConfig == SoftFPConfigInitializing)
++        {
++            // Atomic read; the initialization window is two byte stores long.
++            oldSoftFPConfig = InterlockedCompareExchange(&GlobalJitOptions::compUseSoftFPConfigured,
++                                                         SoftFPConfigUnset, SoftFPConfigUnset);
++        }
++        if (oldSoftFPConfig != softFPConfig)
++        {
++            NO_WAY("SoftFP setting changed during lifetime of process");
++        }
 +    }
  #elif defined(ARM_SOFTFP) && defined(TARGET_ARM)
      // Armel is unconditionally enabled in the JIT. Verify that the VM side agrees.
@@ -203,13 +228,14 @@ diff --git a/src/coreclr/jit/instr.cpp b/src/coreclr/jit/instr.cpp
 diff --git a/src/coreclr/jit/jit.h b/src/coreclr/jit/jit.h
 --- a/src/coreclr/jit/jit.h
 +++ b/src/coreclr/jit/jit.h
-@@ -476,6 +476,11 @@ public:
+@@ -476,6 +476,12 @@ public:
  #else  // !FEATURE_HFA
      static const bool compFeatureHfa = false;
  #endif // FEATURE_HFA
 +#ifdef TARGET_RISCV64
 +    // Soft-float changes the register class of TYP_FLOAT/TYP_DOUBLE (varTypeRegister),
-+    // which is a process-wide table: 0 = not configured yet, 1 = hard-float, 2 = soft-float.
++    // which is a process-wide table; the mode is fixed by the first compilation
++    // (see compInitOptions for the states).
 +    static LONG compUseSoftFPConfigured;
 +#endif // TARGET_RISCV64
  
