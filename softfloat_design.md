@@ -269,3 +269,14 @@ long, uint — zero-extend, что точно в знаковом хелпере
    qemu-user (ожидается exit 100), проверяет `e_flags` (soft float ABI, без
    RVC) и гейты `--error-on-float-binary/-compressed/-atomic`. CLI-тест
    отказа crossgen2 и object-header-тест — по-прежнему не написаны.
+
+### Самопроверка после седьмого ревью (2026-08-26)
+
+9. **Опускание на месте ломало маленькие узлы.** `USE_HELPER_FOR_ARITH` и
+   `fgMorphCastIntoHelper` делают `ChangeOper(GT_CALL)` на исходном узле, а
+   importer выделяет «большие» узлы только для `mul/div/rem` и `conv`
+   (`callNode`); `add`/`sub` и `impImplicitR4orR8Cast` — маленькие. В Checked
+   это assert `GTF_DEBUG_NODE_LARGE`, в Release — запись за пределы узла.
+   Теперь `fgMorphSoftFloatArith`/`fgMorphSoftFloatCast` строят новый
+   call-узел (со сворачиванием констант как у оригиналов); операнды разной
+   ширины (на IL-стеке один тип F) приводятся к типу узла.
