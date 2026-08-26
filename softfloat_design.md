@@ -280,3 +280,11 @@ long, uint — zero-extend, что точно в знаковом хелпере
    Теперь `fgMorphSoftFloatArith`/`fgMorphSoftFloatCast` строят новый
    call-узел (со сворачиванием констант как у оригиналов); операнды разной
    ширины (на IL-стеке один тип F) приводятся к типу узла.
+
+Отложено до валидации (CQ, не корректность): пометить 14 чистых хелперов
+`isNoGC` в `HelperCallProperties` по прецеденту `CORINFO_HELP_LLSH` — это leaf
+C-функции compiler-rt, GC-переход на вызове не нужен.
+
+libm: rootfs с коммита `36bc08b` собирает musl под rv64im, и `musl/libc.a`
+в пакете SDK имеет `e_flags=0x0` у всех членов — libm (sqrt/floor/…)
+soft-float; отдельный «soft-float libm» больше не нужен.
