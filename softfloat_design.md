@@ -37,11 +37,18 @@ ABI-патч: 26–28 — одна неделимая серия (26 инерт�
 выставляет флаг).
 
 Флаг по умолчанию не выставлен → патч инертен для текущих сборок.
-Кто выставляет: ilc (патч 27, `CorInfoImpl` jit flags) — при отсутствии
-`f` **или** `d` в instruction sets таргета (см. патчи 16/17). Поддерживаются
-только два ABI: lp64d (F и D) и полностью soft lp64; конфигурация «F без D»
-(lp64f) не поддерживается и компилируется как soft-float целиком — иначе JIT
-продолжал бы эмитить D-инструкции для `double`.
+Кто выставляет: ilc (патч 27, `CorInfoImpl` jit flags) — по **явному ABI
+таргета** `TargetAbi.NativeAotRiscV64SoftFloat` (прецедент —
+`TargetAbi.NativeAotArmel`; CLI-токен `--targetarch riscv64-lp64`, имя
+предварительное до design-issue). ABI — свойство таргета, а не вывод из
+instruction sets: `--instruction-set=-f,-d` описывает допустимые инструкции,
+но не делает runtime/libm/compiler-rt lp64. От того же признака ilc пишет
+`EF_RISCV_FLOAT_ABI_SOFT` в `e_flags` объектов (`ElfObjectWriter` раньше
+ставил `FLOAT_ABI_DOUBLE` безусловно, и bflat правил заголовок вручную) —
+lld отказывается линковать объекты с разным float-ABI. Валидация в
+`RyuJitCompilation`: lp64d без F или D — ошибка «unsupported configuration»
+(lp64f не поддерживается). bflat выбирает ABI, когда у zisk-таргета нет F
+или D (рефлексивно, чтобы собираться и со старыми пакетами).
 
 ## Слой 2 — FP-значения в целочисленных регистрах (патч 28)
 
@@ -195,7 +202,13 @@ long, uint — zero-extend, что точно в знаковом хелпере
    (`InterlockedExchange`); остальные ждут публикации и обязаны запросить тот
    же режим (`NO_WAY` иначе). Таблица никогда не пишется, пока другая
    компиляция может её читать.
-3. **F без D.** ilc включает soft-float при `!F || !D`; lp64f не поддерживается.
+3. **F без D / ABI по ISA-флагам** (повторное ревью: выводить ABI из ISA
+   нельзя в принципе — ABI нативных объектов от этого не меняется). Введён
+   явный `TargetAbi.NativeAotRiscV64SoftFloat` по образцу armel: от него
+   JIT-флаг, ELF `e_flags` и валидация «lp64d требует F и D» в
+   `RyuJitCompilation`; bflat передаёт ABI (коммит `0800a39` в
+   feature/softfloat-riscv64). Открытый пункт для апстрима: `PerfMapAbiToken`
+   для нового ABI сейчас маппится в `Default`.
 4. **`git diff --check` на патч-файлах.** Ложные срабатывания: контекстная
    пустая строка в unified diff — это строка из одного пробела, `--check`
    видит её как trailing whitespace в *файле патча*. Так выглядят все патчи
