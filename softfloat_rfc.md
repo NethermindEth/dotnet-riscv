@@ -36,8 +36,8 @@ compiler: the ABI and the JIT's register-class model are not pluggable.
   precedent), not a lowered default. Hard-float targets without F or D are
   rejected with a diagnostic rather than silently accommodated.
 * **No claim of general-purpose support.** NativeAOT only; no CoreCLR VM
-  support (the VM never selects the ABI), no crossgen2/ReadyToRun, no
-  interpreter. The runtime helpers table carries `NULL` entries for the new
+  support (the VM never selects the ABI), no crossgen2/ReadyToRun (crossgen2
+  rejects the target on the command line), no interpreter. The runtime helpers table carries `NULL` entries for the new
   helpers on the VM side, the way the 64-bit VM does for `CORINFO_HELP_LLSH`.
 
 ## Design
@@ -119,9 +119,12 @@ Size: ~450 lines in the JIT, all under `#ifdef TARGET_RISCV64` and
   valid on every target; on a soft-float image it exercises the real
   compiler-rt helpers.
 * A soft-float NativeAOT image runs on any rv64gc machine (the builtins are
-  integer code), so the existing riscv64 test infrastructure can run the
-  suite with `--targetarch riscv64-lp64 --instruction-set=-a,-c` without
-  special hardware.
+  integer code). Running the suite that way needs an lp64 sysroot (runtime,
+  libc and compiler-rt built with `-mabi=lp64`), which upstream CI does not
+  have; today that leg runs downstream (the test above is compiled with the
+  soft-float ABI and executed on rv64gc under qemu-user, with the ELF float
+  ABI/RVC flags and the absence of F/D opcodes checked). In upstream CI the
+  test is a portability baseline, not coverage of the soft path.
 * Downstream: 19 generated tests (7k assertions, goldens from an independent
   implementation) and the Ethereum stateless-execution guest validated
   byte-for-byte against the execution-spec fixtures on the zkVM emulator.

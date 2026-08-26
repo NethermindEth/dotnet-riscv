@@ -251,3 +251,21 @@ long, uint — zero-extend, что точно в знаковом хелпере
   опубликованы.
 * Вне серии: `A` (атомики) — свойство таргета, вопрос вынесен в RFC; libm —
   ответственность toolchain'а (soft-float musl), как и сегодняшний `fmod`.
+
+### Пятое ревью
+
+7. **crossgen2 принимал `riscv64-lp64`.** Токен вынесен в
+   `ValidArchitecturesNativeAot` (только ilc); crossgen2 отклоняет ABI сразу
+   после `GetTargetSpec` (`CommandLineException`); параметр `targetAbi` у
+   `ConfigureInstructionSetSupport` обязателен — новый caller не потеряет ABI
+   молча.
+8. **Патч 29 в обычном CI идёт hard-float.** Так и есть: upstream-CI не имеет
+   lp64-сисрута (runtime, libc, compiler-rt под `-mabi=lp64`), без него
+   soft-образ не слинковать — это ровно тот downstream-слой, который не
+   предлагается в апстрим. Поэтому тест позиционируется как portability
+   baseline + семантическая спецификация; soft-path regression автоматизирован
+   в этом репозитории: `run_x15.sh` на zk-testing NativeAOT-компилирует тот же
+   `SoftFloat.cs` bflat'ом с soft ABI (`zisk_sim`), исполняет на rv64gc под
+   qemu-user (ожидается exit 100), проверяет `e_flags` (soft float ABI, без
+   RVC) и гейты `--error-on-float-binary/-compressed/-atomic`. CLI-тест
+   отказа crossgen2 и object-header-тест — по-прежнему не написаны.
