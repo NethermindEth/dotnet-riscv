@@ -179,7 +179,8 @@ long, uint — zero-extend, что точно в знаковом хелпере
 | 18 | FP-ассерт эмиттера | сделан |
 | 26 | soft ABI + `SOFTFP_ABI` на riscv64 | сделан, build-verified |
 | 27 | 14 хелперов + ilc-маппинг + SOFTFP-триггер | переписан 2026-08-26, build-verified (Checked cross JIT) |
-| 28 | FP в GPR через `varTypeRegister` + опускание в morph | переписан 2026-08-26, build-verified; CI run 33013230105 (v11.0.0.x15-sf) |
+| 28 | FP в GPR через `varTypeRegister` + опускание в morph | переписан 2026-08-26, build-verified; CI v11.0.0.x15-sf |
+| 29 | `src/tests/JIT/Directed/softfloat` — бит-точный тест (исполняется на любом таргете) | добавлен 2026-08-26 |
 | bflat | riscv64-бейзлайн + `-c,-a,-f,-d` для zisk | сделан |
 
 Порядок подачи в апстрим: (1) instruction sets F/D/C/A, (2) 26–28 одной
@@ -233,3 +234,20 @@ long, uint — zero-extend, что точно в знаковом хелпере
 Не сделано (для апстрима): CLI-тест итогового `InstructionSetSupport` для
 `--targetarch riscv64-lp64` и object-header-тест `{lp64, lp64d} × {C, no-C}`;
 `PerfMapAbiToken` для нового ABI.
+
+## Остаточные замечания из dotnet/runtime#132204 (2026-08-26)
+
+* `MathHelpers.cpp`: убрано `HOST_RISCV64`-ветвление — явная saturating-форма
+  теперь безусловна (семантический no-op для arm64/loongarch, где cast и так
+  насыщал), 64-битный экспорт `RhpLng2Dbl` & co остаётся под
+  `!HOST_64BIT || HOST_RISCV64`. Это снимает «ifdef-путь для такой платформы»
+  из возражений tannergooding.
+* Патч 29 — тест в `src/tests/JIT/Directed/softfloat` (арифметика, NaN,
+  unordered-ветки, насыщающие и checked-конверсии всех ширин, float↔double,
+  neg, rem, вызовы, sign-extension битов float). `ckfinite` из C# не
+  эмитится — покрыт только downstream-тестами.
+* Черновики: `softfloat_rfc.md` (design-issue для dotnet/runtime) и
+  `softfloat_pr132204_replies.md` (ответы am11 / tannergooding). Не
+  опубликованы.
+* Вне серии: `A` (атомики) — свойство таргета, вопрос вынесен в RFC; libm —
+  ответственность toolchain'а (soft-float musl), как и сегодняшний `fmod`.
