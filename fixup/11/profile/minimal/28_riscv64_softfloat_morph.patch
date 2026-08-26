@@ -728,3 +728,43 @@ diff --git a/src/coreclr/jit/vartype.h b/src/coreclr/jit/vartype.h
  
  // make any class with a TypeGet member also have a function TypeGet() that does the same thing
  template <class T>
+diff --git a/src/coreclr/nativeaot/Runtime/MathHelpers.cpp b/src/coreclr/nativeaot/Runtime/MathHelpers.cpp
+--- a/src/coreclr/nativeaot/Runtime/MathHelpers.cpp
++++ b/src/coreclr/nativeaot/Runtime/MathHelpers.cpp
+@@ -11,7 +11,10 @@
+ 
+ FCIMPL1_D(uint64_t, RhpDbl2ULng, double val)
+ {
+-#if defined(HOST_X86) || defined(HOST_AMD64)
++#if defined(HOST_X86) || defined(HOST_AMD64) || defined(HOST_RISCV64)
++    // On soft-float RISC-V the raw C cast lowers to __fixunsdfdi, which does
++    // not implement the .NET saturating semantics (NaN/negative -> 0), so the
++    // explicit form is required there as well.
+     const double uint64_max_plus_1 = 4294967296.0 * 4294967296.0;
+     return (val > 0) ? ((val >= uint64_max_plus_1) ? UINT64_MAX : (uint64_t)val) : 0;
+ #else
+@@ -22,7 +25,9 @@ FCIMPLEND
+ 
+ FCIMPL1_D(int64_t, RhpDbl2Lng, double val)
+ {
+-#if defined(HOST_X86) || defined(HOST_AMD64) || defined(HOST_ARM)
++#if defined(HOST_X86) || defined(HOST_AMD64) || defined(HOST_ARM) || defined(HOST_RISCV64)
++    // See RhpDbl2ULng: __fixdfdi does not give the .NET NaN/saturation
++    // semantics on soft-float RISC-V.
+     const double int64_min = -2147483648.0 * 4294967296.0;
+     const double int64_max = 2147483648.0 * 4294967296.0;
+     return (val != val) ? 0 : (val <= int64_min) ? INT64_MIN : (val >= int64_max) ? INT64_MAX : (int64_t)val;
+@@ -61,6 +66,13 @@ FCIMPL2_LL(uint64_t, ModUInt64Internal, uint64_t i, uint64_t j)
+ }
+ FCIMPLEND
+ 
++#endif
++
++// The int64 -> floating point conversion helpers are used by 32-bit targets
++// and by the soft-float RISC-V configuration, where the JIT cannot emit the
++// conversion inline.
++#if !defined(HOST_64BIT) || defined(HOST_RISCV64)
++
+ FCIMPL1_L(double, RhpLng2Dbl, int64_t val)
+ {
+     return (double)val;
