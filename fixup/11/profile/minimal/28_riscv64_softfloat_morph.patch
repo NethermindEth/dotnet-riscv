@@ -117,13 +117,14 @@ diff --git a/src/coreclr/jit/compiler.cpp b/src/coreclr/jit/compiler.cpp
 diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
 --- a/src/coreclr/jit/compiler.h
 +++ b/src/coreclr/jit/compiler.h
-@@ -7205,6 +7205,14 @@ private:
+@@ -7205,6 +7205,15 @@ private:
      bool fgIsBlockCold(BasicBlock* block);
  
      GenTree* fgMorphCastIntoHelper(GenTree* tree, int helper, GenTree* oper);
 +#ifdef TARGET_RISCV64
 +    // Soft-float expansion of the FP operations into helper calls
-+    CorInfoHelpFunc fgGetSoftFloatArithHelper(genTreeOps oper, var_types type);
++    GenTree*        fgMorphSoftFloatArith(GenTreeOp* tree);
++    GenTree*        fgMorphSoftFloatCast(GenTreeCast* tree, CorInfoHelpFunc helper, GenTree* oper);
 +    GenTree*        fgMorphSoftFloatNeg(GenTreeOp* neg);
 +    GenTree*        fgMorphSoftFloatRelop(GenTreeOp* relop);
 +    GenTree*        fgMorphSoftFloatCkFinite(GenTreeOp* ckFinite);
@@ -297,7 +298,7 @@ diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
 diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
 --- a/src/coreclr/jit/morph.cpp
 +++ b/src/coreclr/jit/morph.cpp
-@@ -253,6 +253,259 @@ GenTree* Compiler::fgMorphIntoHelperCall(GenTree* tree, int helper, bool morphAr
+@@ -253,6 +253,332 @@ GenTree* Compiler::fgMorphIntoHelperCall(GenTree* tree, int helper, bool morphAr
      return tree;
  }
  
@@ -317,29 +318,102 @@ diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
 +//
 +
 +//------------------------------------------------------------------------
-+// fgGetSoftFloatArithHelper: get the helper implementing an FP arithmetic operation
++// fgMorphSoftFloatArith: expand an FP arithmetic operation into a helper call
 +//
 +// Arguments:
-+//    oper - GT_ADD, GT_SUB, GT_MUL or GT_DIV
-+//    type - TYP_FLOAT or TYP_DOUBLE
++//    tree - the GT_ADD, GT_SUB, GT_MUL or GT_DIV node
 +//
-+CorInfoHelpFunc Compiler::fgGetSoftFloatArithHelper(genTreeOps oper, var_types type)
++// Return Value:
++//    The morphed replacement tree.
++//
++// Notes:
++//    Unlike USE_HELPER_FOR_ARITH this builds a new call node: the importer
++//    only allocates add/sub as small nodes, which cannot be turned into a
++//    call in place.
++//
++GenTree* Compiler::fgMorphSoftFloatArith(GenTreeOp* tree)
 +{
-+    assert(opts.compUseSoftFP && varTypeIsFloating(type));
-+    const bool isFloat = (type == TYP_FLOAT);
-+    switch (oper)
++    assert(opts.compUseSoftFP && tree->OperIs(GT_ADD, GT_SUB, GT_MUL, GT_DIV) && varTypeIsFloating(tree));
++
++    const var_types type = tree->TypeGet();
++
++    // The IL stack has a single F type, so the operands may differ in size
++    // from the result; the helpers take operands of the result type.
++    for (GenTree** use : {&tree->gtOp1, &tree->gtOp2})
++    {
++        if ((*use)->TypeGet() != type)
++        {
++            *use = gtNewCastNode(type, *use, false, type);
++        }
++    }
++
++    GenTree* folded = gtFoldExpr(tree);
++    if (folded != tree)
++    {
++        return fgMorphTree(folded);
++    }
++    if (folded->OperIsLeaf())
++    {
++        return fgMorphLeaf(folded);
++    }
++
++    const bool      isFloat = (type == TYP_FLOAT);
++    CorInfoHelpFunc helper;
++    switch (tree->OperGet())
 +    {
 +        case GT_ADD:
-+            return isFloat ? CORINFO_HELP_FLTADD : CORINFO_HELP_DBLADD;
++            helper = isFloat ? CORINFO_HELP_FLTADD : CORINFO_HELP_DBLADD;
++            break;
 +        case GT_SUB:
-+            return isFloat ? CORINFO_HELP_FLTSUB : CORINFO_HELP_DBLSUB;
++            helper = isFloat ? CORINFO_HELP_FLTSUB : CORINFO_HELP_DBLSUB;
++            break;
 +        case GT_MUL:
-+            return isFloat ? CORINFO_HELP_FLTMUL : CORINFO_HELP_DBLMUL;
-+        case GT_DIV:
-+            return isFloat ? CORINFO_HELP_FLTDIV : CORINFO_HELP_DBLDIV;
++            helper = isFloat ? CORINFO_HELP_FLTMUL : CORINFO_HELP_DBLMUL;
++            break;
 +        default:
-+            unreached();
++            helper = isFloat ? CORINFO_HELP_FLTDIV : CORINFO_HELP_DBLDIV;
++            break;
 +    }
++
++    GenTreeCall* call = gtNewHelperCallNode(helper, type, tree->gtGetOp1(), tree->gtGetOp2());
++    return fgMorphTree(call);
++}
++
++//------------------------------------------------------------------------
++// fgMorphSoftFloatCast: expand a conversion into a helper call
++//
++// Arguments:
++//    tree   - the cast node
++//    helper - the conversion helper
++//    oper   - the (possibly widened) operand, tree's cast operand
++//
++// Return Value:
++//    The morphed replacement tree.
++//
++// Notes:
++//    The counterpart of fgMorphCastIntoHelper that builds a new node: casts
++//    created after import (impImplicitR4orR8Cast, the widening in
++//    fgMorphExpandCast) are not large enough to become a call in place.
++//
++GenTree* Compiler::fgMorphSoftFloatCast(GenTreeCast* tree, CorInfoHelpFunc helper, GenTree* oper)
++{
++    assert(opts.compUseSoftFP && (tree->CastOp() == oper));
++
++    if (oper->OperIsConst())
++    {
++        GenTree* folded = gtFoldExprConst(tree);
++        if (folded != tree)
++        {
++            return fgMorphTree(folded);
++        }
++        if (folded->OperIsConst())
++        {
++            return fgMorphConst(folded);
++        }
++    }
++
++    GenTreeCall* call = gtNewHelperCallNode(helper, genActualType(tree->CastToType()), oper);
++    return fgMorphTree(call);
 +}
 +
 +//------------------------------------------------------------------------
@@ -557,7 +631,7 @@ diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
  //------------------------------------------------------------------------
  // fgMorphExpandCast: Performs the pre-order (required) morphing for a cast.
  //
-@@ -282,6 +535,7 @@ GenTree* Compiler::fgMorphIntoHelperCall(GenTree* tree, int helper, bool morphAr
+@@ -282,6 +608,7 @@ GenTree* Compiler::fgMorphIntoHelperCall(GenTree* tree, int helper, bool morphAr
  //    in which case the cast may be transformed into an unchecked one
  //    and its operand changed (the cast "expanded" into two).
  //
@@ -565,21 +639,31 @@ diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
  GenTree* Compiler::fgMorphExpandCast(GenTreeCast* tree)
  {
      GenTree*  oper    = tree->CastOp();
-@@ -445,6 +699,13 @@ GenTree* Compiler::fgMorphExpandCast(GenTreeCast* tree)
+@@ -445,6 +772,23 @@ GenTree* Compiler::fgMorphExpandCast(GenTreeCast* tree)
                      case TYP_ULONG:
                          helper = CORINFO_HELP_DBL2ULNG;
                          break;
 +#ifdef TARGET_RISCV64
 +                    case TYP_INT:
 +                    case TYP_UINT:
++                    {
 +                        // Soft-float: convert with the 64-bit helper and saturate to 32 bits.
 +                        assert(opts.compUseSoftFP);
++                        if (tree->CastOp()->OperIsConst())
++                        {
++                            GenTree* folded = gtFoldExprConst(tree);
++                            if (folded != tree)
++                            {
++                                return fgMorphTree(folded);
++                            }
++                        }
 +                        return fgMorphTree(fgMorphSoftFloatCastToInt32(oper, dstType == TYP_UINT));
++                    }
 +#endif // TARGET_RISCV64
                      default:
                          unreached();
                  }
-@@ -469,6 +730,42 @@ GenTree* Compiler::fgMorphExpandCast(GenTreeCast* tree)
+@@ -469,6 +813,42 @@ GenTree* Compiler::fgMorphExpandCast(GenTreeCast* tree)
          return fgMorphTree(oper);
      }
  
@@ -593,8 +677,8 @@ diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
 +            {
 +                return fgMorphTree(oper);
 +            }
-+            return fgMorphCastIntoHelper(tree, (dstType == TYP_DOUBLE) ? CORINFO_HELP_FLT2DBL : CORINFO_HELP_DBL2FLT,
-+                                         oper);
++            return fgMorphSoftFloatCast(tree, (dstType == TYP_DOUBLE) ? CORINFO_HELP_FLT2DBL : CORINFO_HELP_DBL2FLT,
++                                        oper);
 +        }
 +
 +        assert(varTypeIsIntegral(srcType));
@@ -615,14 +699,14 @@ diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
 +        {
 +            helper = tree->IsUnsigned() ? CORINFO_HELP_ULNG2DBL : CORINFO_HELP_LNG2DBL;
 +        }
-+        return fgMorphCastIntoHelper(tree, helper, oper);
++        return fgMorphSoftFloatCast(tree, helper, oper);
 +    }
 +#endif // TARGET_RISCV64
 +
  #ifndef TARGET_64BIT
      else if (varTypeIsLong(srcType))
      {
-@@ -7006,6 +7303,41 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
+@@ -7006,6 +7386,40 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
          // Some arithmetic operators need to use a helper call to the EE
          int helper;
  
@@ -632,8 +716,7 @@ diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
 +        case GT_SUB:
 +            if (opts.compUseSoftFP && varTypeIsFloating(typ))
 +            {
-+                helper = fgGetSoftFloatArithHelper(oper, typ);
-+                goto USE_HELPER_FOR_ARITH;
++                return fgMorphSoftFloatArith(tree->AsOp());
 +            }
 +            break;
 +
@@ -664,37 +747,35 @@ diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
          case GT_STORE_LCL_VAR:
          case GT_STORE_LCL_FLD:
          {
-@@ -7080,6 +7412,14 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
+@@ -7080,6 +7494,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
          case GT_MUL:
              noway_assert(op2 != nullptr);
  
 +#ifdef TARGET_RISCV64
 +            if (opts.compUseSoftFP && varTypeIsFloating(typ))
 +            {
-+                helper = fgGetSoftFloatArithHelper(oper, typ);
-+                goto USE_HELPER_FOR_ARITH;
++                return fgMorphSoftFloatArith(tree->AsOp());
 +            }
 +#endif // TARGET_RISCV64
 +
  #if !defined(TARGET_64BIT) && !defined(TARGET_WASM)
              if (typ == TYP_LONG)
              {
-@@ -7184,6 +7524,14 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
+@@ -7184,6 +7605,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
              break;
  
          case GT_DIV:
 +#ifdef TARGET_RISCV64
 +            if (opts.compUseSoftFP && varTypeIsFloating(typ))
 +            {
-+                helper = fgGetSoftFloatArithHelper(oper, typ);
-+                goto USE_HELPER_FOR_ARITH;
++                return fgMorphSoftFloatArith(tree->AsOp());
 +            }
 +#endif // TARGET_RISCV64
 +
              // Convert DIV to UDIV if both op1 and op2 are known to be never negative
              if (varTypeIsIntegral(tree) && op1->IsNeverNegative(this) && op2->IsNeverNegative(this))
              {
-@@ -7479,6 +7827,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
+@@ -7479,6 +7907,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
          case GT_EQ:
          case GT_NE:
          {
@@ -708,7 +789,7 @@ diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
              if (opts.OptimizationEnabled())
              {
                  GenTree* optimizedTree = gtFoldTypeCompare(tree);
-@@ -7540,6 +7895,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
+@@ -7540,6 +7975,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
  
          case GT_GT:
          {
