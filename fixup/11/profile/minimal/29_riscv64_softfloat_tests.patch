@@ -2,7 +2,7 @@ diff --git a/src/tests/JIT/Directed/softfloat/SoftFloat.cs b/src/tests/JIT/Direc
 new file mode 100644
 --- /dev/null
 +++ b/src/tests/JIT/Directed/softfloat/SoftFloat.cs
-@@ -0,0 +1,273 @@
+@@ -0,0 +1,283 @@
 +// Licensed to the .NET Foundation under one or more agreements.
 +// The .NET Foundation licenses this file to you under the MIT license.
 +//
@@ -221,12 +221,22 @@ new file mode 100644
 +    static float Mixed(int a, float b, long c, double d, float e) => (float)(a + b + c + d + e);
 +
 +    [MethodImpl(MethodImplOptions.NoInlining)]
++    static float SumF11(float a, float b, float c, float d, float e, float f, float g, float h, float i, float j, float k)
++        => a + b + c + d + e + f + g + h + i + j + k;
++
++    [MethodImpl(MethodImplOptions.NoInlining)]
++    static double Mixed12(float a, double b, int c, float d, double e, long f, float g, double h, float i, double j, float k, double l)
++        => a + b + c + d + e + f + g + h + i + j + k + l;
++
++    [MethodImpl(MethodImplOptions.NoInlining)]
 +    static Pair MakePair(double a, float b, int c) => new Pair { A = a * 2, B = b * 2, C = c * 2 };
 +
 +    static void Calls()
 +    {
 +        Check(Sum10(1, 2, 3, 4, 5, 6, 7, 8, 9, 10) == 55.0, "10 double args (registers and stack)");
 +        Check(Mixed(1, 2.5f, 3, 4.25, 5.5f) == 16.25f, "mixed int/float args");
++        Check(SumF11(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11) == 66.0f, "11 float args (registers and stack)");
++        Check(Mixed12(0.5f, 1.5, 2, 3.5f, 4.5, 5, 6.5f, 7.5, 8.5f, 9.5, 10.5f, 11.5) == 71.5, "12 mixed args on registers and stack");
 +        Pair p = MakePair(1.5, 2.5f, 3);
 +        Check(p.A == 3.0 && p.B == 5.0f && p.C == 6, "struct with FP fields");
 +        double[] arr = { 1.5, 2.5, 3.5 };
