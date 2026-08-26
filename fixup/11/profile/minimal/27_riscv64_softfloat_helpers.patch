@@ -188,6 +188,59 @@ diff --git a/src/coreclr/jit/valuenumfuncs.h b/src/coreclr/jit/valuenumfuncs.h
  #if defined(TARGET_RISCV64)
      // Signed/Unsigned integer min/max intrinsics
      ValueNumFuncDef(MinInt, 2, true, false)
+diff --git a/src/coreclr/tools/Common/CommandLineHelpers.cs b/src/coreclr/tools/Common/CommandLineHelpers.cs
+--- a/src/coreclr/tools/Common/CommandLineHelpers.cs
++++ b/src/coreclr/tools/Common/CommandLineHelpers.cs
+@@ -26,7 +26,7 @@ internal static partial class Helpers
+         public const string DefaultSystemModule = "System.Private.CoreLib";
+ 
+         public static string[] ValidOS { get; } = ["windows", "linux", "freebsd", "openbsd", "osx", "maccatalyst", "ios", "iossimulator", "tvos", "tvossimulator", "android", "browser", "wasi"];
+-        public static string[] ValidArchitectures { get; } = ["arm", "armel", "arm64", "x86", "x64", "riscv64", "loongarch64", "wasm"];
++        public static string[] ValidArchitectures { get; } = ["arm", "armel", "arm64", "x86", "x64", "riscv64", "riscv64-lp64", "loongarch64", "wasm"];
+ 
+         public static Dictionary<string, string> BuildPathDictionary(IReadOnlyList<Token> tokens, bool strict)
+         {
+@@ -119,7 +119,7 @@ public static TargetArchitecture GetTargetArchitecture(string token)
+                     "arm64" => TargetArchitecture.ARM64,
+                     "wasm" => TargetArchitecture.Wasm32,
+                     "loongarch64" => TargetArchitecture.LoongArch64,
+-                    "riscv64" => TargetArchitecture.RiscV64,
++                    "riscv64" or "riscv64-lp64" => TargetArchitecture.RiscV64,
+                     _ => throw new CommandLineException($"Target architecture '{token}' is not supported")
+                 };
+             }
+@@ -136,6 +136,7 @@ public static (TargetArchitecture, TargetOS, TargetAbi) GetTargetSpec(string tar
+             {
+                 (_, "armel") => TargetAbi.NativeAotArmel,
+                 ("android", "arm") => TargetAbi.NativeAotArmel,
++                (_, "riscv64-lp64") => TargetAbi.NativeAotRiscV64SoftFloat,
+                 _ => TargetAbi.NativeAot,
+             };
+ 
+diff --git a/src/coreclr/tools/Common/Compiler/ObjectWriter/ElfObjectWriter.cs b/src/coreclr/tools/Common/Compiler/ObjectWriter/ElfObjectWriter.cs
+--- a/src/coreclr/tools/Common/Compiler/ObjectWriter/ElfObjectWriter.cs
++++ b/src/coreclr/tools/Common/Compiler/ObjectWriter/ElfObjectWriter.cs
+@@ -67,7 +67,8 @@ public ElfObjectWriter(NodeFactory factory, ObjectWritingOptions options)
+                 _ => throw new NotSupportedException("Unsupported architecture")
+             };
+             _useInlineRelocationAddends = _machine is EM_386 or EM_ARM;
+-            _useSoftFPAbi = _machine is EM_ARM && factory.Target.Abi == TargetAbi.NativeAotArmel;
++            _useSoftFPAbi = (_machine is EM_ARM && factory.Target.Abi == TargetAbi.NativeAotArmel) ||
++                            (_machine is EM_RISCV && factory.Target.Abi == TargetAbi.NativeAotRiscV64SoftFloat);
+ 
+             // By convention the symbol table starts with empty symbol
+             _symbols.Add(new ElfSymbol {});
+@@ -765,7 +766,9 @@ private void EmitObjectFile<TSize>(Stream outputFileStream)
+                 {
+                     EM_ARM => 0x05000000u, // For ARM32 claim conformance with the EABI specification
+                     EM_LOONGARCH => 0x43u, // For LoongArch ELF psABI specify the ABI version (1) and modifiers (64-bit GPRs, 64-bit FPRs)
+-                    EM_RISCV => 0x0005u, // EF_RISCV_RVC (RVC ABI) | EF_RISCV_FLOAT_ABI_DOUBLE (double precision floating-point ABI).
++                    // EF_RISCV_RVC (RVC ABI) | EF_RISCV_FLOAT_ABI_DOUBLE (double precision floating-point ABI),
++                    // or EF_RISCV_FLOAT_ABI_SOFT (0) for the lp64 ABI; the linker rejects objects with mixed FP ABIs.
++                    EM_RISCV => _useSoftFPAbi ? 0x0001u : 0x0005u,
+                     _ => 0u
+                 },
+             };
 diff --git a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs
 --- a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs
 +++ b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs
@@ -243,23 +296,35 @@ diff --git a/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs b/src/core
 diff --git a/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs b/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
 --- a/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
 +++ b/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
-@@ -4708,6 +4708,16 @@ private uint getJitFlags(ref CORJIT_FLAGS flags, uint sizeInBytes)
+@@ -4708,6 +4708,13 @@ private uint getJitFlags(ref CORJIT_FLAGS flags, uint sizeInBytes)
                  flags.Set(CorJitFlag.CORJIT_FLAG_SOFTFP_ABI);
              }
  
-+            if ((this.MethodBeingCompiled.Context.Target.Architecture == TargetArchitecture.RiscV64)
-+                && (!_compilation.InstructionSetSupport.IsInstructionSetSupported(InstructionSet.RiscV64_F)
-+                    || !_compilation.InstructionSetSupport.IsInstructionSetSupported(InstructionSet.RiscV64_D)))
++            if (this.MethodBeingCompiled.Context.Target.Abi == TargetAbi.NativeAotRiscV64SoftFloat)
 +            {
-+                // Without the F and D extensions the target uses the lp64 (soft-float) ABI and
-+                // the FP arithmetic goes through the soft-float helpers. The lp64f ABI (F
-+                // without D) is not supported: such a target is compiled soft-float as well.
++                // RISC-V lp64: FP values are passed in integer registers and the FP
++                // arithmetic goes through the soft-float helpers.
 +                flags.Set(CorJitFlag.CORJIT_FLAG_SOFTFP_ABI);
 +            }
 +
              if (this.MethodBeingCompiled.IsAsyncCall()
  #if !READYTORUN
                  || (_compilation.TypeSystemContext.IsSpecialUnboxingThunk(this.MethodBeingCompiled) && _compilation.TypeSystemContext.GetTargetOfSpecialUnboxingThunk(this.MethodBeingCompiled).IsAsyncCall())
+diff --git a/src/coreclr/tools/Common/TypeSystem/Common/TargetDetails.cs b/src/coreclr/tools/Common/TypeSystem/Common/TargetDetails.cs
+--- a/src/coreclr/tools/Common/TypeSystem/Common/TargetDetails.cs
++++ b/src/coreclr/tools/Common/TypeSystem/Common/TargetDetails.cs
+@@ -39,6 +39,11 @@ public enum TargetAbi
+         /// model for armel execution model
+         /// </summary>
+         NativeAotArmel,
++        /// <summary>
++        /// RISC-V lp64 (soft-float) execution model: no F/D extensions, floating-point
++        /// values are passed in integer registers and computed by the soft-float helpers
++        /// </summary>
++        NativeAotRiscV64SoftFloat,
+     }
+ 
+     /// <summary>
 diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs
 --- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs
@@ -314,6 +379,39 @@ diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs b/s
                  case ReadyToRunHelper.LMul:
                      mangledName = "RhpLMul";
                      break;
+diff --git a/src/coreclr/tools/aot/ILCompiler.Diagnostics/PerfMapWriter.cs b/src/coreclr/tools/aot/ILCompiler.Diagnostics/PerfMapWriter.cs
+--- a/src/coreclr/tools/aot/ILCompiler.Diagnostics/PerfMapWriter.cs
++++ b/src/coreclr/tools/aot/ILCompiler.Diagnostics/PerfMapWriter.cs
+@@ -126,6 +126,7 @@ private static PerfmapTokensForTarget TranslateTargetDetailsToPerfmapConstants(T
+                 TargetAbi.Unknown => PerfMapAbiToken.Unknown,
+                 TargetAbi.NativeAot => PerfMapAbiToken.Default,
+                 TargetAbi.NativeAotArmel => PerfMapAbiToken.Armel,
++                TargetAbi.NativeAotRiscV64SoftFloat => PerfMapAbiToken.Default,
+                 _ => throw new NotImplementedException(details.Abi.ToString())
+             };
+ 
+diff --git a/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs b/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs
+--- a/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs
++++ b/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs
+@@ -54,6 +54,18 @@ internal RyuJitCompilation(
+             _compilationOptions = options;
+             InstructionSetSupport = instructionSetSupport;
+ 
++            if ((nodeFactory.Target.Architecture == TargetArchitecture.RiscV64)
++                && (nodeFactory.Target.Abi != TargetAbi.NativeAotRiscV64SoftFloat)
++                && (!instructionSetSupport.IsInstructionSetSupported(InstructionSet.RiscV64_F)
++                    || !instructionSetSupport.IsInstructionSetSupported(InstructionSet.RiscV64_D)))
++            {
++                // The ABI is a property of the target, not of the instruction set: opting out of
++                // F/D does not make the runtime and the native libraries lp64. The lp64f ABI
++                // (F without D) is not supported either.
++                throw new NotSupportedException(
++                    "The riscv64 lp64d ABI requires the F and D extensions; targets without them must use the riscv64-lp64 (soft-float) ABI.");
++            }
++
+             _profileDataManager = profileDataManager;
+ 
+             _methodImportationErrorProvider = errorProvider;
 diff --git a/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs b/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs
 --- a/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs
