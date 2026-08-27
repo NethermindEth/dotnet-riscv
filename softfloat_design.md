@@ -377,3 +377,36 @@ golden-пар EEST совпадают (ziskemu `-o` пишет фиксиров�
 пакета x17 (`run_x15.sh x17`, `run_x15_guest.sh x17`): 21/21 и guest 8/8.
 Серия 26–29 на fa68384 — валидирована полностью; открытые upstream-вопросы:
 `PerfMapAbiToken` и lp64-sysroot для upstream-CI (в RFC-черновике).
+
+## Патч 30 — single-threaded флавор runtime (2026-08-27)
+
+Вопрос «как работает GC без потоков/атомиков» решён по модели NativeAOT-LLVM
+(runtimelab, wasm): `FinalizerHelpers.SingleThreaded.cpp` (нет finalizer-потока,
+финализаторы выполняются из `GC.WaitForPendingFinalizers` через новую точку
+входа `RhpProcessFinalizersAndReturn` в общем `__Finalizer.cs`) и GC без
+`BACKGROUND_GC`. Отличие от runtimelab: это не свойство таргета, а **флавор
+сборки** `Runtime.SingleThreaded` (по образцу `WorkstationGC`/`ServerGC`,
+define `FEATURE_SINGLE_THREADED_RUNTIME`, ilc-свойство
+`IlcSingleThreadedRuntime`) — обычный linux-musl-riscv64 runtime с потоками
+не затронут. Попутно: GC без BGC на 64-бит с regions не собирался (три
+неогороженные ссылки на BGC-состояние в `diagnostics/interface/
+regions_segments.cpp`) — огорожено. Threaded-QCALL'ы (`RhpWaitForFinalizerRequest`,
+`RhpSignalFinalizationComplete`) в флаворе остаются резолвимыми и fail-fast'ят:
+CoreLib один на RID, `ProcessFinalizers` в нём рутится как unmanaged entry point.
+PR в runtimelab не делаем (решение 2026-08-27).
+
+Локальная проверка: `ninja Runtime.SingleThreaded` (osx.arm64 Checked) —
+архив собран, символов `bgc_thread*`/`background_*` нет (кроме PAL-хелперов),
+`RhpProcessFinalizersAndReturn` — undefined (приходит из managed). CI:
+`v11.0.0.x18-sf` на b3a0800.
+
+bflat (c29a3fe, feature/softfloat-riscv64): `--zk-gc ugc|clr`; под `clr` —
+`-lRuntime.SingleThreaded`, uGC не линкуется, wrap'ы барьеров записи
+(`rhp_native`, `RhBulkMoveWithWriteBarrier`) получили условие `gc: ugc`,
+runtime-knob'ы `System.GC.Concurrent=false`, `HeapHardLimit=96MB`,
+`RegionRange=128MB` (резерв — bump-аллокация из RAM-окна `script.ld`, дефолт
+256GB/2×physical недопустим), PAL: `mprotect/madvise → 0`, `getrlimit → -1`.
+Проверка: `/root/sftest/run_clrgc.sh x18 c29a3fe` (GcTest + SoftFloat, qemu и
+ziskemu). Оговорки: финализаторы только по явному `WaitForPendingFinalizers`;
+детерминизм GC-решений = детерминизм PAL-таймера; цена GC-циклов в zkVM —
+причина оставить uGC как оптимизацию.
