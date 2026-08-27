@@ -313,3 +313,10 @@ soft-float; отдельный «soft-float libm» больше не нужен.
 12. Инфраструктура zk-testing: контейнер `Dockerfile.build` не задаёт
     `BFLAT_LD=/usr/bin/lld`, а bundled `lld` из SDK собран на ubuntu 24.04
     (libicu74) — в скриптах добавлен `-e BFLAT_LD=/usr/bin/lld`.
+13. **CQ: FP-параметры были address-exposed.** `lvaInitUserArgs` под
+    `compUseSoftFP` помечает FP-параметры address-exposed — armel-обход
+    (значение живёт в VFP, приходит в GPR). На riscv64 lp64 это делало каждый
+    float/double-параметр стековым (видно в дизассемблере `Sum10`). Условие
+    переведено на `varTypeUsesFloatReg`; то же для callee-save-предпочтений FP
+    локалов в LSRA (`lsrabuild.cpp`, набор кандидатов и так строится по
+    `regType()`). Для armel поведение не меняется.

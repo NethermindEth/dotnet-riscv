@@ -245,7 +245,19 @@ diff --git a/src/coreclr/jit/jit.h b/src/coreclr/jit/jit.h
 diff --git a/src/coreclr/jit/lclvars.cpp b/src/coreclr/jit/lclvars.cpp
 --- a/src/coreclr/jit/lclvars.cpp
 +++ b/src/coreclr/jit/lclvars.cpp
-@@ -878,7 +878,7 @@ void Compiler::lvaInitVarDsc(LclVarDsc*              varDsc,
+@@ -657,7 +657,10 @@ void Compiler::lvaInitUserArgs(unsigned* curVarNum, unsigned skipArgs, unsigned
+         }
+ #endif
+ 
+-        if (info.compIsVarArgs || (opts.compUseSoftFP && varTypeIsFloating(varDsc)))
++        // Under a soft-float ABI a parameter that lives in a floating-point register
++        // arrives in an integer one (armel); a parameter whose type is itself in the
++        // integer register file (RISC-V lp64) is an ordinary integer parameter.
++        if (info.compIsVarArgs || (opts.compUseSoftFP && varTypeUsesFloatReg(varDsc)))
+         {
+ #ifndef TARGET_X86
+             // TODO-CQ: We shouldn't have to go as far as to declare these
+@@ -878,7 +881,7 @@ void Compiler::lvaInitVarDsc(LclVarDsc*              varDsc,
      }
  
      var_types type = JITtype2varType(corInfoType);
@@ -272,6 +284,18 @@ diff --git a/src/coreclr/jit/lsra.cpp b/src/coreclr/jit/lsra.cpp
      // Updating lowGprRegs with final value
  #if defined(TARGET_XARCH)
  #if defined(TARGET_AMD64)
+diff --git a/src/coreclr/jit/lsrabuild.cpp b/src/coreclr/jit/lsrabuild.cpp
+--- a/src/coreclr/jit/lsrabuild.cpp
++++ b/src/coreclr/jit/lsrabuild.cpp
+@@ -1105,7 +1105,7 @@ bool LinearScan::buildKillPositionsForNode(GenTree* tree, LsraLocation currentLo
+                 }
+                 else
+ #endif // FEATURE_PARTIAL_SIMD_CALLEE_SAVE
+-                    if (varTypeIsFloating(varDsc) &&
++                    if (varTypeUsesFloatReg(varDsc) &&
+                         !VarSetOps::IsMember(m_compiler, fpCalleeSaveCandidateVars, varIndex))
+                     {
+                         continue;
 diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
 --- a/src/coreclr/jit/lsrariscv64.cpp
 +++ b/src/coreclr/jit/lsrariscv64.cpp
