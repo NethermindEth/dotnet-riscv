@@ -266,6 +266,21 @@ diff --git a/src/coreclr/jit/lclvars.cpp b/src/coreclr/jit/lclvars.cpp
      {
          compFloatingPointUsed = true;
      }
+diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
+--- a/src/coreclr/jit/lower.cpp
++++ b/src/coreclr/jit/lower.cpp
+@@ -5496,7 +5496,10 @@ void Lowering::LowerFieldListToFieldListOfRegisters(GenTreeFieldList*   fieldLis
+             }
+ 
+             // If this is a float -> int insertion, then we need the bitcast now.
+-            if (varTypeUsesFloatReg(value) && varTypeUsesIntReg(regInfo.RegType))
++            // (Checked by type, not by register class: under a soft-float ABI the
++            // FP value already lives in an integer register but still needs the
++            // integer view for the widening and shifting below.)
++            if (varTypeIsFloating(value) && varTypeUsesIntReg(regInfo.RegType))
+             {
+                 assert((genTypeSize(value) == 4) || (genTypeSize(value) == 8));
+                 var_types castType = genTypeSize(value) == 4 ? TYP_INT : TYP_LONG;
 diff --git a/src/coreclr/jit/lsra.cpp b/src/coreclr/jit/lsra.cpp
 --- a/src/coreclr/jit/lsra.cpp
 +++ b/src/coreclr/jit/lsra.cpp
@@ -296,6 +311,22 @@ diff --git a/src/coreclr/jit/lsrabuild.cpp b/src/coreclr/jit/lsrabuild.cpp
                          !VarSetOps::IsMember(m_compiler, fpCalleeSaveCandidateVars, varIndex))
                      {
                          continue;
+@@ -4322,6 +4322,15 @@ int LinearScan::BuildReturn(GenTree* tree)
+             else
+ #endif // FEATURE_MULTIREG_RET
+             {
++#ifdef TARGET_RISCV64
++                if (varTypeIsFloating(tree) && !varTypeUsesFloatReg(tree))
++                {
++                    // Soft-float: FP values are returned in the integer return register.
++                    BuildUse(op1, RBM_INTRET.GetIntRegSet());
++                    return 1;
++                }
++#endif // TARGET_RISCV64
++
+                 // Non-struct type return - determine useCandidates
+                 switch (tree->TypeGet())
+                 {
 diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
 --- a/src/coreclr/jit/lsrariscv64.cpp
 +++ b/src/coreclr/jit/lsrariscv64.cpp
