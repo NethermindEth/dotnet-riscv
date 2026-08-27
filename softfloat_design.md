@@ -351,3 +351,29 @@ JIT прогоняет весь набор за ~10 минут.
     `GTF_RELOP_JMP_USED | GTF_DONT_CSE` до morph детей; замена переносила только
     первый флаг → CSE превращал условие в `LCL_VAR` → assert If-conversion.
     Переносятся оба флага.
+19. **Единственный сбой x16d был не в серии, а в bflat.** Под checked-JIT
+    все 19 zisk-тестов, `abi_calls` и `fptest_zk` прошли; образ `SoftFloat`
+    (патч 29, `zisk_sim`) под qemu завершался `abort` (134) без вывода. В
+    дизассемблере `Math.Truncate` = `ThrowFeatureBodyRemoved`: nofp-список
+    `zisk.substitutions.xml` удаляет тела FP-методов CoreLib (Truncate,
+    FormatFloat, Double.ToString, …) для rv64ima, и под soft-float
+    применялся без изменений. libc zisk уже soft (`floor` в образе зовёт
+    `__nedf2`, аргумент в `a0`), так что удалять их незачем. Исправлено в
+    bflat (451a950, feature/softfloat-riscv64): FP-часть вынесена в
+    `zisk.nofp.substitutions.xml`, у `params.yml` появилось условие
+    `fpu: none|soft|hard`; nofp-XML, C#-сниппеты и IL-rewrites
+    `CustomILProvider` применяются только при `fpu: none`. Пробы
+    (`/root/sftest/probe/P_Math*.cs`) подтвердили, что сами значения
+    `Abs/Max/Min/Floor/Ceiling/Round/Sqrt` под soft-float верны на qemu и
+    ziskemu.
+
+**Статус валидации checked-JIT (2026-08-27, bflat 38df661, серия fa68384):**
+run x16e — 19 zisk-тестов + `abi_calls` + `fptest_zk` + `SoftFloat` (патч 29,
+qemu, exit 100) = 21/21; guest Nethermind (`run_x15_guest.sh x16e`) — 8/8
+golden-пар EEST совпадают (ziskemu `-o` пишет фиксированные 256 байт с
+нулевым хвостом; скрипт теперь сравнивает golden-префикс и требует нулевой
+хвост). Финальный CI на fa68384 (run 33038907675) — зелёный, релиз
+`v11.0.0.x17-sf` опубликован 2026-08-27 06:10 UTC; повтор на release-JIT из
+пакета x17 (`run_x15.sh x17`, `run_x15_guest.sh x17`): 21/21 и guest 8/8.
+Серия 26–29 на fa68384 — валидирована полностью; открытые upstream-вопросы:
+`PerfMapAbiToken` и lp64-sysroot для upstream-CI (в RFC-черновике).
