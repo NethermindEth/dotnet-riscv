@@ -320,3 +320,22 @@ soft-float; отдельный «soft-float libm» больше не нужен.
     переведено на `varTypeUsesFloatReg`; то же для callee-save-предпочтений FP
     локалов в LSRA (`lsrabuild.cpp`, набор кандидатов и так строится по
     `regType()`). Для armel поведение не меняется.
+14. **Возврат FP-значений: кандидаты LSRA.** `BuildReturn` выбирал регистры
+    возврата `switch (tree->TypeGet())` → для `TYP_FLOAT/DOUBLE` float-набор
+    (`RBM_FLOATRET`) даже под soft-float. В Checked JIT — assert
+    `(allRegs(registerType) & mask) != 0`; в Release LSRA брал регистр из
+    float-нумерации, и `emitIns_R_R(INS_mov, a0, f10)` кодировал номер 42 с
+    переполнением поля rs1 в imm — тот самый `slli/addi +1` после каждого
+    FP-возврата (все 18 падений x16). Теперь под soft-float FP-возврат →
+    `RBM_INTRET`.
+15. **Структуры с float-полями в целочисленном регистре.**
+    `LowerFieldListToFieldListOfRegisters` вставлял BITCAST float→int только
+    при `varTypeUsesFloatReg(value)`; под soft-float это false, и дальше шёл
+    `CAST(long ← float, unsigned)` (assert в Checked, `fcvt` в Release —
+    `MkFPair`). Условие переведено на `varTypeIsFloating` (на hard-float
+    эквивалентно).
+
+Урок: гонять серию **checked**-JIT'ом до CI — на zk-testing собран
+`clrjit_unix_riscv64_x64` (Checked) из `/root/runtime11`, bflat принимает
+`BFLAT_JITOPTS` (JitDump/JitStdOutFile); `run_x15.sh <tag>` с подменённым
+JIT прогоняет весь набор за ~10 минут.
