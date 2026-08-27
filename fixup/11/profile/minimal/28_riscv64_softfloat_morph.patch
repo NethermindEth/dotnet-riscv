@@ -60,7 +60,19 @@ diff --git a/src/coreclr/jit/compiler.cpp b/src/coreclr/jit/compiler.cpp
  
  /*****************************************************************************
   *
-@@ -3009,10 +3012,50 @@ void Compiler::compInitOptions(JitFlags* jitFlags)
+@@ -2604,6 +2607,11 @@ void Compiler::compInitOptions(JitFlags* jitFlags)
+ 
+     if (compIsForInlining())
+     {
++#ifdef TARGET_RISCV64
++        // The soft-float mode is decided by the root compilation (see below); the
++        // importer of an inlinee needs it too, for the intrinsics and casts it expands.
++        opts.compUseSoftFP = impInlineInfo->InlinerCompiler->opts.compUseSoftFP;
++#endif // TARGET_RISCV64
+         return;
+     }
+ 
+@@ -3009,10 +3017,50 @@ void Compiler::compInitOptions(JitFlags* jitFlags)
  
      GlobalJitOptions::compFeatureHfa = !opts.compUseSoftFP;
  #elif defined(TARGET_RISCV64)
@@ -186,7 +198,17 @@ diff --git a/src/coreclr/jit/importer.cpp b/src/coreclr/jit/importer.cpp
 diff --git a/src/coreclr/jit/importercalls.cpp b/src/coreclr/jit/importercalls.cpp
 --- a/src/coreclr/jit/importercalls.cpp
 +++ b/src/coreclr/jit/importercalls.cpp
-@@ -10644,6 +10644,14 @@ GenTree* Compiler::impMathIntrinsic(CORINFO_METHOD_HANDLE method,
+@@ -5302,7 +5302,8 @@ GenTree* Compiler::impIntrinsic(CORINFO_CLASS_HANDLE    clsHnd,
+ #endif // FEATURE_HW_INTRINSICS
+ 
+ #ifdef TARGET_RISCV64
+-                if (!isMagnitude)
++                // Soft-float: no fmin/fmax, the managed implementation is called instead.
++                if (!isMagnitude && !opts.compUseSoftFP)
+                 {
+                     GenTree* op2 = impImplicitR4orR8Cast(impPopStack().val, callType);
+                     GenTree* op1 = impImplicitR4orR8Cast(impPopStack().val, callType);
+@@ -10644,6 +10645,15 @@ GenTree* Compiler::impMathIntrinsic(CORINFO_METHOD_HANDLE method,
      assert(IsMathIntrinsic(intrinsicName));
      assert(isSpecial != nullptr);
  
@@ -194,6 +216,7 @@ diff --git a/src/coreclr/jit/importercalls.cpp b/src/coreclr/jit/importercalls.c
 +    if (opts.compUseSoftFP && varTypeIsFloating(callType))
 +    {
 +        // No FP instructions: leave the call to the managed implementation.
++        JITDUMP("Soft-float: math intrinsic %d is left as a call\n", (int)intrinsicName);
 +        return nullptr;
 +    }
 +#endif // TARGET_RISCV64
@@ -353,7 +376,7 @@ diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
 diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
 --- a/src/coreclr/jit/morph.cpp
 +++ b/src/coreclr/jit/morph.cpp
-@@ -253,6 +253,332 @@ GenTree* Compiler::fgMorphIntoHelperCall(GenTree* tree, int helper, bool morphAr
+@@ -253,6 +253,335 @@ GenTree* Compiler::fgMorphIntoHelperCall(GenTree* tree, int helper, bool morphAr
      return tree;
  }
  
@@ -586,7 +609,10 @@ diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
 +        result        = gtNewOperNode(oper, TYP_INT, call, gtNewIconNode(0));
 +    }
 +
-+    result->gtFlags |= (relop->gtFlags & GTF_RELOP_JMP_USED);
++    // A JTRUE/QMARK condition carries GTF_RELOP_JMP_USED and GTF_DONT_CSE (set by
++    // the parent before its operands are morphed); the replacement must keep both
++    // so that CSE does not turn the condition into a local.
++    result->gtFlags |= (relop->gtFlags & (GTF_RELOP_JMP_USED | GTF_DONT_CSE));
 +    return result;
 +}
 +
@@ -686,7 +712,7 @@ diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
  //------------------------------------------------------------------------
  // fgMorphExpandCast: Performs the pre-order (required) morphing for a cast.
  //
-@@ -282,6 +608,7 @@ GenTree* Compiler::fgMorphIntoHelperCall(GenTree* tree, int helper, bool morphAr
+@@ -282,6 +611,7 @@ GenTree* Compiler::fgMorphIntoHelperCall(GenTree* tree, int helper, bool morphAr
  //    in which case the cast may be transformed into an unchecked one
  //    and its operand changed (the cast "expanded" into two).
  //
@@ -694,7 +720,7 @@ diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
  GenTree* Compiler::fgMorphExpandCast(GenTreeCast* tree)
  {
      GenTree*  oper    = tree->CastOp();
-@@ -445,6 +772,23 @@ GenTree* Compiler::fgMorphExpandCast(GenTreeCast* tree)
+@@ -445,6 +775,23 @@ GenTree* Compiler::fgMorphExpandCast(GenTreeCast* tree)
                      case TYP_ULONG:
                          helper = CORINFO_HELP_DBL2ULNG;
                          break;
@@ -718,7 +744,7 @@ diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
                      default:
                          unreached();
                  }
-@@ -469,6 +813,42 @@ GenTree* Compiler::fgMorphExpandCast(GenTreeCast* tree)
+@@ -469,6 +816,42 @@ GenTree* Compiler::fgMorphExpandCast(GenTreeCast* tree)
          return fgMorphTree(oper);
      }
  
@@ -761,7 +787,7 @@ diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
  #ifndef TARGET_64BIT
      else if (varTypeIsLong(srcType))
      {
-@@ -7006,6 +7386,40 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
+@@ -7006,6 +7389,40 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
          // Some arithmetic operators need to use a helper call to the EE
          int helper;
  
@@ -802,7 +828,7 @@ diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
          case GT_STORE_LCL_VAR:
          case GT_STORE_LCL_FLD:
          {
-@@ -7080,6 +7494,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
+@@ -7080,6 +7497,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
          case GT_MUL:
              noway_assert(op2 != nullptr);
  
@@ -816,7 +842,7 @@ diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
  #if !defined(TARGET_64BIT) && !defined(TARGET_WASM)
              if (typ == TYP_LONG)
              {
-@@ -7184,6 +7605,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
+@@ -7184,6 +7608,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
              break;
  
          case GT_DIV:
@@ -830,7 +856,7 @@ diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
              // Convert DIV to UDIV if both op1 and op2 are known to be never negative
              if (varTypeIsIntegral(tree) && op1->IsNeverNegative(this) && op2->IsNeverNegative(this))
              {
-@@ -7479,6 +7907,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
+@@ -7479,6 +7910,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
          case GT_EQ:
          case GT_NE:
          {
@@ -844,7 +870,7 @@ diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
              if (opts.OptimizationEnabled())
              {
                  GenTree* optimizedTree = gtFoldTypeCompare(tree);
-@@ -7540,6 +7975,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
+@@ -7540,6 +7978,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
  
          case GT_GT:
          {
