@@ -835,6 +835,17 @@ diff --git a/src/coreclr/jit/vartype.h b/src/coreclr/jit/vartype.h
  
  // make any class with a TypeGet member also have a function TypeGet() that does the same thing
  template <class T>
+@@ -339,6 +345,10 @@ inline bool varTypeUsesFloatArgReg(T vt)
+     // Exception: Windows arm64 native varargs passes them using general-purpose (integer) registers or
+     // by value on the stack, or split between registers and stack.
+     return varTypeUsesFloatReg(vt);
++#elif defined(TARGET_RISCV64)
++    // The register class of TYP_FLOAT/TYP_DOUBLE follows the ABI: under the soft-float
++    // (lp64) ABI they live in, and are returned in, integer registers.
++    return varTypeUsesFloatReg(vt);
+ #else
+     // Other targets pass them as regular structs - by reference or by value.
+     return varTypeIsFloating(vt);
 diff --git a/src/coreclr/nativeaot/Runtime/MathHelpers.cpp b/src/coreclr/nativeaot/Runtime/MathHelpers.cpp
 --- a/src/coreclr/nativeaot/Runtime/MathHelpers.cpp
 +++ b/src/coreclr/nativeaot/Runtime/MathHelpers.cpp
