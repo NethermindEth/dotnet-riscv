@@ -339,3 +339,15 @@ soft-float; отдельный «soft-float libm» больше не нужен.
 `clrjit_unix_riscv64_x64` (Checked) из `/root/runtime11`, bflat принимает
 `BFLAT_JITOPTS` (JitDump/JitStdOutFile); `run_x15.sh <tag>` с подменённым
 JIT прогоняет весь набор за ~10 минут.
+16. **Инлайни не знали про soft-float.** `compInitOptions` для инлайни выходит
+    ранним `return` до riscv-блока → у инлайни-компиляторов `compUseSoftFP=false`:
+    `Math.Abs/Sqrt/…` внутри инлайни становились `GT_INTRINSIC` (FP-инструкции
+    в `Emit`), а conv-касты импортировались «маленькими» узлами. Теперь флаг
+    наследуется от inliner'а до этого `return`.
+17. **FP `Math.Min/Max` на riscv64 создаются мимо `impMathIntrinsic`** (свой
+    путь `GT_INTRINSIC(MinNative/MaxNative)` под `TARGET_RISCV64`) — под
+    soft-float путь закрыт, остаётся вызов managed-реализации.
+18. **CSE условий `JTRUE`.** Родитель помечает исходный relop
+    `GTF_RELOP_JMP_USED | GTF_DONT_CSE` до morph детей; замена переносила только
+    первый флаг → CSE превращал условие в `LCL_VAR` → assert If-conversion.
+    Переносятся оба флага.
