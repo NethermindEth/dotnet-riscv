@@ -2,7 +2,7 @@ diff --git a/src/tests/JIT/Directed/softfloat/SoftFloat.cs b/src/tests/JIT/Direc
 new file mode 100644
 --- /dev/null
 +++ b/src/tests/JIT/Directed/softfloat/SoftFloat.cs
-@@ -0,0 +1,283 @@
+@@ -0,0 +1,284 @@
 +// Licensed to the .NET Foundation under one or more agreements.
 +// The .NET Foundation licenses this file to you under the MIT license.
 +//
@@ -126,7 +126,7 @@ new file mode 100644
 +        if (!(one > two)) hits |= 4;
 +        if (!(two >= one)) hits |= 8;
 +        if (!(one == two)) hits |= 16;
-+        Check(hits == 1 + 2 + 4 + 16, "unordered branches, ordered operands");
++        Check(hits == 2 + 4 + 16, "unordered branches, ordered operands");
 +
 +        float fn = F(float.NaN), f1 = F(1.0f), f2 = F(2.0f);
 +        Check(!(fn == fn) && fn != fn && !(fn < f1) && !(fn >= f1), "float NaN compares");
@@ -151,6 +151,7 @@ new file mode 100644
 +        Check((long)D(-9223372036854775808.0) == long.MinValue && (long)D(9223372036854775807.0) == long.MaxValue, "(long) edges");
 +        Check((ulong)D(-1.0) == 0 && (ulong)D(1e30) == ulong.MaxValue && (ulong)D(18446744073709551615.0) == ulong.MaxValue, "(ulong)");
 +        Check((ulong)D(9223372036854775808.0) == 9223372036854775808UL, "(ulong)2^63");
++        // Conversions to the small integer types saturate as well (.NET 11).
 +        Check((byte)D(300.0) == 255 && (byte)D(-5.0) == 0 && (byte)D(double.NaN) == 0, "(byte)");
 +        Check((sbyte)D(-200.0) == -128 && (sbyte)D(200.0) == 127, "(sbyte)");
 +        Check((short)D(70000.0) == 32767 && (ushort)D(70000.0) == 65535 && (ushort)D(-1.0) == 0, "(short)/(ushort)");
@@ -260,9 +261,9 @@ new file mode 100644
 +        Check(Math.Truncate(D(-1.7)) == -1.0, "Truncate");
 +    }
 +
-+    static bool Throws(Action a)
++    static bool Throws(Func<object> f)
 +    {
-+        try { a(); } catch (OverflowException) { return true; }
++        try { _ = f(); } catch (OverflowException) { return true; }
 +        return false;
 +    }
 +
