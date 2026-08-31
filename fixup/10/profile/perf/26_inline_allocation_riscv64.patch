@@ -1,81 +1,163 @@
-diff --git a/src/coreclr/jit/objectalloc.cpp b/src/coreclr/jit/objectalloc.cpp
-index 012248266bf..50358db60ce 100644
+--- a/src/coreclr/jit/jitconfigvalues.h
++++ b/src/coreclr/jit/jitconfigvalues.h
+@@ -427,6 +427,19 @@
+ RELEASE_CONFIG_INTEGER(EnableArm64Sve,              "EnableArm64Sve",            1) // Allows Arm64 Sve+ hardware intrinsics to be disabled
+ RELEASE_CONFIG_INTEGER(EnableArm64Sve2,             "EnableArm64Sve2",           1) // Allows Arm64 Sve2+ hardware intrinsics to be disabled
+ #elif defined(TARGET_RISCV64)
++// zkVM guests (ZisK, SP1, OpenVM) get all their memory from one downward bump
++// pointer kept in a cell at a fixed address, shared with the guest's own C
++// allocator. Non-zero enables per-site inline allocation of fixed-size
++// reference classes against that cell instead of a call to the allocation
++// helper; the value is the LOW 32 BITS of the cell's address (every such guest
++// is mapped below 4 GiB) and must be 8-byte aligned. The cell 8 bytes BELOW it
++// must hold the lowest address the heap may occupy, published before any
++// managed code runs and never changed afterwards.
++//
++// 0 (the default) keeps the helper call. Every non-zkVM riscv64 target must
++// leave it at 0: the address is a raw absolute constant with no relocation and
++// means nothing outside the guest it was chosen for.
++RELEASE_CONFIG_INTEGER(JitZkBumpAddr,               "JitZkBumpAddr",             0)
+ RELEASE_CONFIG_INTEGER(EnableRiscV64Zba,            "EnableRiscV64Zba",          1) // Allows RiscV64 Zba hardware intrinsics to be disabled
+ RELEASE_CONFIG_INTEGER(EnableRiscV64Zbb,            "EnableRiscV64Zbb",          1) // Allows RiscV64 Zbb hardware intrinsics to be disabled
+ RELEASE_CONFIG_INTEGER(EnableRiscV64Atomic,         "EnableRiscV64Atomic",       1) // Allows RiscV64 atomic (A: lr/sc, amo*) emission to be disabled; 0 lowers interlocked ops to plain load/modify/store (single-hart zkVM)
 --- a/src/coreclr/jit/objectalloc.cpp
 +++ b/src/coreclr/jit/objectalloc.cpp
-@@ -1626,6 +1626,79 @@ GenTree* ObjectAllocator::MorphAllocObjNodeIntoHelperCall(GenTreeAllocObj* alloc
+@@ -1625,6 +1625,141 @@
      }
  #endif
  
 +#if defined(TARGET_RISCV64)
 +    // ===== zkVM per-site inline allocation (fixed-size reference types) =======
-+    // Replace `call CORINFO_HELP_NEWFAST(MT)` with an inline downward bump on a
-+    // FIXED-address pointer cell (g_zk_bump_ptr @ 0xbffefff8 - see
-+    // modules/zkvm_zisk/script.ld and pal/module.c) using a compile-time
-+    // constant object size. Mirrors the C allocator's protocol (mem points 8
-+    // bytes below the last object) so inline- and helper-allocated objects
-+    // interleave on the same bump pointer. OOM is NOT checked (a valid block
-+    // never exhausts the heap; the helper still checks for arrays/strings).
-+    // Flip ZKVM_INLINE_ALLOC to 0 to disable.
++    // A zkVM guest has no GC and no OS: every byte it allocates comes from one
++    // downward bump pointer in a cell at a FIXED address, shared with the C
++    // allocator in the guest's PAL. Because the address is fixed, the bump can
++    // be inlined at each allocation site as a bare constant with no relocation,
++    // which is much cheaper than a call to the allocation helper.
++    //
++    // The address is NOT baked in here. It comes from JitZkBumpAddr and is 0 by
++    // default, so an ordinary riscv64 target (linux/musl/glibc) is unaffected -
++    // an absolute constant address is meaningless there, and writing to it would
++    // be memory corruption. Only a build that passes the knob gets the inline
++    // sequence, and the value it passes must match the address its linker script
++    // gives the cell.
++    //
++    // Layout, identical to the C allocator's so inline- and helper-allocated
++    // objects interleave on one heap:
++    //
++    //     cell[0]   = bump pointer = header address of the last object
++    //     cell[-1]  = heap floor   = lowest address the heap may occupy
++    //     object    = header + 8,  header holds the payload size
++    //
++    // COST: exactly one instruction more than an unchecked bump - a single
++    // `bgeu` to the method's one shared SCK_FAIL_FAST block (fgAddCodeRef gives
++    // FAIL_FAST refData 0, so every site in the method shares one block and no
++    // code is added per site). The floor is loaded, not materialized, but the
++    // load is marked invariant, so it is value-numbered as VNF_InvariantLoad,
++    // CSEd across every allocation site in the method and hoisted out of loops:
++    // its cost is amortized away rather than paid per allocation.
++    //
++    // The guard rejects `header <= floor`, i.e. the heap is exhausted. There is
++    // no GC to fall back on, so the helper could not satisfy the request either
++    // and failing fast is the honest outcome. Without it the bump walks down
++    // into .bss, .data and the stack and corrupts them silently - the same
++    // failure the PAL's C allocator has always checked for. The guard runs
++    // before the cell is updated, so a trap leaves the heap exactly as it was.
++    //
++    // WHY THE FLOOR MAY BE TREATED AS INVARIANT, and why there is no second
++    // guard for an unset cell: the PAL publishes the floor from an .init_array
++    // constructor, before __libc_start_main hands control to the runtime's entry
++    // point, and never writes it again. So by the time any JIT-compiled code
++    // exists the cell is set, and it never changes afterwards. A PAL that
++    // published it later, or moved it, would break this transform.
++    //
 +    // EXPECTED ITERATION POINTS if it miscompiles/asserts:
-+    //   (1) ref vs native-int typing of the result local (TYP_REF read of an
-+    //       TYP_I_IMPL local) - may need GT_BITCAST or a TYP_REF temp;
++    //   (1) ref vs native-int typing of the result local (TYP_REF read of a
++    //       TYP_I_IMPL local);
 +    //   (2) COMMA-of-stores shape / GTF flags on the bump indirs;
 +    //   (3) getHeapClassSize vs the runtime MT.BaseSize the helper uses.
-+#define ZKVM_INLINE_ALLOC 1
-+#if ZKVM_INLINE_ALLOC
++
 +    // NativeAOT's getNewHelper returns CORINFO_HELP_NEWSFAST for a plain fixed-size
 +    // reference class (no finalizer, no align8) - it maps to RhpNewFast, whose bump
 +    // protocol this inline mirrors. (CORINFO_HELP_NEWFAST is NOT used for newobj here;
 +    // the _FINALIZE / _ALIGN8 / _VC variants map to other helpers and are left alone.)
-+    if ((helper == CORINFO_HELP_NEWSFAST) && (allocObj->gtAllocObjClsHnd != NO_CLASS_HANDLE) &&
-+        (arg != nullptr))
++    if ((helper == CORINFO_HELP_NEWSFAST) && (allocObj->gtAllocObjClsHnd != NO_CLASS_HANDLE) && (arg != nullptr))
 +    {
-+        const ssize_t  ZK_BUMP_ADDR = (ssize_t)0xbffefff8;
-+        const unsigned MIN_OBJ_SIZE = 0x18;
++        // Low 32 bits of the cell address, zero-extended. 0 disables the transform.
++        const ssize_t bumpAddr = (ssize_t)(size_t)(uint32_t)JitConfig.JitZkBumpAddr();
 +
-+        unsigned baseSize = comp->info.compCompHnd->getHeapClassSize(allocObj->gtAllocObjClsHnd);
-+        if (baseSize < MIN_OBJ_SIZE)
-+            baseSize = MIN_OBJ_SIZE;
-+        const ssize_t req = (ssize_t)((baseSize + 7u) & ~(unsigned)7u);
++        if ((bumpAddr != 0) && ((bumpAddr & 7) == 0))
++        {
++            const unsigned MIN_OBJ_SIZE = 0x18;
 +
-+        unsigned curLcl = comp->lvaGrabTemp(true DEBUGARG("zkVM inline-alloc cur"));
-+        unsigned newLcl = comp->lvaGrabTemp(true DEBUGARG("zkVM inline-alloc new"));
-+        comp->lvaTable[curLcl].lvType = TYP_I_IMPL;
-+        comp->lvaTable[newLcl].lvType = TYP_I_IMPL;
++            unsigned baseSize = comp->info.compCompHnd->getHeapClassSize(allocObj->gtAllocObjClsHnd);
++            if (baseSize < MIN_OBJ_SIZE)
++            {
++                baseSize = MIN_OBJ_SIZE;
++            }
++            const ssize_t payload = (ssize_t)((baseSize + 7u) & ~(unsigned)7u);
 +
-+        // cur = *(intptr*)BUMP
-+        GenTree* storeCur =
-+            comp->gtNewStoreLclVarNode(curLcl, comp->gtNewIndir(TYP_I_IMPL,
-+                                                                comp->gtNewIconNode(ZK_BUMP_ADDR, TYP_I_IMPL)));
-+        // new_tmp = cur - req      (cur and req are 8-aligned, so align_down_8 is a no-op)
-+        GenTree* storeNew = comp->gtNewStoreLclVarNode(
-+            newLcl, comp->gtNewOperNode(GT_SUB, TYP_I_IMPL, comp->gtNewLclvNode(curLcl, TYP_I_IMPL),
-+                                        comp->gtNewIconNode(req, TYP_I_IMPL)));
-+        // *(intptr*)BUMP = new_tmp - 8
-+        GenTree* storeBump = comp->gtNewStoreIndNode(
-+            TYP_I_IMPL, comp->gtNewIconNode(ZK_BUMP_ADDR, TYP_I_IMPL),
-+            comp->gtNewOperNode(GT_SUB, TYP_I_IMPL, comp->gtNewLclvNode(newLcl, TYP_I_IMPL),
-+                                comp->gtNewIconNode(8, TYP_I_IMPL)));
-+        // *(int64*)(new_tmp - 8) = req     (size header, for layout compat with the C allocator)
-+        GenTree* storeHdr = comp->gtNewStoreIndNode(
-+            TYP_LONG,
-+            comp->gtNewOperNode(GT_SUB, TYP_I_IMPL, comp->gtNewLclvNode(newLcl, TYP_I_IMPL),
-+                                comp->gtNewIconNode(8, TYP_I_IMPL)),
-+            comp->gtNewIconNode(req, TYP_LONG));
-+        // *(intptr*)new_tmp = MethodTable
-+        GenTree* storeMt =
-+            comp->gtNewStoreIndNode(TYP_I_IMPL, comp->gtNewLclvNode(newLcl, TYP_I_IMPL), arg);
-+        // result value: new_tmp as an object reference
-+        GenTree* result = comp->gtNewLclvNode(newLcl, TYP_REF);
++            unsigned cellLcl = comp->lvaGrabTemp(true DEBUGARG("zkVM inline-alloc cell"));
++            unsigned objLcl  = comp->lvaGrabTemp(true DEBUGARG("zkVM inline-alloc obj"));
++            unsigned hdrLcl  = comp->lvaGrabTemp(true DEBUGARG("zkVM inline-alloc hdr"));
++            comp->lvaTable[cellLcl].lvType = TYP_I_IMPL;
++            comp->lvaTable[objLcl].lvType  = TYP_I_IMPL;
++            comp->lvaTable[hdrLcl].lvType  = TYP_I_IMPL;
 +
-+        GenTree* tree = comp->gtNewOperNode(GT_COMMA, TYP_REF, storeMt, result);
-+        tree          = comp->gtNewOperNode(GT_COMMA, TYP_REF, storeHdr, tree);
-+        tree          = comp->gtNewOperNode(GT_COMMA, TYP_REF, storeBump, tree);
-+        tree          = comp->gtNewOperNode(GT_COMMA, TYP_REF, storeNew, tree);
-+        tree          = comp->gtNewOperNode(GT_COMMA, TYP_REF, storeCur, tree);
-+        return tree;
++            // cell = BUMP_ADDR. Held in a local so the constant is materialized
++            // once and reused by the load and the store below.
++            GenTree* storeCell = comp->gtNewStoreLclVarNode(cellLcl, comp->gtNewIconNode(bumpAddr, TYP_I_IMPL));
++
++            // obj = *(intptr*)cell - payload
++            GenTree* cur = comp->gtNewIndir(TYP_I_IMPL, comp->gtNewLclvNode(cellLcl, TYP_I_IMPL));
++            GenTree* storeObj =
++                comp->gtNewStoreLclVarNode(objLcl, comp->gtNewOperNode(GT_SUB, TYP_I_IMPL, cur,
++                                                                      comp->gtNewIconNode(payload, TYP_I_IMPL)));
++
++            // hdr = obj - 8
++            GenTree* storeHdr = comp->gtNewStoreLclVarNode(
++                hdrLcl, comp->gtNewOperNode(GT_SUB, TYP_I_IMPL, comp->gtNewLclvNode(objLcl, TYP_I_IMPL),
++                                            comp->gtNewIconNode(8, TYP_I_IMPL)));
++
++            // floor = *(intptr*)(BUMP_ADDR - 8), invariant: a separate constant
++            // address rather than cell-8, so the whole load is one hoistable,
++            // CSEable expression instead of one anchored on a per-site local.
++            GenTree* floor = comp->gtNewIndir(TYP_I_IMPL, comp->gtNewIconNode(bumpAddr - 8, TYP_I_IMPL),
++                                              GTF_IND_NONFAULTING | GTF_IND_INVARIANT);
++
++            // Guard: fail fast when hdr <= floor. GT_BOUNDS_CHECK traps on
++            // (unsigned)index >= (unsigned)length, so index = floor, length = hdr.
++            // Rejecting the exact boundary costs at most one object at the very
++            // bottom of the heap and keeps this to a single instruction.
++            GenTree* guard = new (comp, GT_BOUNDS_CHECK)
++                GenTreeBoundsChk(floor, comp->gtNewLclvNode(hdrLcl, TYP_I_IMPL), SCK_FAIL_FAST);
++
++            // *(intptr*)cell = hdr
++            GenTree* storeBump = comp->gtNewStoreIndNode(TYP_I_IMPL, comp->gtNewLclvNode(cellLcl, TYP_I_IMPL),
++                                                         comp->gtNewLclvNode(hdrLcl, TYP_I_IMPL));
++
++            // *(int64*)hdr = payload   (size header, for layout compat with the C allocator)
++            GenTree* storeSize = comp->gtNewStoreIndNode(TYP_LONG, comp->gtNewLclvNode(hdrLcl, TYP_I_IMPL),
++                                                         comp->gtNewIconNode(payload, TYP_LONG));
++
++            // *(intptr*)obj = MethodTable
++            GenTree* storeMt =
++                comp->gtNewStoreIndNode(TYP_I_IMPL, comp->gtNewLclvNode(objLcl, TYP_I_IMPL), arg);
++
++            // result value: obj as an object reference
++            GenTree* result = comp->gtNewLclvNode(objLcl, TYP_REF);
++
++            // COMMA nests right, so the node passed as op1 runs first: build from
++            // the tail so evaluation is cell, obj, hdr, guard, then the stores.
++            GenTree* tree = comp->gtNewOperNode(GT_COMMA, TYP_REF, storeMt, result);
++            tree          = comp->gtNewOperNode(GT_COMMA, TYP_REF, storeSize, tree);
++            tree          = comp->gtNewOperNode(GT_COMMA, TYP_REF, storeBump, tree);
++            tree          = comp->gtNewOperNode(GT_COMMA, TYP_REF, guard, tree);
++            tree          = comp->gtNewOperNode(GT_COMMA, TYP_REF, storeHdr, tree);
++            tree          = comp->gtNewOperNode(GT_COMMA, TYP_REF, storeObj, tree);
++            tree          = comp->gtNewOperNode(GT_COMMA, TYP_REF, storeCell, tree);
++            return tree;
++        }
 +    }
-+#endif // ZKVM_INLINE_ALLOC
 +    // =========================================================================
 +#endif // TARGET_RISCV64
 +
