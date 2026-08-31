@@ -1,18 +1,18 @@
 --- a/src/coreclr/jit/gtlist.h
 +++ b/src/coreclr/jit/gtlist.h
-@@ -154,6 +154,12 @@
+@@ -153,6 +153,12 @@
+ 
  GTNODE(INDEX_ADDR       , GenTreeIndexAddr   ,0,0,GTK_BINOP|GTK_EXOP)   // Address of SZ-array-element.
  GTNODE(LEA              , GenTreeAddrMode    ,0,0,GTK_BINOP|GTK_EXOP|DBK_NOTHIR)
- 
++
 +// zkVM (RISCV64 only): inline DMA memcmp idiom. op1 = dst addr, op2 = src addr,
 +// gtCount = constant byte count. Lowered from NI_System_SpanHelpers_SequenceEqual
-+// and emitted as the adjacent `csrs 0x814,src; addi rd,dst,count` pair that the
++// and emitted as the adjacent `csrrs rd,0x814,src; addi x0,dst,count` pair that the
 +// ZisK transpiler folds into one dma_xmemcmp step. Produces the memcmp result.
 +GTNODE(DMA_CMP          , GenTreeDmaCmp      ,0,0,GTK_BINOP|GTK_EXOP|DBK_NOTHIR)
-+
+ 
  #if !defined(TARGET_64BIT)
  // A GT_LONG node simply represents the long value produced by the concatenation
- // of its two (lower and upper half) operands.  Some GT_LONG nodes are transient,
 --- a/src/coreclr/jit/gtstructs.h
 +++ b/src/coreclr/jit/gtstructs.h
 @@ -90,6 +90,7 @@
@@ -25,13 +25,19 @@
  GTSTRUCT_1(Phi         , GT_PHI)
 --- a/src/coreclr/jit/gentree.h
 +++ b/src/coreclr/jit/gentree.h
-@@ -7889,6 +7889,28 @@
- #endif
- };
- 
+@@ -7883,6 +7883,28 @@
+     friend GenTree;
+     // Used only for GenTree::GetVtableForOper()
+     GenTreeAddrMode()
++        : GenTreeOp()
++    {
++    }
++#endif
++};
++
 +// zkVM (RISCV64): inline DMA memcmp node. See gtlist.h GT_DMA_CMP.
 +//   op1 (Op1) = dst address  -> rs1 of the addi
-+//   op2 (Op2) = src address  -> rs1 of the csrs
++//   op2 (Op2) = src address  -> rs1 of the csrrs
 +//   gtCount   = constant byte count (must fit a 12-bit signed addi immediate)
 +// Result (this node's reg) holds the memcmp difference: 0 iff the buffers are equal.
 +struct GenTreeDmaCmp : public GenTreeOp
@@ -45,39 +51,38 @@
 +    }
 +#if DEBUGGABLE_GENTREE
 +    GenTreeDmaCmp()
-+        : GenTreeOp()
-+    {
-+    }
-+#endif
-+};
-+
- // Indir is just an op, no additional data, but some additional abstractions
- struct GenTreeIndir : public GenTreeOp
- {
+         : GenTreeOp()
+     {
+     }
 --- a/src/coreclr/jit/jitconfigvalues.h
 +++ b/src/coreclr/jit/jitconfigvalues.h
-@@ -437,6 +437,11 @@
+@@ -451,6 +451,14 @@
  // FP save/establish/restore, locals addressed off SP. FP (s0) then becomes an
  // ordinary allocatable callee-saved register. When 0, FP is forced as before.
  RELEASE_CONFIG_INTEGER(RiscV64FramelessFrames,      "RiscV64FramelessFrames",    1)
 +// zkVM (ZisK) only: lower constant-size SpanHelpers.SequenceEqual to the inline
-+// `csrs 0x814,src; addi rd,dst,count` DMA-memcmp idiom (1 emulator step instead of
-+// the scalar unroll / managed call). OFF by default; enable only for ZisK targets
-+// whose transpiler folds the idiom (a plain riscv64 CPU would mis-execute it).
++// `csrrs rd,0x814,src; addi x0,dst,count` DMA-memcmp idiom (1 emulator step instead
++// of the scalar unroll / managed call). OFF by default, and it must STAY off for
++// anything but ZisK itself: only the ZisK ROM transpiler folds the pair. A real
++// riscv64 CPU executes a CSR access to 0x814 and an addi to x0, and the other zkVMs
++// (SP1, OpenVM) do not know the idiom either - ZisK's simulator target runs on a
++// real CPU/QEMU, so it must leave this at 0 as well.
 +RELEASE_CONFIG_INTEGER(JitRiscV64DmaCompare,        "JitRiscV64DmaCompare",      0)
  #endif
  
  RELEASE_CONFIG_INTEGER(EnableEmbeddedBroadcast,     "EnableEmbeddedBroadcast",   1) // Allows embedded broadcasts to be disabled
 --- a/src/coreclr/jit/lsrariscv64.cpp
 +++ b/src/coreclr/jit/lsrariscv64.cpp
-@@ -231,6 +231,15 @@
+@@ -231,6 +231,17 @@
              assert(dstCount == 0);
              break;
  
 +        case GT_DMA_CMP:
 +            // zkVM inline DMA memcmp: dst addr (op1) and src addr (op2) each need a
 +            // register; the result (memcmp difference) is a single GP def. The count
-+            // is a node-carried immediate, so there is no third operand.
++            // is a node-carried immediate, so there is no third operand. The def may
++            // share a register with either operand - the pair becomes one emulator
++            // step, so nothing is clobbered in between.
 +            srcCount = BuildBinaryUses(tree->AsOp());
 +            assert(dstCount == 1);
 +            BuildDef(tree);
@@ -98,33 +103,48 @@
      // register RA does not need to be spilled/reloaded. Computed once in
 --- a/src/coreclr/jit/codegenriscv64.cpp
 +++ b/src/coreclr/jit/codegenriscv64.cpp
-@@ -4198,6 +4198,10 @@
+@@ -4252,6 +4252,10 @@
+         case GT_BSWAP:
+         case GT_BSWAP16:
              genCodeForBswap(treeNode);
-             break;
- 
-+        case GT_DMA_CMP:
-+            genCodeForDmaCmp(treeNode->AsDmaCmp());
 +            break;
 +
-         case GT_MOD:
-         case GT_UMOD:
-         case GT_DIV:
-@@ -6470,6 +6474,40 @@
++        case GT_DMA_CMP:
++            genCodeForDmaCmp(treeNode->AsDmaCmp());
+             break;
  
-     genProduceReg(tree);
- }
+         case GT_MOD:
+@@ -6523,7 +6527,53 @@
+     emitAttr attr = emitActualTypeSize(tree);
+ 
+     GetEmitter()->emitIns_R_R_R(ins, attr, tree->GetRegNum(), tree->gtOp1->GetRegNum(), tree->gtOp2->GetRegNum());
++
++    genProduceReg(tree);
++}
 +
 +//------------------------------------------------------------------------
 +// genCodeForDmaCmp: Emit the zkVM (ZisK) inline DMA-memcmp idiom for GT_DMA_CMP.
 +//
 +// The ZisK ROM transpiler folds the adjacent instruction pair
 +//
-+//     csrs  0x814, <srcReg>            ; == csrrs x0, 0x814, src
-+//     addi  <resultReg>, <dstReg>, N   ; N = byte count (must fit simm12)
++//     csrrs <resultReg>, 0x814, <srcReg>
++//     addi  x0, <dstReg>, N              ; N = byte count (must fit simm12)
 +//
 +// into a single dma_xmemcmp emulator step that compares N bytes at dst against src
 +// and writes the memcmp difference (0 iff the buffers are equal) into <resultReg>.
-+// The two instructions MUST remain adjacent - the transpiler panics if the csrs is
++//
++// The result register is the CSRRS's rd and the addi's rd MUST be x0. The mirrored
++// form (rd on the addi, x0 on the csrrs) also transpiles, but through the branch
++// ZisK marks DEPRECATED - it prints "DEPRECATED INSTRUCTION ... please update
++// toolchain/zisklibs/ziskos" and is slated for removal. This encoding matches
++// ziskos's own dma/memcmp.s, which is the reference.
++//
++// Note that resultReg may be the same register as dstReg or srcReg: the two RISC-V
++// instructions become ONE emulator step, so there is no intermediate write to
++// clobber an operand. ziskos's memcmp.s relies on exactly that (csrrs a0, ...;
++// add x0, a0, a2), so no LSRA constraint is needed here.
++//
++// The two instructions MUST remain adjacent - the transpiler panics if the csrrs is
 +// not immediately followed by the addi - so they are emitted back-to-back here with
 +// nothing in between. Behind JitRiscV64DmaCompare; only emitted for ZisK targets.
 +//
@@ -133,32 +153,31 @@
 +    assert(tree->OperIs(GT_DMA_CMP));
 +    assert(tree->gtCount > 0);
 +    assert(tree->gtCount <= 2047); // fits the addi immediate
-+
+ 
 +    genConsumeOperands(tree);
 +
 +    const regNumber dstReg    = tree->gtOp1->GetRegNum(); // addi rs1
-+    const regNumber srcReg    = tree->gtOp2->GetRegNum(); // csrs operand
-+    const regNumber resultReg = tree->GetRegNum();        // addi rd (== memcmp result)
++    const regNumber srcReg    = tree->gtOp2->GetRegNum(); // csrrs rs1
++    const regNumber resultReg = tree->GetRegNum();        // csrrs rd (== memcmp result)
 +
-+    // csrs 0x814, src   ==   csrrs x0, 0x814, src
-+    GetEmitter()->emitIns_R_R_I(INS_csrrs, EA_PTRSIZE, REG_R0, srcReg, 0x814);
-+    // addi result, dst, count  (transpiled: result = memcmp(dst, src, count))
-+    GetEmitter()->emitIns_R_R_I(INS_addi, EA_PTRSIZE, resultReg, dstReg, (ssize_t)tree->gtCount);
++    // csrrs result, 0x814, src
++    GetEmitter()->emitIns_R_R_I(INS_csrrs, EA_PTRSIZE, resultReg, srcReg, 0x814);
++    // addi x0, dst, count      (transpiled: result = memcmp(dst, src, count))
++    GetEmitter()->emitIns_R_R_I(INS_addi, EA_PTRSIZE, REG_R0, dstReg, (ssize_t)tree->gtCount);
 +
-+    genProduceReg(tree);
-+}
+     genProduceReg(tree);
+ }
  
- void CodeGen::genCodeForAddUw(GenTreeOp* tree)
- {
 --- a/src/coreclr/jit/lower.cpp
 +++ b/src/coreclr/jit/lower.cpp
-@@ -2536,6 +2536,62 @@
+@@ -2535,7 +2535,63 @@
+         {
              GenTree* lArg = call->gtArgs.GetUserArgByIndex(0)->GetNode();
              GenTree* rArg = call->gtArgs.GetUserArgByIndex(1)->GetNode();
- 
++
 +#ifdef TARGET_RISCV64
 +            // zkVM: emit the inline DMA memcmp idiom. The ZisK transpiler folds the
-+            // adjacent pair  `csrs 0x814, src ; addi rd, dst, count`  into a single
++            // adjacent pair  `csrrs rd, 0x814, src ; addi x0, dst, count`  into a single
 +            // dma_xmemcmp step (1 emulator step vs. the scalar unroll / managed call).
 +            // `count` is the addi immediate, so it must fit a 12-bit signed field.
 +            // On riscv64 LowerCallMemcmp is only reached behind JitRiscV64DmaCompare,
@@ -174,14 +193,14 @@
 +                JITDUMP("Accepted for inline DMA memcmp (count=%d)!\nOld tree:\n", (int)cnsSize);
 +                DISPTREE(call);
 +
-+                // op1 = dst addr (addi rs1), op2 = src addr (csrs operand). The node's
++                // op1 = dst addr (addi rs1), op2 = src addr (csrrs rs1). The node's
 +                // result is the memcmp difference (0 == equal); SequenceEqual returns
 +                // true when equal, so compare the difference against zero.
 +                GenTree* dmaCmp = new (comp, GT_DMA_CMP) GenTreeDmaCmp(TYP_INT, lArg, rArg, (unsigned)cnsSize);
 +                dmaCmp->gtFlags |= GTF_GLOB_REF; // reads both buffers from memory
 +                GenTree* zeroCns = comp->gtNewIconNode(0, TYP_INT);
 +                GenTree* result  = comp->gtNewOperNode(GT_EQ, TYP_INT, dmaCmp, zeroCns);
-+
+ 
 +                BlockRange().InsertBefore(call, dmaCmp, zeroCns, result);
 +                *next = dmaCmp;
 +
@@ -215,15 +234,16 @@
              ssize_t MaxUnrollSize = 16;
  
  #ifdef FEATURE_SIMD
-@@ -2833,6 +2889,22 @@
+@@ -2833,6 +2889,23 @@
      }
  #endif
  
 +#if defined(TARGET_RISCV64)
 +    // zkVM (ZisK): lower constant-size SpanHelpers.SequenceEqual to the inline DMA
 +    // memcmp idiom. Gated behind JitRiscV64DmaCompare because only the ZisK transpiler
-+    // folds the `csrs 0x814,src; addi rd,dst,count` pair - a plain riscv64 CPU would
-+    // mis-execute it. Done before LowerArgsForCall so the address args are still raw.
++    // folds the `csrrs rd,0x814,src; addi x0,dst,count` pair - a plain riscv64 CPU
++    // would take a CSR access and an addi to x0 instead. Done before LowerArgsForCall
++    // so the address args are still raw.
 +    if ((JitConfig.JitRiscV64DmaCompare() != 0) && call->IsSpecialIntrinsic() &&
 +        (comp->lookupNamedIntrinsic(call->gtCallMethHnd) == NI_System_SpanHelpers_SequenceEqual))
 +    {
