@@ -22,10 +22,11 @@
  RELEASE_CONFIG_INTEGER(EnableRiscV64Atomic,         "EnableRiscV64Atomic",       1) // Allows RiscV64 atomic (A: lr/sc, amo*) emission to be disabled; 0 lowers interlocked ops to plain load/modify/store (single-hart zkVM)
 --- a/src/coreclr/jit/objectalloc.cpp
 +++ b/src/coreclr/jit/objectalloc.cpp
-@@ -1625,6 +1625,141 @@
+@@ -1624,7 +1624,147 @@
+         arg = nullptr;
      }
  #endif
- 
++
 +#if defined(TARGET_RISCV64)
 +    // ===== zkVM per-site inline allocation (fixed-size reference types) =======
 +    // A zkVM guest has no GC and no OS: every byte it allocates comes from one
@@ -102,7 +103,7 @@
 +            comp->lvaTable[cellLcl].lvType = TYP_I_IMPL;
 +            comp->lvaTable[objLcl].lvType  = TYP_I_IMPL;
 +            comp->lvaTable[hdrLcl].lvType  = TYP_I_IMPL;
-+
+ 
 +            // cell = BUMP_ADDR. Held in a local so the constant is materialized
 +            // once and reused by the load and the store below.
 +            GenTree* storeCell = comp->gtNewStoreLclVarNode(cellLcl, comp->gtNewIconNode(bumpAddr, TYP_I_IMPL));
@@ -128,8 +129,13 @@
 +            // (unsigned)index >= (unsigned)length, so index = floor, length = hdr.
 +            // Rejecting the exact boundary costs at most one object at the very
 +            // bottom of the heap and keeps this to a single instruction.
-+            GenTree* guard = new (comp, GT_BOUNDS_CHECK)
++            GenTreeBoundsChk* guard = new (comp, GT_BOUNDS_CHECK)
 +                GenTreeBoundsChk(floor, comp->gtNewLclvNode(hdrLcl, TYP_I_IMPL), SCK_FAIL_FAST);
++            // The node's operands are plain pointers, not an array element and
++            // its length, so it is never a loop-cloning candidate - but leave
++            // gtInxType well-formed rather than the constructor's TYP_UNKNOWN
++            // (loopcloning.cpp asserts it is not TYP_VOID).
++            guard->gtInxType = TYP_I_IMPL;
 +
 +            // *(intptr*)cell = hdr
 +            GenTree* storeBump = comp->gtNewStoreIndNode(TYP_I_IMPL, comp->gtNewLclvNode(cellLcl, TYP_I_IMPL),
