@@ -1,0 +1,141 @@
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -3375,6 +3375,82 @@
+ }
+ 
+ //------------------------------------------------------------------------
++// RiscV64ValueKnownUnsignedWidth: the provable unsigned bit-width of the node's value
++// (all bits above it are clear), or 0 when nothing can be proven.
++//
++// A non-zero result means both a zero-extension (`slli 32; srli 32` / `andi`) and a
++// sign-extension (`sext.w`) covering that width are no-ops that can be skipped. Capped
++// at 31 so the value also survives a 4-byte spill and sign-extending `lw` reload
++// unchanged. Covers unsigned narrow loads (lbu/lhu), non-negative int constants, AND
++// with a non-negative int constant, casts to small unsigned types, array lengths, and
++// loads of small unsigned normalize-on-store locals.
++//
++static unsigned RiscV64ValueKnownUnsignedWidth(Compiler* compiler, GenTree* node)
++{
++    if (genActualType(node->TypeGet()) != TYP_INT)
++    {
++        return 0;
++    }
++    if (node->OperIs(GT_CNS_INT))
++    {
++        const ssize_t value = node->AsIntCon()->IconValue();
++        if (value < 0)
++        {
++            return 0;
++        }
++        unsigned width = 0;
++        for (ssize_t v = value; v != 0; v >>= 1)
++        {
++            width++;
++        }
++        return (width <= 31) ? ((width < 1) ? 1 : width) : 0;
++    }
++    if (node->OperIs(GT_IND, GT_LCL_FLD))
++    {
++        const var_types t = node->TypeGet();
++        return (t == TYP_UBYTE) ? 8 : (t == TYP_USHORT) ? 16 : 0;
++    }
++    if (node->OperIs(GT_AND))
++    {
++        GenTree* op2 = node->gtGetOp2();
++        if (op2->OperIs(GT_CNS_INT) && (op2->AsIntCon()->IconValue() >= 0) &&
++            (op2->AsIntCon()->IconValue() <= INT32_MAX))
++        {
++            unsigned width = 0;
++            for (ssize_t v = op2->AsIntCon()->IconValue(); v != 0; v >>= 1)
++            {
++                width++;
++            }
++            return (width < 1) ? 1 : width;
++        }
++        return 0;
++    }
++    if (node->OperIs(GT_CAST) && !node->gtOverflow())
++    {
++        const var_types to = node->AsCast()->CastToType();
++        return (to == TYP_UBYTE) ? 8 : (to == TYP_USHORT) ? 16 : 0;
++    }
++    if (node->OperIs(GT_ARR_LENGTH))
++    {
++        return 31;
++    }
++    if (node->OperIs(GT_LCL_VAR))
++    {
++        // A small unsigned local only holds a normalized value when it normalizes on store;
++        // a normalize-on-load local carries arbitrary upper bits, and the cast being
++        // considered here is itself the normalization.
++        LclVarDsc* varDsc = compiler->lvaGetDesc(node->AsLclVar());
++        if (!varDsc->lvNormalizeOnStore())
++        {
++            return 0;
++        }
++        const var_types lclType = varDsc->TypeGet();
++        return (lclType == TYP_UBYTE) ? 8 : (lclType == TYP_USHORT) ? 16 : 0;
++    }
++    return 0;
++}
++
++//------------------------------------------------------------------------
+ // genCodeForCompare: Produce code for a GT_EQ/GT_NE/GT_LT/GT_LE/GT_GE/GT_GT node.
+ //
+ // Arguments:
+@@ -6354,6 +6430,16 @@
+         switch (desc.ExtendKind())
+         {
+             case GenIntCastDesc::ZERO_EXTEND_SMALL_INT:
++                // Skip the masking when the value already fits the target width.
++                if (RiscV64ValueKnownUnsignedWidth(compiler, cast->gtGetOp1()) != 0 &&
++                    RiscV64ValueKnownUnsignedWidth(compiler, cast->gtGetOp1()) <= desc.ExtendSrcSize() * 8)
++                {
++                    if (srcReg != dstReg)
++                    {
++                        emit->emitIns_R_R(INS_mov, EA_PTRSIZE, dstReg, srcReg);
++                    }
++                    break;
++                }
+                 if (desc.ExtendSrcSize() == 1)
+                 {
+                     emit->emitIns_R_R_I(INS_andi, EA_PTRSIZE, dstReg, srcReg, 0xff);
+@@ -6389,7 +6475,15 @@
+             }
+ 
+             case GenIntCastDesc::ZERO_EXTEND_INT:
+-                if (compiler->compOpportunisticallyDependsOn(InstructionSet_Zba))
++                // Skip the widening when bits [63:31] are provably already clear.
++                if (RiscV64ValueKnownUnsignedWidth(compiler, cast->gtGetOp1()) != 0)
++                {
++                    if (srcReg != dstReg)
++                    {
++                        emit->emitIns_R_R(INS_mov, EA_PTRSIZE, dstReg, srcReg);
++                    }
++                }
++                else if (compiler->compOpportunisticallyDependsOn(InstructionSet_Zba))
+                 {
+                     emit->emitIns_R_R_R(INS_add_uw, EA_PTRSIZE, dstReg, srcReg, REG_R0);
+                 }
+@@ -6400,7 +6494,19 @@
+                 }
+                 break;
+             case GenIntCastDesc::SIGN_EXTEND_INT:
+-                emit->emitIns_R_R(INS_sext_w, EA_4BYTE, dstReg, srcReg);
++                // Skip the sign-extension when the value is already sign-extended.
++                if (RiscV64ValueIsSignExtendedInt32(cast->gtGetOp1()) ||
++                    (RiscV64ValueKnownUnsignedWidth(compiler, cast->gtGetOp1()) != 0))
++                {
++                    if (srcReg != dstReg)
++                    {
++                        emit->emitIns_R_R(INS_mov, EA_PTRSIZE, dstReg, srcReg);
++                    }
++                }
++                else
++                {
++                    emit->emitIns_R_R(INS_sext_w, EA_4BYTE, dstReg, srcReg);
++                }
+                 break;
+ 
+             default:
