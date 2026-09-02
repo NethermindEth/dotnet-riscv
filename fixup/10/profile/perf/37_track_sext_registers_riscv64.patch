@@ -1,204 +1,194 @@
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 --- a/src/coreclr/jit/codegenriscv64.cpp
 +++ b/src/coreclr/jit/codegenriscv64.cpp
-@@ -1346,7 +1346,7 @@
-         }
+@@ -1348,7 +1348,7 @@ void CodeGen::genSimpleReturn(GenTree* treeNode)
          else
          {
--            GetEmitter()->emitIns_R_R((attr == EA_4BYTE) && !GetEmitter()->emitIsZext32(op1->GetRegNum()) ? INS_sext_w
-+            GetEmitter()->emitIns_R_R((attr == EA_4BYTE) && !GetEmitter()->emitIsZext32(op1->GetRegNum()) && !GetEmitter()->emitIsSext32(op1->GetRegNum()) ? INS_sext_w
-                                                                                                           : INS_mov,
-                                       attr, retReg, op1->GetRegNum());
+             // A value already known to have bits [63:31] clear needs no sign-extension.
+-            const bool needsSext = (attr == EA_4BYTE) && !GetEmitter()->emitIsZext32(op1->GetRegNum());
++            const bool needsSext = (attr == EA_4BYTE) && !GetEmitter()->emitIsSext32(op1->GetRegNum());
+             GetEmitter()->emitIns_R_R(needsSext ? INS_sext_w : INS_mov, attr, retReg, op1->GetRegNum());
          }
-@@ -3369,10 +3369,9 @@
-         const var_types t = node->TypeGet();
-         return (t == TYP_INT) || (t == TYP_BYTE) || (t == TYP_UBYTE) || (t == TYP_SHORT) || (t == TYP_USHORT);
      }
--    if (node->OperIs(GT_LCL_VAR))
--    {
--        return node->TypeGet() == TYP_INT;
--    }
-+    // An enregistered TYP_INT local is deliberately not reported as sign-extended: it can
-+    // hold a zero-extended value (e.g. from lwu), so the node-level assumption is unsound.
-+    // The emitter's emitIsSext32 register tracker covers the safe cases at emit time.
-     return false;
- }
- 
-@@ -3539,7 +3538,7 @@
+@@ -3418,7 +3418,7 @@ void CodeGen::genCodeForCompare(GenTreeOp* tree)
                      assert(regOp1 != tmpRegOp1);
                      imm = static_cast<int32_t>(imm);
                      // Skip the 32-bit operand sign-extension when op1 is already sign-extended.
--                    if (!RiscV64ValueIsSignExtendedInt32(op1) && !emit->emitIsZext32(regOp1))
-+                    if (!RiscV64ValueIsSignExtendedInt32(op1) && !emit->emitIsZext32(regOp1) && !emit->emitIsSext32(regOp1))
+-                    if (!RiscV64ValueIsSignExtendedInt32(compiler, op1) && !emit->emitIsZext32(regOp1))
++                    if (!RiscV64ValueIsSignExtendedInt32(compiler, op1) && !emit->emitIsSext32(regOp1))
                      {
                          emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp1, regOp1);
                          regOp1 = tmpRegOp1;
-@@ -3635,12 +3634,12 @@
+@@ -3514,12 +3514,12 @@ void CodeGen::genCodeForCompare(GenTreeOp* tree)
                      regNumber tmpRegOp2 = internalRegisters.GetSingle(tree);
                      assert(regOp1 != tmpRegOp2);
                      assert(regOp2 != tmpRegOp2);
--                    if (!RiscV64ValueIsSignExtendedInt32(op1) && !emit->emitIsZext32(regOp1))
-+                    if (!RiscV64ValueIsSignExtendedInt32(op1) && !emit->emitIsZext32(regOp1) && !emit->emitIsSext32(regOp1))
+-                    if (!RiscV64ValueIsSignExtendedInt32(compiler, op1) && !emit->emitIsZext32(regOp1))
++                    if (!RiscV64ValueIsSignExtendedInt32(compiler, op1) && !emit->emitIsSext32(regOp1))
                      {
                          emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp1, regOp1);
                          regOp1 = tmpRegOp1;
                      }
--                    if (!RiscV64ValueIsSignExtendedInt32(op2) && !emit->emitIsZext32(regOp2))
-+                    if (!RiscV64ValueIsSignExtendedInt32(op2) && !emit->emitIsZext32(regOp2) && !emit->emitIsSext32(regOp2))
+-                    if (!RiscV64ValueIsSignExtendedInt32(compiler, op2) && !emit->emitIsZext32(regOp2))
++                    if (!RiscV64ValueIsSignExtendedInt32(compiler, op2) && !emit->emitIsSext32(regOp2))
                      {
                          emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp2, regOp2);
                          regOp2 = tmpRegOp2;
-@@ -3715,7 +3714,7 @@
+@@ -3594,7 +3594,7 @@ void CodeGen::genCodeForJumpCompare(GenTreeOpCC* tree)
                  case EA_4BYTE:
                  {
                      imm = static_cast<int32_t>(imm);
--                    if (!RiscV64ValueIsSignExtendedInt32(op1) && !emit->emitIsZext32(regOp1))
-+                    if (!RiscV64ValueIsSignExtendedInt32(op1) && !emit->emitIsZext32(regOp1) && !emit->emitIsSext32(regOp1))
+-                    if (!RiscV64ValueIsSignExtendedInt32(compiler, op1) && !emit->emitIsZext32(regOp1))
++                    if (!RiscV64ValueIsSignExtendedInt32(compiler, op1) && !emit->emitIsSext32(regOp1))
                      {
                          regNumber tmpRegOp1 = rsGetRsvdReg();
                          assert(regOp1 != tmpRegOp1);
-@@ -3752,7 +3751,7 @@
+@@ -3631,7 +3631,7 @@ void CodeGen::genCodeForJumpCompare(GenTreeOpCC* tree)
          }
          else
          {
--            if ((cmpSize == EA_4BYTE) && !RiscV64ValueIsSignExtendedInt32(op1) && !emit->emitIsZext32(regOp1))
-+            if ((cmpSize == EA_4BYTE) && !RiscV64ValueIsSignExtendedInt32(op1) && !emit->emitIsZext32(regOp1) && !emit->emitIsSext32(regOp1))
+-            if ((cmpSize == EA_4BYTE) && !RiscV64ValueIsSignExtendedInt32(compiler, op1) && !emit->emitIsZext32(regOp1))
++            if ((cmpSize == EA_4BYTE) && !RiscV64ValueIsSignExtendedInt32(compiler, op1) && !emit->emitIsSext32(regOp1))
              {
                  regNumber tmpRegOp1 = rsGetRsvdReg();
                  assert(regOp1 != tmpRegOp1);
-@@ -3805,12 +3804,12 @@
+@@ -3684,12 +3684,12 @@ void CodeGen::genCodeForJumpCompare(GenTreeOpCC* tree)
              regNumber tmpRegOp2 = rsGetRsvdReg();
              assert(regOp1 != tmpRegOp2);
              assert(regOp2 != tmpRegOp2);
--            if (!RiscV64ValueIsSignExtendedInt32(op1) && !emit->emitIsZext32(regOp1))
-+            if (!RiscV64ValueIsSignExtendedInt32(op1) && !emit->emitIsZext32(regOp1) && !emit->emitIsSext32(regOp1))
+-            if (!RiscV64ValueIsSignExtendedInt32(compiler, op1) && !emit->emitIsZext32(regOp1))
++            if (!RiscV64ValueIsSignExtendedInt32(compiler, op1) && !emit->emitIsSext32(regOp1))
              {
                  emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp1, regOp1);
                  regOp1 = tmpRegOp1;
              }
--            if (!RiscV64ValueIsSignExtendedInt32(op2) && !emit->emitIsZext32(regOp2))
-+            if (!RiscV64ValueIsSignExtendedInt32(op2) && !emit->emitIsZext32(regOp2) && !emit->emitIsSext32(regOp2))
+-            if (!RiscV64ValueIsSignExtendedInt32(compiler, op2) && !emit->emitIsZext32(regOp2))
++            if (!RiscV64ValueIsSignExtendedInt32(compiler, op2) && !emit->emitIsSext32(regOp2))
              {
                  emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp2, regOp2);
                  regOp2 = tmpRegOp2;
-@@ -5227,7 +5226,7 @@
+@@ -5106,7 +5106,7 @@ void CodeGen::genRangeCheck(GenTree* oper)
      if (genActualType(length) == TYP_INT)
      {
          regNumber tempReg = internalRegisters.Extract(oper);
--        if (!RiscV64ValueIsSignExtendedInt32(length) && !GetEmitter()->emitIsZext32(lengthReg))
-+        if (!RiscV64ValueIsSignExtendedInt32(length) && !GetEmitter()->emitIsZext32(lengthReg) && !GetEmitter()->emitIsSext32(lengthReg))
+-        if (!RiscV64ValueIsSignExtendedInt32(compiler, length) && !GetEmitter()->emitIsZext32(lengthReg))
++        if (!RiscV64ValueIsSignExtendedInt32(compiler, length) && !GetEmitter()->emitIsSext32(lengthReg))
          {
              GetEmitter()->emitIns_R_R(INS_sext_w, EA_4BYTE, tempReg, lengthReg);
              lengthReg = tempReg;
-@@ -5236,7 +5235,7 @@
+@@ -5115,7 +5115,7 @@ void CodeGen::genRangeCheck(GenTree* oper)
      if (genActualType(index) == TYP_INT)
      {
          regNumber tempReg = internalRegisters.GetSingle(oper);
--        if (!RiscV64ValueIsSignExtendedInt32(index) && !GetEmitter()->emitIsZext32(indexReg))
-+        if (!RiscV64ValueIsSignExtendedInt32(index) && !GetEmitter()->emitIsZext32(indexReg) && !GetEmitter()->emitIsSext32(indexReg))
+-        if (!RiscV64ValueIsSignExtendedInt32(compiler, index) && !GetEmitter()->emitIsZext32(indexReg))
++        if (!RiscV64ValueIsSignExtendedInt32(compiler, index) && !GetEmitter()->emitIsSext32(indexReg))
          {
              GetEmitter()->emitIns_R_R(INS_sext_w, EA_4BYTE, tempReg, indexReg);
              indexReg = tempReg;
-@@ -6499,7 +6498,8 @@
+@@ -6373,7 +6373,7 @@ void CodeGen::genIntToIntCast(GenTreeCast* cast)
+                 break;
              case GenIntCastDesc::SIGN_EXTEND_INT:
                  // Skip the sign-extension when the value is already sign-extended.
-                 if (RiscV64ValueIsSignExtendedInt32(cast->gtGetOp1()) ||
--                    (RiscV64ValueKnownUnsignedWidth(compiler, cast->gtGetOp1()) != 0) || emit->emitIsZext32(srcReg))
-+                    (RiscV64ValueKnownUnsignedWidth(compiler, cast->gtGetOp1()) != 0) || emit->emitIsZext32(srcReg) ||
-+                    emit->emitIsSext32(srcReg))
+-                if (RiscV64ValueIsSignExtendedInt32(compiler, cast->gtGetOp1()) || emit->emitIsZext32(srcReg))
++                if (RiscV64ValueIsSignExtendedInt32(compiler, cast->gtGetOp1()) || emit->emitIsSext32(srcReg))
                  {
-                     if (srcReg != dstReg)
-                     {
+                     emit->emitIns_Mov(INS_mov, EA_PTRSIZE, dstReg, srcReg, /* canSkip */ true);
+                 }
 diff --git a/src/coreclr/jit/emit.cpp b/src/coreclr/jit/emit.cpp
 --- a/src/coreclr/jit/emit.cpp
 +++ b/src/coreclr/jit/emit.cpp
-@@ -1534,6 +1534,7 @@
- {
- #ifdef TARGET_RISCV64
-     emitRiscVTrackZext32(id);
-+    emitRiscVTrackSext32(id);
+@@ -808,6 +808,7 @@ void emitter::emitGenIG(insGroup* ig)
+     // 32-bit extension form into it. This has to happen here rather than when the group's
+     // first instruction is appended: codegen may consult the mask before emitting anything.
+     emitZext32RegMask = 0;
++    emitSext32RegMask = 0;
  #endif
- #ifdef TARGET_ARMARCH
-     if (id->idIns() == INS_dmb)
+ 
+     assert(emitCurIGjmpList == nullptr);
 diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
 --- a/src/coreclr/jit/emitriscv64.cpp
 +++ b/src/coreclr/jit/emitriscv64.cpp
-@@ -392,6 +392,138 @@
-     }
+@@ -290,7 +290,8 @@ int32_t emitter::emitRiscVITypeImm(const instrDesc* id)
  }
  
-+//------------------------------------------------------------------------
-+// emitRiscVTrackSext32: maintain emitSext32RegMask across an emitted instruction.
-+//
-+// The sign-extension companion to emitRiscVTrackZext32: a bit is set when the low 32 bits
-+// of the register are replicated through bits [63:32] (RISC-V's canonical W-form result).
-+// Same conservative discipline - every non-whitelisted instruction clears its destination,
-+// control flow and instruction-group boundaries clear everything. The whitelist is the set
-+// of producers the ISA guarantees sign-extend to XLEN: signed narrow loads, the W-form
-+// integer ops, sext.b/h/w, comparisons, a non-negative andi, and value-preserving
-+// mv/and/or/xor from already-sign-extended sources.
-+//
-+void emitter::emitRiscVTrackSext32(instrDesc* id)
-+{
-+    if (emitCurIGinsCnt == 0)
-+    {
-+        emitSext32RegMask = 0;
-+    }
-+
-+    const instruction ins = id->idIns();
-+
-+    switch (ins)
-+    {
-+        case INS_jal:
-+        case INS_j:
-+        case INS_jalr:
-+        case INS_ecall:
-+        case INS_ebreak:
+ //------------------------------------------------------------------------
+-// emitRiscVTrackExtension: maintain emitZext32RegMask across an emitted instruction.
++// emitRiscVTrackExtension: maintain emitZext32RegMask and emitSext32RegMask across an
++// emitted instruction.
+ //
+ // Arguments:
+ //    id - the instruction being appended to the current instruction group
+@@ -319,6 +320,7 @@ void emitter::emitRiscVTrackExtension(instrDesc* id)
+         case INS_ecall:
+         case INS_ebreak:
+             emitZext32RegMask = 0;
 +            emitSext32RegMask = 0;
-+            return;
-+        case INS_beqz:
-+        case INS_bnez:
-+        case INS_beq:
-+        case INS_bne:
-+        case INS_blt:
-+        case INS_bge:
-+        case INS_bltu:
-+        case INS_bgeu:
-+            return;
-+        default:
+             return;
+ 
+         case INS_beqz:
+@@ -350,18 +352,20 @@ void emitter::emitRiscVTrackExtension(instrDesc* id)
+         return;
+     }
+ 
+-    bool clean = false;
++    bool zext = false; // bits [63:31] are clear
++    bool sext = false; // bits [63:32] replicate bit 31
+     switch (ins)
+     {
+         case INS_lbu:
+         case INS_lhu:
+-            // Byte/half unsigned loads land in [0, 2^16). lwu is deliberately absent: it
+-            // clears bits [63:32] but bit 31 belongs to the value.
+-            clean = true;
++            // Byte/half unsigned loads land in [0, 2^16), so the value is simultaneously
++            // zero- and sign-extended. lwu is deliberately absent: it clears bits [63:32]
++            // but bit 31 belongs to the value.
++            zext = true;
+             break;
+ 
+         case INS_zext_h:
+-            clean = true;
++            zext = true;
+             break;
+ 
+         case INS_slt:
+@@ -369,43 +373,87 @@ void emitter::emitRiscVTrackExtension(instrDesc* id)
+         case INS_slti:
+         case INS_sltiu:
+             // Comparison results are 0 or 1.
+-            clean = true;
++            zext = true;
+             break;
+ 
+         case INS_andi:
+             // andi's 12-bit immediate sign-extends; a non-negative immediate caps the
+-            // result below 2^11 regardless of the source.
+-            clean = emitRiscVITypeImm(id) >= 0;
++            // result below 2^11 regardless of the source, and a negative one leaves a
++            // sign-extended source sign-extended.
++            zext = emitRiscVITypeImm(id) >= 0;
++            sext = emitIsSext32(id->idReg2());
 +            break;
-+    }
 +
-+    const regNumber dst = id->idReg1();
-+    if (!genIsValidIntReg(dst) || (dst == REG_R0))
-+    {
-+        return;
-+    }
++        case INS_ori:
++        case INS_xori:
++            // The immediate is sign-extended, so these preserve the source's form per bit.
++            sext = emitIsSext32(id->idReg2());
+             break;
+ 
+         case INS_srli:
+             // A logical right shift by 33 or more leaves bits [63:31] clear.
+-            clean = (emitRiscVITypeImm(id) & 0x3f) >= 33;
++            zext = (emitRiscVITypeImm(id) & 0x3f) >= 33;
++            break;
 +
-+    const uint64_t dstBit = 1ULL << dst;
-+    bool           clean  = false;
-+    switch (ins)
-+    {
 +        case INS_lb:
 +        case INS_lh:
 +        case INS_lw:
-+            // Signed narrow loads sign-extend the loaded value through all of [63:32].
-+            clean = true;
-+            break;
-+
-+        case INS_lbu:
-+        case INS_lhu:
-+            // Byte/half unsigned loads land in [0, 2^16): bit 31 is clear and equals [63:32],
-+            // so the value is simultaneously zero- and sign-extended. (lwu is excluded: it can
-+            // leave bit 31 set with [63:32] clear.)
-+            clean = true;
-+            break;
-+
 +        case INS_sext_b:
 +        case INS_sext_h:
-+        case INS_sext_w:
-+            // Explicit sign-extensions.
-+            clean = true;
++            // Signed narrow loads and the explicit narrow sign-extensions.
++            sext = true;
 +            break;
 +
 +        case INS_addiw:
@@ -216,95 +206,118 @@ diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
 +        case INS_srliw:
 +        case INS_sraiw:
 +            // Every W-form integer op computes a 32-bit result and sign-extends it to XLEN.
-+            clean = true;
++            sext = true;
+             break;
+ 
+         case INS_and:
+-            // Either operand clean caps the result.
+-            clean = emitIsZext32(id->idReg2()) || emitIsZext32(id->idReg3());
++            // Either operand below 2^31 caps the result; bitwise ops act per-bit, so two
++            // sign-extended operands give a sign-extended result.
++            zext = emitIsZext32(id->idReg2()) || emitIsZext32(id->idReg3());
++            sext = emitIsSext32(id->idReg2()) && emitIsSext32(id->idReg3());
+             break;
+ 
+         case INS_or:
+         case INS_xor:
+             // Both operands below 2^31 keep the result below 2^31.
+-            clean = emitIsZext32(id->idReg2()) && emitIsZext32(id->idReg3());
++            zext = emitIsZext32(id->idReg2()) && emitIsZext32(id->idReg3());
++            sext = emitIsSext32(id->idReg2()) && emitIsSext32(id->idReg3());
+             break;
+ 
+         case INS_mov:
++            // A register move preserves the whole 64-bit value.
++            zext = emitIsZext32(id->idReg2());
++            sext = emitIsSext32(id->idReg2());
 +            break;
 +
-+        case INS_slt:
-+        case INS_sltu:
-+        case INS_slti:
-+        case INS_sltiu:
-+            // Comparison results are 0 or 1.
-+            clean = true;
-+            break;
+         case INS_sext_w:
+-            // Value-preserving for an already-clean source (sext.w of a bit-31-clear value
+-            // is the identity).
+-            clean = emitIsZext32(id->idReg2());
++            // sext.w of a bit-31-clear value is the identity; otherwise the result is
++            // sign-extended by construction.
++            zext = emitIsZext32(id->idReg2());
++            sext = true;
+             break;
+ 
+         default:
+             break;
+     }
+ 
+-    if (clean)
++    if (zext)
+     {
+         emitZext32RegMask |= (1u << dst);
+     }
+@@ -413,6 +461,15 @@ void emitter::emitRiscVTrackExtension(instrDesc* id)
+     {
+         emitZext32RegMask &= ~(1u << dst);
+     }
 +
-+        case INS_andi:
-+            // A non-negative 12-bit immediate caps the result below 2^11: bits [63:11] clear.
-+            clean = !(id->idIsLargeCns()) && (emitGetInsSC(id) >= 0);
-+            break;
-+
-+        case INS_and:
-+        case INS_or:
-+        case INS_xor:
-+            // Bitwise ops act per-bit, so if both operands replicate bit 31 through [63:32]
-+            // the result does too.
-+            clean = emitIsSext32(id->idReg2()) && emitIsSext32(id->idReg3());
-+            break;
-+
-+        case INS_mov:
-+            // Register move preserves sign-extension.
-+            clean = emitIsSext32(id->idReg2());
-+            break;
-+
-+        default:
-+            break;
-+    }
-+
-+    if (clean)
++    if (sext)
 +    {
-+        emitSext32RegMask |= dstBit;
++        emitSext32RegMask |= (1u << dst);
 +    }
 +    else
 +    {
-+        emitSext32RegMask &= ~dstBit;
++        emitSext32RegMask &= ~(1u << dst);
 +    }
-+}
-+
- void emitter::emitIns(instruction ins)
- {
-     instrDesc* id = emitNewInstr(EA_8BYTE);
+ }
+ 
+ /****************************************************************************
 diff --git a/src/coreclr/jit/emitriscv64.h b/src/coreclr/jit/emitriscv64.h
 --- a/src/coreclr/jit/emitriscv64.h
 +++ b/src/coreclr/jit/emitriscv64.h
-@@ -285,6 +285,19 @@
-     return (emitZext32RegMask & (1ULL << reg)) != 0;
+@@ -280,6 +280,10 @@ public:
+ // only use it to skip a provably redundant re-extension.
+ uint32_t emitZext32RegMask = 0;
+ 
++// Companion tracking for "bits [63:32] replicate bit 31", the canonical form an RV64
++// W-form op or signed load leaves behind. Same choke point and same reset rules.
++uint32_t emitSext32RegMask = 0;
++
+ static int32_t emitRiscVITypeImm(const instrDesc* id);
+ void           emitRiscVTrackExtension(instrDesc* id);
+ 
+@@ -288,6 +292,13 @@ bool emitIsZext32(regNumber reg) const
+     return isGeneralRegisterOrR0(reg) && ((emitZext32RegMask & (1u << reg)) != 0);
  }
  
-+// Companion sign-extension tracker: bit R set means the low 32 bits of R are sign-extended
-+// through bits [63:32] (the RISC-V W-form / signed-load canonical form). Maintained by the
-+// same appendToCurIG choke point and reset rules as emitZext32RegMask; consumers use it to
-+// skip a redundant sext.w before a 32-bit signed compare or an int->long widening.
-+uint64_t emitSext32RegMask = 0;
-+
-+void emitRiscVTrackSext32(instrDesc* id);
-+
++// Bits [63:31] clear is a special case of sign-extended, so a zero-extended register
++// answers this too; tracking it separately would only lose information.
 +bool emitIsSext32(regNumber reg) const
 +{
-+    return (emitSext32RegMask & (1ULL << reg)) != 0;
++    return isGeneralRegisterOrR0(reg) && (((emitZext32RegMask | emitSext32RegMask) & (1u << reg)) != 0);
 +}
 +
  void emitIns(instruction ins);
  
  void emitIns_S_R(instruction ins, emitAttr attr, regNumber ireg, int varx, int offs);
-diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
---- a/src/coreclr/jit/lower.cpp
-+++ b/src/coreclr/jit/lower.cpp
-@@ -9664,14 +9664,11 @@
-                                     (loadType == TYP_UBYTE) || (loadType == TYP_SHORT) ||
-                                     (loadType == TYP_USHORT);
-             }
--            else if (op1->OperIs(GT_LCL_VAR))
--            {
--                // A TYP_INT local/param holds a valid int32 that the RV64 backend keeps
--                // sign-extended: incoming int args are sign-extended per ABI, and int stores
--                // go through W-form / sign-extending paths. State-root validation backstops
--                // the rare corner cases the cast codegen otherwise sexts defensively for.
--                op1IsSignExtended = (op1->TypeGet() == TYP_INT);
--            }
-+            // An enregistered TYP_INT local is intentionally NOT treated as sign-extended
-+            // here: it may hold a value produced by a zero-extending path (e.g. lwu), so the
-+            // assumption is unsound at the node level. The emitter's per-register sext32
-+            // tracker (emitIsSext32) instead skips the sext.w only when the physical register
-+            // was provably written by a sign-extending instruction.
-         }
+diff --git a/src/coreclr/jit/riscv64extension.h b/src/coreclr/jit/riscv64extension.h
+--- a/src/coreclr/jit/riscv64extension.h
++++ b/src/coreclr/jit/riscv64extension.h
+@@ -130,6 +130,11 @@ inline unsigned RiscV64ValueKnownUnsignedWidth(Compiler* compiler, GenTree* node
+ //     - any value with a provable unsigned width, whose clear bit 31 makes it its own
+ //       sign extension.
+ //
++//    An enregistered TYP_INT local is deliberately NOT accepted: nothing keeps its upper
++//    bits canonical, since a value produced by lwu is a valid int32 with bit 31 set and
++//    bits [63:32] clear. The emitter's per-register emitIsSext32 tracker covers those cases
++//    soundly, by observing the instruction that actually wrote the register.
++//
+ inline bool RiscV64ValueIsSignExtendedInt32(Compiler* compiler, GenTree* node)
+ {
+     if (genActualType(node->TypeGet()) != TYP_INT)
+@@ -161,10 +166,6 @@ inline bool RiscV64ValueIsSignExtendedInt32(Compiler* compiler, GenTree* node)
+         return (loadType == TYP_INT) || (loadType == TYP_BYTE) || (loadType == TYP_UBYTE) ||
+                (loadType == TYP_SHORT) || (loadType == TYP_USHORT);
+     }
+-    if (node->OperIs(GT_LCL_VAR))
+-    {
+-        return node->TypeGet() == TYP_INT;
+-    }
+     return false;
+ }
  
-         // Same for a zero-extending (unsigned) widening cast when the operand's bits [63:31]

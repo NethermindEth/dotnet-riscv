@@ -1,32 +1,564 @@
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 --- a/src/coreclr/jit/codegenriscv64.cpp
 +++ b/src/coreclr/jit/codegenriscv64.cpp
-@@ -1346,7 +1346,9 @@
+@@ -21,6 +21,7 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+ #include "gcinfo.h"
+ #include "gcinfoencoder.h"
+ #include "patchpointinfo.h"
++#include "riscv64extension.h"
+ 
+ //------------------------------------------------------------------------
+ // genInstrWithConstant:   we will typically generate one instruction
+@@ -1346,7 +1347,9 @@ void CodeGen::genSimpleReturn(GenTree* treeNode)
          }
          else
          {
 -            GetEmitter()->emitIns_R_R(attr == EA_4BYTE ? INS_sext_w : INS_mov, attr, retReg, op1->GetRegNum());
-+            GetEmitter()->emitIns_R_R((attr == EA_4BYTE) && !GetEmitter()->emitIsZext32(op1->GetRegNum()) ? INS_sext_w
-+                                                                                                          : INS_mov,
-+                                      attr, retReg, op1->GetRegNum());
++            // A value already known to have bits [63:31] clear needs no sign-extension.
++            const bool needsSext = (attr == EA_4BYTE) && !GetEmitter()->emitIsZext32(op1->GetRegNum());
++            GetEmitter()->emitIns_R_R(needsSext ? INS_sext_w : INS_mov, attr, retReg, op1->GetRegNum());
          }
      }
  }
-@@ -3375,6 +3377,82 @@
+@@ -3328,52 +3331,6 @@ void CodeGen::genCkfinite(GenTree* treeNode)
+     genProduceReg(treeNode);
  }
  
+-//------------------------------------------------------------------------
+-// RiscV64ValueIsSignExtendedInt32: does this node leave its result already
+-// sign-extended from bit 31 into bits [63:32], so a following `sext.w` (e.g. the
+-// 32-bit compare-operand normalization in genCodeForCompare / genCodeForJumpCompare)
+-// would be a no-op and can be skipped?
+-//
+-// Covers RV64 W-form producers (addw/subw/mulw/divw/sllw/...), 4-byte/byte/half loads
+-// (lb/lh/lw sign-extend; lbu/lhu are non-negative), and TYP_INT locals/params (kept
+-// sign-extended by the ABI and int-store paths). TYP_UINT loads are excluded (lwu
+-// zero-extends; bit 31 may be set). Keep in sync with the matching check in
+-// Lowering::TryRemoveCast (lower.cpp, TARGET_RISCV64).
+-//
+-static bool RiscV64ValueIsSignExtendedInt32(GenTree* node)
+-{
+-    if (genActualType(node->TypeGet()) != TYP_INT)
+-    {
+-        return false;
+-    }
+-    // Producers whose 32-bit result is already sign-extended into bits [63:32]:
+-    //  - W-form arithmetic/shifts (addw/subw/mulw/divw/sllw/srlw/sraw/...) always sext;
+-    //  - GT_AND/OR/XOR of sign-extended int32 operands stay sign-extended on RV64;
+-    //  - a GT_CALL int return is sign-extended by the ABI, like incoming params;
+-    //  - a TYP_INT constant is materialized sign-extended; an array length is a
+-    //    non-negative, sign-extending load.
+-    if (node->OperIs(GT_ADD, GT_SUB, GT_MUL, GT_DIV, GT_MOD, GT_UDIV, GT_UMOD, GT_LSH, GT_RSH, GT_RSZ, GT_NEG,
+-                     GT_AND, GT_OR, GT_XOR, GT_CALL, GT_CNS_INT, GT_ARR_LENGTH))
+-    {
+-        return true;
+-    }
+-    if (node->OperIs(GT_CAST))
+-    {
+-        // A signed cast sign-extends its result; an unsigned (zero-extending) cast does not.
+-        return !node->IsUnsigned();
+-    }
+-    if (node->OperIs(GT_IND, GT_LCL_FLD))
+-    {
+-        const var_types t = node->TypeGet();
+-        return (t == TYP_INT) || (t == TYP_BYTE) || (t == TYP_UBYTE) || (t == TYP_SHORT) || (t == TYP_USHORT);
+-    }
+-    if (node->OperIs(GT_LCL_VAR))
+-    {
+-        return node->TypeGet() == TYP_INT;
+-    }
+-    return false;
+-}
+-
  //------------------------------------------------------------------------
-+// RiscV64ValueKnownUnsignedWidth: the provable unsigned bit-width of the node's value
-+// (all bits above it are clear), or 0 when nothing can be proven.
+ // genCodeForCompare: Produce code for a GT_EQ/GT_NE/GT_LT/GT_LE/GT_GE/GT_GT node.
+ //
+@@ -3461,7 +3418,7 @@ void CodeGen::genCodeForCompare(GenTreeOp* tree)
+                     assert(regOp1 != tmpRegOp1);
+                     imm = static_cast<int32_t>(imm);
+                     // Skip the 32-bit operand sign-extension when op1 is already sign-extended.
+-                    if (!RiscV64ValueIsSignExtendedInt32(op1))
++                    if (!RiscV64ValueIsSignExtendedInt32(compiler, op1) && !emit->emitIsZext32(regOp1))
+                     {
+                         emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp1, regOp1);
+                         regOp1 = tmpRegOp1;
+@@ -3557,12 +3514,12 @@ void CodeGen::genCodeForCompare(GenTreeOp* tree)
+                     regNumber tmpRegOp2 = internalRegisters.GetSingle(tree);
+                     assert(regOp1 != tmpRegOp2);
+                     assert(regOp2 != tmpRegOp2);
+-                    if (!RiscV64ValueIsSignExtendedInt32(op1))
++                    if (!RiscV64ValueIsSignExtendedInt32(compiler, op1) && !emit->emitIsZext32(regOp1))
+                     {
+                         emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp1, regOp1);
+                         regOp1 = tmpRegOp1;
+                     }
+-                    if (!RiscV64ValueIsSignExtendedInt32(op2))
++                    if (!RiscV64ValueIsSignExtendedInt32(compiler, op2) && !emit->emitIsZext32(regOp2))
+                     {
+                         emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp2, regOp2);
+                         regOp2 = tmpRegOp2;
+@@ -3637,7 +3594,7 @@ void CodeGen::genCodeForJumpCompare(GenTreeOpCC* tree)
+                 case EA_4BYTE:
+                 {
+                     imm = static_cast<int32_t>(imm);
+-                    if (!RiscV64ValueIsSignExtendedInt32(op1))
++                    if (!RiscV64ValueIsSignExtendedInt32(compiler, op1) && !emit->emitIsZext32(regOp1))
+                     {
+                         regNumber tmpRegOp1 = rsGetRsvdReg();
+                         assert(regOp1 != tmpRegOp1);
+@@ -3674,7 +3631,7 @@ void CodeGen::genCodeForJumpCompare(GenTreeOpCC* tree)
+         }
+         else
+         {
+-            if ((cmpSize == EA_4BYTE) && !RiscV64ValueIsSignExtendedInt32(op1))
++            if ((cmpSize == EA_4BYTE) && !RiscV64ValueIsSignExtendedInt32(compiler, op1) && !emit->emitIsZext32(regOp1))
+             {
+                 regNumber tmpRegOp1 = rsGetRsvdReg();
+                 assert(regOp1 != tmpRegOp1);
+@@ -3727,12 +3684,12 @@ void CodeGen::genCodeForJumpCompare(GenTreeOpCC* tree)
+             regNumber tmpRegOp2 = rsGetRsvdReg();
+             assert(regOp1 != tmpRegOp2);
+             assert(regOp2 != tmpRegOp2);
+-            if (!RiscV64ValueIsSignExtendedInt32(op1))
++            if (!RiscV64ValueIsSignExtendedInt32(compiler, op1) && !emit->emitIsZext32(regOp1))
+             {
+                 emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp1, regOp1);
+                 regOp1 = tmpRegOp1;
+             }
+-            if (!RiscV64ValueIsSignExtendedInt32(op2))
++            if (!RiscV64ValueIsSignExtendedInt32(compiler, op2) && !emit->emitIsZext32(regOp2))
+             {
+                 emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp2, regOp2);
+                 regOp2 = tmpRegOp2;
+@@ -5149,7 +5106,7 @@ void CodeGen::genRangeCheck(GenTree* oper)
+     if (genActualType(length) == TYP_INT)
+     {
+         regNumber tempReg = internalRegisters.Extract(oper);
+-        if (!RiscV64ValueIsSignExtendedInt32(length))
++        if (!RiscV64ValueIsSignExtendedInt32(compiler, length) && !GetEmitter()->emitIsZext32(lengthReg))
+         {
+             GetEmitter()->emitIns_R_R(INS_sext_w, EA_4BYTE, tempReg, lengthReg);
+             lengthReg = tempReg;
+@@ -5158,7 +5115,7 @@ void CodeGen::genRangeCheck(GenTree* oper)
+     if (genActualType(index) == TYP_INT)
+     {
+         regNumber tempReg = internalRegisters.GetSingle(oper);
+-        if (!RiscV64ValueIsSignExtendedInt32(index))
++        if (!RiscV64ValueIsSignExtendedInt32(compiler, index) && !GetEmitter()->emitIsZext32(indexReg))
+         {
+             GetEmitter()->emitIns_R_R(INS_sext_w, EA_4BYTE, tempReg, indexReg);
+             indexReg = tempReg;
+@@ -6344,6 +6301,10 @@ void CodeGen::genIntToIntCast(GenTreeCast* cast)
+ 
+     GenIntCastDesc desc(cast);
+ 
++    // A provable unsigned width of the source makes every extension below a no-op up to
++    // that width, whether it zero- or sign-extends.
++    const unsigned srcWidth = RiscV64ValueKnownUnsignedWidth(compiler, cast->gtGetOp1());
++
+     if (desc.CheckKind() != GenIntCastDesc::CHECK_NONE)
+     {
+         genIntCastOverflowCheck(cast, desc, srcReg);
+@@ -6354,6 +6315,12 @@ void CodeGen::genIntToIntCast(GenTreeCast* cast)
+         switch (desc.ExtendKind())
+         {
+             case GenIntCastDesc::ZERO_EXTEND_SMALL_INT:
++                // Skip the masking when the value already fits the target width.
++                if ((srcWidth != 0) && (srcWidth <= desc.ExtendSrcSize() * 8))
++                {
++                    emit->emitIns_Mov(INS_mov, EA_PTRSIZE, dstReg, srcReg, /* canSkip */ true);
++                    break;
++                }
+                 if (desc.ExtendSrcSize() == 1)
+                 {
+                     emit->emitIns_R_R_I(INS_andi, EA_PTRSIZE, dstReg, srcReg, 0xff);
+@@ -6389,7 +6356,12 @@ void CodeGen::genIntToIntCast(GenTreeCast* cast)
+             }
+ 
+             case GenIntCastDesc::ZERO_EXTEND_INT:
+-                if (compiler->compOpportunisticallyDependsOn(InstructionSet_Zba))
++                // Skip the widening when bits [63:31] are provably already clear.
++                if ((srcWidth != 0) || emit->emitIsZext32(srcReg))
++                {
++                    emit->emitIns_Mov(INS_mov, EA_PTRSIZE, dstReg, srcReg, /* canSkip */ true);
++                }
++                else if (compiler->compOpportunisticallyDependsOn(InstructionSet_Zba))
+                 {
+                     emit->emitIns_R_R_R(INS_add_uw, EA_PTRSIZE, dstReg, srcReg, REG_R0);
+                 }
+@@ -6400,7 +6372,15 @@ void CodeGen::genIntToIntCast(GenTreeCast* cast)
+                 }
+                 break;
+             case GenIntCastDesc::SIGN_EXTEND_INT:
+-                emit->emitIns_R_R(INS_sext_w, EA_4BYTE, dstReg, srcReg);
++                // Skip the sign-extension when the value is already sign-extended.
++                if (RiscV64ValueIsSignExtendedInt32(compiler, cast->gtGetOp1()) || emit->emitIsZext32(srcReg))
++                {
++                    emit->emitIns_Mov(INS_mov, EA_PTRSIZE, dstReg, srcReg, /* canSkip */ true);
++                }
++                else
++                {
++                    emit->emitIns_R_R(INS_sext_w, EA_4BYTE, dstReg, srcReg);
++                }
+                 break;
+ 
+             default:
+diff --git a/src/coreclr/jit/emit.cpp b/src/coreclr/jit/emit.cpp
+--- a/src/coreclr/jit/emit.cpp
++++ b/src/coreclr/jit/emit.cpp
+@@ -803,6 +803,13 @@ void emitter::emitGenIG(insGroup* ig)
+     emitCurIGinsCnt = 0;
+     emitCurIGsize   = 0;
+ 
++#ifdef TARGET_RISCV64
++    // A new instruction group is a potential join point, so no register carries a proven
++    // 32-bit extension form into it. This has to happen here rather than when the group's
++    // first instruction is appended: codegen may consult the mask before emitting anything.
++    emitZext32RegMask = 0;
++#endif
++
+     assert(emitCurIGjmpList == nullptr);
+ 
+ #if FEATURE_LOOP_ALIGN
+@@ -1532,6 +1539,9 @@ void emitter::dispIns(instrDesc* id)
+ 
+ void emitter::appendToCurIG(instrDesc* id)
+ {
++#ifdef TARGET_RISCV64
++    emitRiscVTrackExtension(id);
++#endif
+ #ifdef TARGET_ARMARCH
+     if (id->idIns() == INS_dmb)
+     {
+diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
+--- a/src/coreclr/jit/emitriscv64.cpp
++++ b/src/coreclr/jit/emitriscv64.cpp
+@@ -269,6 +269,152 @@ inline emitter::code_t emitter::emitInsCode(instruction ins /*, insFormat fmt*/)
+     return code;
+ }
+ 
++//------------------------------------------------------------------------
++// emitRiscVITypeImm: the sign-extended 12-bit immediate of an emitted I-type instruction.
 +//
-+// A non-zero result means both a zero-extension (`slli 32; srli 32` / `andi`) and a
-+// sign-extension (`sext.w`) covering that width are no-ops that can be skipped. Capped
-+// at 31 so the value also survives a 4-byte spill and sign-extending `lw` reload
-+// unchanged. Covers unsigned narrow loads (lbu/lhu), non-negative int constants, AND
-+// with a non-negative int constant, casts to small unsigned types, array lengths, and
-+// loads of small unsigned normalize-on-store locals.
++// Arguments:
++//    id - the instruction descriptor
 +//
-+static unsigned RiscV64ValueKnownUnsignedWidth(Compiler* compiler, GenTree* node)
++// Return Value:
++//    The immediate, in [-2048, 2047].
++//
++// Remarks:
++//    The RISC-V64 emitter folds immediates straight into the instruction word instead of
++//    storing them on the instrDesc, so emitGetInsSC() reports a meaningless zero here and
++//    the value has to be read back out of the encoding.
++//
++int32_t emitter::emitRiscVITypeImm(const instrDesc* id)
++{
++    const uint32_t imm = id->idAddr()->iiaGetInstrEncode() >> 20;
++    return (int32_t)(imm & 0x7ff) - (int32_t)(imm & 0x800);
++}
++
++//------------------------------------------------------------------------
++// emitRiscVTrackExtension: maintain emitZext32RegMask across an emitted instruction.
++//
++// Arguments:
++//    id - the instruction being appended to the current instruction group
++//
++// Remarks:
++//    Conservative by construction: every instruction clears its idReg1 (the destination on
++//    every register-writing RISC-V format; for formats where idReg1 is a source, clearing
++//    only loses information), and any control transfer clears the whole mask. Only a small
++//    whitelist re-establishes a bit, so an unrecognized instruction can never leave a stale
++//    claim behind. The complementary reset at instruction-group boundaries lives in
++//    emitGenIG, which runs before codegen can query the mask for the new group.
++//
++void emitter::emitRiscVTrackExtension(instrDesc* id)
++{
++    const instruction ins = id->idIns();
++
++    switch (ins)
++    {
++        // Calls and unconditional transfers invalidate all tracking. Conditional branches
++        // do not: they write no register, and their fall-through stays inside this
++        // instruction group, which can have no other incoming edges - a label always starts
++        // a new group.
++        case INS_jal:
++        case INS_j:
++        case INS_jalr:
++        case INS_ecall:
++        case INS_ebreak:
++            emitZext32RegMask = 0;
++            return;
++
++        case INS_beqz:
++        case INS_bnez:
++        case INS_beq:
++        case INS_bne:
++        case INS_blt:
++        case INS_bge:
++        case INS_bltu:
++        case INS_bgeu:
++            return;
++
++        // A store reads idReg1 rather than writing it, so a spilled value keeps its width.
++        case INS_sb:
++        case INS_sh:
++        case INS_sw:
++        case INS_sd:
++        case INS_fsw:
++        case INS_fsd:
++            return;
++
++        default:
++            break;
++    }
++
++    const regNumber dst = id->idReg1();
++    if (!genIsValidIntReg(dst) || (dst == REG_R0))
++    {
++        return;
++    }
++
++    bool clean = false;
++    switch (ins)
++    {
++        case INS_lbu:
++        case INS_lhu:
++            // Byte/half unsigned loads land in [0, 2^16). lwu is deliberately absent: it
++            // clears bits [63:32] but bit 31 belongs to the value.
++            clean = true;
++            break;
++
++        case INS_zext_h:
++            clean = true;
++            break;
++
++        case INS_slt:
++        case INS_sltu:
++        case INS_slti:
++        case INS_sltiu:
++            // Comparison results are 0 or 1.
++            clean = true;
++            break;
++
++        case INS_andi:
++            // andi's 12-bit immediate sign-extends; a non-negative immediate caps the
++            // result below 2^11 regardless of the source.
++            clean = emitRiscVITypeImm(id) >= 0;
++            break;
++
++        case INS_srli:
++            // A logical right shift by 33 or more leaves bits [63:31] clear.
++            clean = (emitRiscVITypeImm(id) & 0x3f) >= 33;
++            break;
++
++        case INS_and:
++            // Either operand clean caps the result.
++            clean = emitIsZext32(id->idReg2()) || emitIsZext32(id->idReg3());
++            break;
++
++        case INS_or:
++        case INS_xor:
++            // Both operands below 2^31 keep the result below 2^31.
++            clean = emitIsZext32(id->idReg2()) && emitIsZext32(id->idReg3());
++            break;
++
++        case INS_mov:
++        case INS_sext_w:
++            // Value-preserving for an already-clean source (sext.w of a bit-31-clear value
++            // is the identity).
++            clean = emitIsZext32(id->idReg2());
++            break;
++
++        default:
++            break;
++    }
++
++    if (clean)
++    {
++        emitZext32RegMask |= (1u << dst);
++    }
++    else
++    {
++        emitZext32RegMask &= ~(1u << dst);
++    }
++}
++
+ /****************************************************************************
+  *
+  *  Add an instruction with no operands.
+diff --git a/src/coreclr/jit/emitriscv64.h b/src/coreclr/jit/emitriscv64.h
+--- a/src/coreclr/jit/emitriscv64.h
++++ b/src/coreclr/jit/emitriscv64.h
+@@ -272,6 +272,22 @@ void emitIns_J(instruction ins, BasicBlock* dst, int instrCount = 0);
+ /************************************************************************/
+ 
+ public:
++// Per-register "bits [63:31] are clear" tracking, valid only within the current
++// straight-line run of instructions: emitGenIG clears it at every instruction-group
++// boundary (labels, branch targets, prologs and epilogs), and calls, unconditional
++// transfers and non-value-preserving writes clear it as they are emitted. Maintained
++// centrally from appendToCurIG, so no emitIns path can leave a stale bit. Consumers may
++// only use it to skip a provably redundant re-extension.
++uint32_t emitZext32RegMask = 0;
++
++static int32_t emitRiscVITypeImm(const instrDesc* id);
++void           emitRiscVTrackExtension(instrDesc* id);
++
++bool emitIsZext32(regNumber reg) const
++{
++    return isGeneralRegisterOrR0(reg) && ((emitZext32RegMask & (1u << reg)) != 0);
++}
++
+ void emitIns(instruction ins);
+ 
+ void emitIns_S_R(instruction ins, emitAttr attr, regNumber ireg, int varx, int offs);
+diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
+--- a/src/coreclr/jit/lower.cpp
++++ b/src/coreclr/jit/lower.cpp
+@@ -21,6 +21,7 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+ #endif
+ 
+ #include "lower.h"
++#include "riscv64extension.h"
+ 
+ #if !defined(TARGET_64BIT)
+ #include "decomposelongs.h"
+@@ -9620,7 +9621,7 @@ bool Lowering::TryRemoveCast(GenTreeCast* node)
+     }
+ 
+ #ifdef TARGET_RISCV64
+-    // zkVM/RISCV64 CQ: elide a redundant sign-extending cast.
++    // zkVM/RISCV64 CQ: elide a redundant extension cast.
+     //
+     // On RV64 every *.W instruction (addw/subw/mulw/divw/sllw/srlw/sraw/...) writes a result
+     // already sign-extended into bits [63:32]. A non-overflow cast that only sign-extends a
+@@ -9632,52 +9633,26 @@ bool Lowering::TryRemoveCast(GenTreeCast* node)
+     // already-sign-extended 64-bit register directly. The parent selects its W/non-W form from
+     // its own type, so feeding it the TYP_INT operand is value-correct (a spilled TYP_INT temp
+     // reloads with a sign-extending `lw`).
++    //
++    // A zero-extending (unsigned) widening cast is removable on the same grounds when the
++    // operand's bits [63:31] are provably clear: with bit 31 clear, sign- and zero-extension
++    // coincide, so the no-op argument above (including the sign-extending `lw` spill reload)
++    // carries over.
+     {
+         GenTree* const  op1     = node->CastOp();
+         const var_types srcType = genActualType(op1->TypeGet());
+         const var_types dstType = node->CastToType();
+-        // Does op1 leave its result already sign-extended from bit 31 into [63:32]?
+-        bool op1IsSignExtended = false;
+-        if (genActualType(op1->TypeGet()) == TYP_INT)
+-        {
+-            if (op1->OperIs(GT_ADD, GT_SUB, GT_MUL, GT_DIV, GT_MOD, GT_UDIV, GT_UMOD, GT_LSH, GT_RSH,
+-                            GT_RSZ, GT_NEG, GT_AND, GT_OR, GT_XOR, GT_CALL, GT_CNS_INT, GT_ARR_LENGTH))
+-            {
+-                // W-form ops sign-extend their 32-bit result; AND/OR/XOR of sign-extended int32
+-                // operands stay sign-extended; an int GT_CALL return is sign-extended by the ABI;
+-                // a TYP_INT constant is materialized sign-extended; an array length is a
+-                // non-negative sign-extending load.
+-                op1IsSignExtended = true;
+-            }
+-            else if (op1->OperIs(GT_CAST))
+-            {
+-                // A signed cast sign-extends its result; an unsigned (zero-extending) cast does not.
+-                op1IsSignExtended = !op1->IsUnsigned();
+-            }
+-            else if (op1->OperIs(GT_IND, GT_LCL_FLD))
+-            {
+-                // A 4-byte/byte/half load: lb/lh/lw sign-extend, lbu/lhu yield a non-negative
+-                // value (bit 31 == 0). Exclude TYP_UINT, whose lwu zero-extends and may have
+-                // bit 31 set, so a following sext.w would change the value.
+-                const var_types loadType = op1->TypeGet();
+-                op1IsSignExtended = (loadType == TYP_INT) || (loadType == TYP_BYTE) ||
+-                                    (loadType == TYP_UBYTE) || (loadType == TYP_SHORT) ||
+-                                    (loadType == TYP_USHORT);
+-            }
+-            else if (op1->OperIs(GT_LCL_VAR))
+-            {
+-                // A TYP_INT local/param holds a valid int32 that the RV64 backend keeps
+-                // sign-extended: incoming int args are sign-extended per ABI, and int stores
+-                // go through W-form / sign-extending paths. State-root validation backstops
+-                // the rare corner cases the cast codegen otherwise sexts defensively for.
+-                op1IsSignExtended = (op1->TypeGet() == TYP_INT);
+-            }
+-        }
+ 
+-        if ((srcType == TYP_INT) && !node->IsUnsigned() &&
+-            ((dstType == TYP_INT) || (dstType == TYP_LONG) || (dstType == TYP_I_IMPL)) && op1IsSignExtended)
++        const bool removableSigned =
++            !node->IsUnsigned() && RiscV64ValueIsSignExtendedInt32(comp, op1) &&
++            ((dstType == TYP_INT) || (dstType == TYP_LONG) || (dstType == TYP_I_IMPL));
++        const bool removableUnsigned =
++            node->IsUnsigned() && (RiscV64ValueKnownUnsignedWidth(comp, op1) != 0) &&
++            ((dstType == TYP_LONG) || (dstType == TYP_ULONG) || (dstType == TYP_I_IMPL) || (dstType == TYP_U_IMPL));
++
++        if ((srcType == TYP_INT) && (removableSigned || removableUnsigned))
+         {
+-            JITDUMP("Eliding redundant sign-extending cast over a sign-extended producer\n");
++            JITDUMP("Eliding redundant extension cast over a provably extended producer\n");
+             LIR::Use use;
+             if (BlockRange().TryGetUse(node, &use))
+             {
+diff --git a/src/coreclr/jit/riscv64extension.h b/src/coreclr/jit/riscv64extension.h
+new file mode 100644
+--- /dev/null
++++ b/src/coreclr/jit/riscv64extension.h
+@@ -0,0 +1,172 @@
++// Licensed to the .NET Foundation under one or more agreements.
++// The .NET Foundation licenses this file to you under the MIT license.
++
++//
++// Node-level reasoning about how a 32-bit value is represented in a 64-bit RV64 register.
++// Lowering (redundant-cast removal) and codegen (extension elision) ask the same questions
++// about the same producer nodes, so the rules live here once instead of in two copies that
++// have to be kept in sync by hand. Include after compiler.h; empty on every other target.
++//
++
++#ifndef _RISCV64EXTENSION_H_
++#define _RISCV64EXTENSION_H_
++
++#ifdef TARGET_RISCV64
++
++//------------------------------------------------------------------------
++// RiscV64UnsignedBitWidth: the number of significant bits of a non-negative value, i.e.
++// the smallest width w such that every bit at or above w is clear.
++//
++// Arguments:
++//    value - the value to measure; must not be negative
++//
++// Return Value:
++//    The bit width, at least 1 (zero is reported as width 1).
++//
++inline unsigned RiscV64UnsignedBitWidth(ssize_t value)
++{
++    assert(value >= 0);
++
++    unsigned width = 0;
++    for (ssize_t v = value; v != 0; v >>= 1)
++    {
++        width++;
++    }
++    return (width == 0) ? 1 : width;
++}
++
++//------------------------------------------------------------------------
++// RiscV64ValueKnownUnsignedWidth: the provable unsigned bit width of the node's value,
++// i.e. a width below which the value is known to fit, or 0 when nothing can be proven.
++//
++// Arguments:
++//    compiler - the compiler instance, for local variable descriptors
++//    node     - the producer node
++//
++// Return Value:
++//    The width, or 0.
++//
++// Remarks:
++//    A non-zero result means both a zero-extension (`slli 32; srli 32` / `andi`) and a
++//    sign-extension (`sext.w`) covering that width are no-ops. The result never exceeds
++//    31, so an accepted value also survives a 4-byte spill and sign-extending `lw` reload
++//    unchanged.
++//
++inline unsigned RiscV64ValueKnownUnsignedWidth(Compiler* compiler, GenTree* node)
 +{
 +    if (genActualType(node->TypeGet()) != TYP_INT)
 +    {
@@ -35,41 +567,29 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
 +    if (node->OperIs(GT_CNS_INT))
 +    {
 +        const ssize_t value = node->AsIntCon()->IconValue();
-+        if (value < 0)
-+        {
-+            return 0;
-+        }
-+        unsigned width = 0;
-+        for (ssize_t v = value; v != 0; v >>= 1)
-+        {
-+            width++;
-+        }
-+        return (width <= 31) ? ((width < 1) ? 1 : width) : 0;
-+    }
-+    if (node->OperIs(GT_IND, GT_LCL_FLD))
-+    {
-+        const var_types t = node->TypeGet();
-+        return (t == TYP_UBYTE) ? 8 : (t == TYP_USHORT) ? 16 : 0;
++        return ((value >= 0) && (value <= INT32_MAX)) ? RiscV64UnsignedBitWidth(value) : 0;
 +    }
 +    if (node->OperIs(GT_AND))
 +    {
-+        GenTree* op2 = node->gtGetOp2();
-+        if (op2->OperIs(GT_CNS_INT) && (op2->AsIntCon()->IconValue() >= 0) &&
-+            (op2->AsIntCon()->IconValue() <= INT32_MAX))
++        // The result cannot have a bit the mask does not have.
++        GenTree* mask = node->gtGetOp2();
++        if (mask->OperIs(GT_CNS_INT) && (mask->AsIntCon()->IconValue() >= 0) &&
++            (mask->AsIntCon()->IconValue() <= INT32_MAX))
 +        {
-+            unsigned width = 0;
-+            for (ssize_t v = op2->AsIntCon()->IconValue(); v != 0; v >>= 1)
-+            {
-+                width++;
-+            }
-+            return (width < 1) ? 1 : width;
++            return RiscV64UnsignedBitWidth(mask->AsIntCon()->IconValue());
 +        }
 +        return 0;
 +    }
++    if (node->OperIs(GT_IND, GT_LCL_FLD))
++    {
++        // lbu / lhu zero-extend the loaded value.
++        const var_types loadType = node->TypeGet();
++        return (loadType == TYP_UBYTE) ? 8 : (loadType == TYP_USHORT) ? 16 : 0;
++    }
 +    if (node->OperIs(GT_CAST) && !node->gtOverflow())
 +    {
-+        const var_types to = node->AsCast()->CastToType();
-+        return (to == TYP_UBYTE) ? 8 : (to == TYP_USHORT) ? 16 : 0;
++        const var_types castToType = node->AsCast()->CastToType();
++        return (castToType == TYP_UBYTE) ? 8 : (castToType == TYP_USHORT) ? 16 : 0;
 +    }
 +    if (node->OperIs(GT_ARR_LENGTH))
 +    {
@@ -92,365 +612,67 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
 +}
 +
 +//------------------------------------------------------------------------
- // genCodeForCompare: Produce code for a GT_EQ/GT_NE/GT_LT/GT_LE/GT_GE/GT_GT node.
- //
- // Arguments:
-@@ -3461,7 +3539,7 @@
-                     assert(regOp1 != tmpRegOp1);
-                     imm = static_cast<int32_t>(imm);
-                     // Skip the 32-bit operand sign-extension when op1 is already sign-extended.
--                    if (!RiscV64ValueIsSignExtendedInt32(op1))
-+                    if (!RiscV64ValueIsSignExtendedInt32(op1) && !emit->emitIsZext32(regOp1))
-                     {
-                         emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp1, regOp1);
-                         regOp1 = tmpRegOp1;
-@@ -3557,12 +3635,12 @@
-                     regNumber tmpRegOp2 = internalRegisters.GetSingle(tree);
-                     assert(regOp1 != tmpRegOp2);
-                     assert(regOp2 != tmpRegOp2);
--                    if (!RiscV64ValueIsSignExtendedInt32(op1))
-+                    if (!RiscV64ValueIsSignExtendedInt32(op1) && !emit->emitIsZext32(regOp1))
-                     {
-                         emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp1, regOp1);
-                         regOp1 = tmpRegOp1;
-                     }
--                    if (!RiscV64ValueIsSignExtendedInt32(op2))
-+                    if (!RiscV64ValueIsSignExtendedInt32(op2) && !emit->emitIsZext32(regOp2))
-                     {
-                         emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp2, regOp2);
-                         regOp2 = tmpRegOp2;
-@@ -3637,7 +3715,7 @@
-                 case EA_4BYTE:
-                 {
-                     imm = static_cast<int32_t>(imm);
--                    if (!RiscV64ValueIsSignExtendedInt32(op1))
-+                    if (!RiscV64ValueIsSignExtendedInt32(op1) && !emit->emitIsZext32(regOp1))
-                     {
-                         regNumber tmpRegOp1 = rsGetRsvdReg();
-                         assert(regOp1 != tmpRegOp1);
-@@ -3674,7 +3752,7 @@
-         }
-         else
-         {
--            if ((cmpSize == EA_4BYTE) && !RiscV64ValueIsSignExtendedInt32(op1))
-+            if ((cmpSize == EA_4BYTE) && !RiscV64ValueIsSignExtendedInt32(op1) && !emit->emitIsZext32(regOp1))
-             {
-                 regNumber tmpRegOp1 = rsGetRsvdReg();
-                 assert(regOp1 != tmpRegOp1);
-@@ -3727,12 +3805,12 @@
-             regNumber tmpRegOp2 = rsGetRsvdReg();
-             assert(regOp1 != tmpRegOp2);
-             assert(regOp2 != tmpRegOp2);
--            if (!RiscV64ValueIsSignExtendedInt32(op1))
-+            if (!RiscV64ValueIsSignExtendedInt32(op1) && !emit->emitIsZext32(regOp1))
-             {
-                 emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp1, regOp1);
-                 regOp1 = tmpRegOp1;
-             }
--            if (!RiscV64ValueIsSignExtendedInt32(op2))
-+            if (!RiscV64ValueIsSignExtendedInt32(op2) && !emit->emitIsZext32(regOp2))
-             {
-                 emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp2, regOp2);
-                 regOp2 = tmpRegOp2;
-@@ -5149,7 +5227,7 @@
-     if (genActualType(length) == TYP_INT)
-     {
-         regNumber tempReg = internalRegisters.Extract(oper);
--        if (!RiscV64ValueIsSignExtendedInt32(length))
-+        if (!RiscV64ValueIsSignExtendedInt32(length) && !GetEmitter()->emitIsZext32(lengthReg))
-         {
-             GetEmitter()->emitIns_R_R(INS_sext_w, EA_4BYTE, tempReg, lengthReg);
-             lengthReg = tempReg;
-@@ -5158,7 +5236,7 @@
-     if (genActualType(index) == TYP_INT)
-     {
-         regNumber tempReg = internalRegisters.GetSingle(oper);
--        if (!RiscV64ValueIsSignExtendedInt32(index))
-+        if (!RiscV64ValueIsSignExtendedInt32(index) && !GetEmitter()->emitIsZext32(indexReg))
-         {
-             GetEmitter()->emitIns_R_R(INS_sext_w, EA_4BYTE, tempReg, indexReg);
-             indexReg = tempReg;
-@@ -6354,6 +6432,17 @@
-         switch (desc.ExtendKind())
-         {
-             case GenIntCastDesc::ZERO_EXTEND_SMALL_INT:
-+                // Skip the masking when the value already fits the target width.
-+                if ((RiscV64ValueKnownUnsignedWidth(compiler, cast->gtGetOp1()) != 0 &&
-+                     RiscV64ValueKnownUnsignedWidth(compiler, cast->gtGetOp1()) <= desc.ExtendSrcSize() * 8) ||
-+                    ((desc.ExtendSrcSize() >= 4) && emit->emitIsZext32(srcReg)))
-+                {
-+                    if (srcReg != dstReg)
-+                    {
-+                        emit->emitIns_R_R(INS_mov, EA_PTRSIZE, dstReg, srcReg);
-+                    }
-+                    break;
-+                }
-                 if (desc.ExtendSrcSize() == 1)
-                 {
-                     emit->emitIns_R_R_I(INS_andi, EA_PTRSIZE, dstReg, srcReg, 0xff);
-@@ -6389,7 +6478,15 @@
-             }
- 
-             case GenIntCastDesc::ZERO_EXTEND_INT:
--                if (compiler->compOpportunisticallyDependsOn(InstructionSet_Zba))
-+                // Skip the widening when bits [63:31] are provably already clear.
-+                if ((RiscV64ValueKnownUnsignedWidth(compiler, cast->gtGetOp1()) != 0) || emit->emitIsZext32(srcReg))
-+                {
-+                    if (srcReg != dstReg)
-+                    {
-+                        emit->emitIns_R_R(INS_mov, EA_PTRSIZE, dstReg, srcReg);
-+                    }
-+                }
-+                else if (compiler->compOpportunisticallyDependsOn(InstructionSet_Zba))
-                 {
-                     emit->emitIns_R_R_R(INS_add_uw, EA_PTRSIZE, dstReg, srcReg, REG_R0);
-                 }
-@@ -6400,7 +6497,19 @@
-                 }
-                 break;
-             case GenIntCastDesc::SIGN_EXTEND_INT:
--                emit->emitIns_R_R(INS_sext_w, EA_4BYTE, dstReg, srcReg);
-+                // Skip the sign-extension when the value is already sign-extended.
-+                if (RiscV64ValueIsSignExtendedInt32(cast->gtGetOp1()) ||
-+                    (RiscV64ValueKnownUnsignedWidth(compiler, cast->gtGetOp1()) != 0) || emit->emitIsZext32(srcReg))
-+                {
-+                    if (srcReg != dstReg)
-+                    {
-+                        emit->emitIns_R_R(INS_mov, EA_PTRSIZE, dstReg, srcReg);
-+                    }
-+                }
-+                else
-+                {
-+                    emit->emitIns_R_R(INS_sext_w, EA_4BYTE, dstReg, srcReg);
-+                }
-                 break;
- 
-             default:
-diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
---- a/src/coreclr/jit/emitriscv64.cpp
-+++ b/src/coreclr/jit/emitriscv64.cpp
-@@ -274,6 +274,124 @@
-  *  Add an instruction with no operands.
-  */
- 
-+//------------------------------------------------------------------------
-+// emitRiscVTrackZext32: maintain emitZext32RegMask across an emitted instruction.
++// RiscV64ValueIsSignExtendedInt32: does this node leave its result already sign-extended
++// from bit 31 into bits [63:32], so a following `sext.w` (e.g. the 32-bit compare-operand
++// normalization in genCodeForCompare / genCodeForJumpCompare) would be a no-op?
 +//
-+// Conservative by construction: every instruction clears its idReg1 (the destination on
-+// every register-writing RISC-V format; for formats where idReg1 is a source, clearing
-+// only loses information), any control-flow instruction clears the whole mask, and so
-+// does the first instruction of a new instruction group (labels/branch targets). Only a
-+// small whitelist re-establishes the bit: unsigned narrow loads, andi with its inherently
-+// non-negative immediate, and value-preserving mv/sext.w from an already-clean source.
++// Arguments:
++//    compiler - the compiler instance, for local variable descriptors
++//    node     - the producer node
 +//
-+void emitter::emitRiscVTrackZext32(instrDesc* id)
++// Return Value:
++//    True when the value is provably in its canonical sign-extended form.
++//
++// Remarks:
++//    Only producers whose form the ISA or the ABI guarantees are accepted:
++//     - RV64 W-form arithmetic and shifts (addw/subw/mulw/divw/sllw/srlw/sraw/...);
++//     - a GT_CALL int return, sign-extended by the ABI like an incoming param;
++//     - a TYP_INT constant, materialized sign-extended; an array length, a non-negative
++//       sign-extending load;
++//     - 4-byte/byte/half loads: lb/lh/lw sign-extend, lbu/lhu are non-negative. TYP_UINT
++//       is excluded, as lwu zero-extends and may leave bit 31 set;
++//     - AND/OR/XOR, which RV64 has no W-form for and therefore computes over all 64 bits:
++//       they preserve sign-extension only when both operands already have it;
++//     - any value with a provable unsigned width, whose clear bit 31 makes it its own
++//       sign extension.
++//
++inline bool RiscV64ValueIsSignExtendedInt32(Compiler* compiler, GenTree* node)
 +{
-+    // A fresh instruction group means a potential join point: forget everything before
-+    // accounting for this instruction.
-+    if (emitCurIGinsCnt == 0)
++    if (genActualType(node->TypeGet()) != TYP_INT)
 +    {
-+        emitZext32RegMask = 0;
++        return false;
 +    }
-+
-+    const instruction ins = id->idIns();
-+
-+    // Calls and unconditional transfers invalidate all tracking. Conditional branches do
-+    // not: they write no register, and their fall-through stays inside this instruction
-+    // group, which can have no other incoming edges (labels start a new group - handled by
-+    // the group-boundary reset above).
-+    switch (ins)
++    if (RiscV64ValueKnownUnsignedWidth(compiler, node) != 0)
 +    {
-+        case INS_jal:
-+        case INS_j:
-+        case INS_jalr:
-+        case INS_ecall:
-+        case INS_ebreak:
-+            emitZext32RegMask = 0;
-+            return;
-+        case INS_beqz:
-+        case INS_bnez:
-+        case INS_beq:
-+        case INS_bne:
-+        case INS_blt:
-+        case INS_bge:
-+        case INS_bltu:
-+        case INS_bgeu:
-+            return;
-+        default:
-+            break;
++        return true;
 +    }
-+
-+    const regNumber dst = id->idReg1();
-+    if (!genIsValidIntReg(dst) || (dst == REG_R0))
++    if (node->OperIs(GT_ADD, GT_SUB, GT_MUL, GT_DIV, GT_MOD, GT_UDIV, GT_UMOD, GT_LSH, GT_RSH, GT_RSZ, GT_NEG,
++                     GT_CALL, GT_CNS_INT, GT_ARR_LENGTH))
 +    {
-+        return;
++        return true;
 +    }
-+
-+    const uint64_t dstBit = 1ULL << dst;
-+    bool           clean  = false;
-+    switch (ins)
++    if (node->OperIs(GT_AND, GT_OR, GT_XOR))
 +    {
-+        case INS_lbu:
-+        case INS_lhu:
-+        case INS_lwu:
-+            // Unsigned loads zero-extend, and byte/half/word all leave bit 31 clear... except
-+            // lwu, which can set bit 31; still, bits [63:32] are clear and bit 31 belongs to
-+            // the value - lwu is excluded to keep the spill-safety invariant.
-+            clean = (ins != INS_lwu);
-+            break;
-+
-+        case INS_slt:
-+        case INS_sltu:
-+        case INS_slti:
-+        case INS_sltiu:
-+            // Comparison results are 0 or 1.
-+            clean = true;
-+            break;
-+
-+        case INS_andi:
-+            // andi's 12-bit immediate sign-extends; a non-negative immediate caps the result
-+            // below 2^11 regardless of the source.
-+            clean = !(id->idIsLargeCns()) && (emitGetInsSC(id) >= 0);
-+            break;
-+
-+        case INS_srli:
-+            // A logical right shift by 33 or more leaves bits [63:31] clear. The immediate is
-+            // the shift amount; a preceding same-register slli-by-32 pair is not special-cased.
-+            clean = !(id->idIsLargeCns()) && (emitGetInsSC(id) >= 33);
-+            break;
-+
-+        case INS_and:
-+            // Either operand clean caps the result.
-+            clean = emitIsZext32(id->idReg2()) || emitIsZext32(id->idReg3());
-+            break;
-+
-+        case INS_or:
-+        case INS_xor:
-+            // Both operands below 2^31 keep the result below 2^31.
-+            clean = emitIsZext32(id->idReg2()) && emitIsZext32(id->idReg3());
-+            break;
-+
-+        case INS_mov:
-+        case INS_sext_w:
-+            // Value-preserving for an already-clean source (sext.w of a bit-31-clear value is
-+            // the identity).
-+            clean = emitIsZext32(id->idReg2());
-+            break;
-+
-+        default:
-+            break;
++        return RiscV64ValueIsSignExtendedInt32(compiler, node->gtGetOp1()) &&
++               RiscV64ValueIsSignExtendedInt32(compiler, node->gtGetOp2());
 +    }
-+
-+    if (clean)
++    if (node->OperIs(GT_CAST))
 +    {
-+        emitZext32RegMask |= dstBit;
++        // A signed cast sign-extends its result; an unsigned (zero-extending) cast does not.
++        return !node->IsUnsigned();
 +    }
-+    else
++    if (node->OperIs(GT_IND, GT_LCL_FLD))
 +    {
-+        emitZext32RegMask &= ~dstBit;
++        const var_types loadType = node->TypeGet();
++        return (loadType == TYP_INT) || (loadType == TYP_BYTE) || (loadType == TYP_UBYTE) ||
++               (loadType == TYP_SHORT) || (loadType == TYP_USHORT);
 +    }
++    if (node->OperIs(GT_LCL_VAR))
++    {
++        return node->TypeGet() == TYP_INT;
++    }
++    return false;
 +}
 +
- void emitter::emitIns(instruction ins)
- {
-     instrDesc* id = emitNewInstr(EA_8BYTE);
-diff --git a/src/coreclr/jit/emitriscv64.h b/src/coreclr/jit/emitriscv64.h
---- a/src/coreclr/jit/emitriscv64.h
-+++ b/src/coreclr/jit/emitriscv64.h
-@@ -272,6 +272,19 @@
- /************************************************************************/
- 
- public:
-+// Per-register "value is zero-extended from 32 bits with bit 31 clear" tracking, valid only
-+// within the current straight-line run of instructions (cleared on every branch, call, and
-+// instruction-group boundary). Updated centrally from appendToCurIG, so no emitIns path can
-+// leave a stale bit; consumers may only use it to skip provably redundant re-extensions.
-+uint64_t emitZext32RegMask = 0;
-+
-+void emitRiscVTrackZext32(instrDesc* id);
-+
-+bool emitIsZext32(regNumber reg) const
-+{
-+    return (emitZext32RegMask & (1ULL << reg)) != 0;
-+}
-+
- void emitIns(instruction ins);
- 
- void emitIns_S_R(instruction ins, emitAttr attr, regNumber ireg, int varx, int offs);
-diff --git a/src/coreclr/jit/emit.cpp b/src/coreclr/jit/emit.cpp
---- a/src/coreclr/jit/emit.cpp
-+++ b/src/coreclr/jit/emit.cpp
-@@ -1532,6 +1532,9 @@
- 
- void emitter::appendToCurIG(instrDesc* id)
- {
-+#ifdef TARGET_RISCV64
-+    emitRiscVTrackZext32(id);
-+#endif
- #ifdef TARGET_ARMARCH
-     if (id->idIns() == INS_dmb)
-     {
-diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
---- a/src/coreclr/jit/lower.cpp
-+++ b/src/coreclr/jit/lower.cpp
-@@ -9674,10 +9674,57 @@
-             }
-         }
- 
--        if ((srcType == TYP_INT) && !node->IsUnsigned() &&
--            ((dstType == TYP_INT) || (dstType == TYP_LONG) || (dstType == TYP_I_IMPL)) && op1IsSignExtended)
-+        // Same for a zero-extending (unsigned) widening cast when the operand's bits [63:31]
-+        // are provably clear: with bit 31 clear, sign- and zero-extension coincide, so the
-+        // no-op argument above (including the sign-extending `lw` spill reload) carries over.
-+        // Keep in sync with RiscV64ValueKnownUnsignedWidth (codegenriscv64.cpp).
-+        bool op1IsBit31Clear = false;
-+        if (genActualType(op1->TypeGet()) == TYP_INT)
-         {
--            JITDUMP("Eliding redundant sign-extending cast over a sign-extended producer\n");
-+            if (op1->OperIs(GT_CNS_INT))
-+            {
-+                const ssize_t value = op1->AsIntCon()->IconValue();
-+                op1IsBit31Clear     = (value >= 0) && (value <= INT32_MAX);
-+            }
-+            else if (op1->OperIs(GT_IND, GT_LCL_FLD))
-+            {
-+                const var_types loadType = op1->TypeGet();
-+                op1IsBit31Clear          = (loadType == TYP_UBYTE) || (loadType == TYP_USHORT);
-+            }
-+            else if (op1->OperIs(GT_AND))
-+            {
-+                GenTree* andOp2 = op1->gtGetOp2();
-+                op1IsBit31Clear = andOp2->OperIs(GT_CNS_INT) && (andOp2->AsIntCon()->IconValue() >= 0) &&
-+                                  (andOp2->AsIntCon()->IconValue() <= INT32_MAX);
-+            }
-+            else if (op1->OperIs(GT_CAST) && !op1->gtOverflow())
-+            {
-+                const var_types to = op1->AsCast()->CastToType();
-+                op1IsBit31Clear    = (to == TYP_UBYTE) || (to == TYP_USHORT);
-+            }
-+            else if (op1->OperIs(GT_ARR_LENGTH))
-+            {
-+                op1IsBit31Clear = true;
-+            }
-+            else if (op1->OperIs(GT_LCL_VAR))
-+            {
-+                // Only normalize-on-store small unsigned locals provably hold a normalized value;
-+                // a normalize-on-load local carries arbitrary upper bits.
-+                LclVarDsc* varDsc = comp->lvaGetDesc(op1->AsLclVar());
-+                op1IsBit31Clear   = varDsc->lvNormalizeOnStore() &&
-+                                  ((varDsc->TypeGet() == TYP_UBYTE) || (varDsc->TypeGet() == TYP_USHORT));
-+            }
-+        }
-+
-+        const bool removableSigned =
-+            !node->IsUnsigned() && (op1IsSignExtended || op1IsBit31Clear) &&
-+            ((dstType == TYP_INT) || (dstType == TYP_LONG) || (dstType == TYP_I_IMPL));
-+        const bool removableUnsigned =
-+            node->IsUnsigned() && op1IsBit31Clear &&
-+            ((dstType == TYP_LONG) || (dstType == TYP_ULONG) || (dstType == TYP_I_IMPL) || (dstType == TYP_U_IMPL));
-+        if ((srcType == TYP_INT) && (removableSigned || removableUnsigned))
-+        {
-+            JITDUMP("Eliding redundant extension cast over a provably extended producer\n");
-             LIR::Use use;
-             if (BlockRange().TryGetUse(node, &use))
-             {
++#endif // TARGET_RISCV64
++#endif // _RISCV64EXTENSION_H_
