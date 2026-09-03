@@ -298,7 +298,7 @@ diff --git a/src/coreclr/jit/emitriscv64.h b/src/coreclr/jit/emitriscv64.h
 diff --git a/src/coreclr/jit/riscv64extension.h b/src/coreclr/jit/riscv64extension.h
 --- a/src/coreclr/jit/riscv64extension.h
 +++ b/src/coreclr/jit/riscv64extension.h
-@@ -130,6 +130,11 @@ inline unsigned RiscV64ValueKnownUnsignedWidth(Compiler* compiler, GenTree* node
+@@ -133,6 +133,11 @@ inline unsigned RiscV64ValueKnownUnsignedWidth(Compiler* compiler, GenTree* node
  //     - any value with a provable unsigned width, whose clear bit 31 makes it its own
  //       sign extension.
  //
@@ -310,7 +310,7 @@ diff --git a/src/coreclr/jit/riscv64extension.h b/src/coreclr/jit/riscv64extensi
  inline bool RiscV64ValueIsSignExtendedInt32(Compiler* compiler, GenTree* node)
  {
      if (genActualType(node->TypeGet()) != TYP_INT)
-@@ -161,10 +166,6 @@ inline bool RiscV64ValueIsSignExtendedInt32(Compiler* compiler, GenTree* node)
+@@ -184,10 +189,6 @@ inline bool RiscV64ValueIsSignExtendedInt32(Compiler* compiler, GenTree* node)
          return (loadType == TYP_INT) || (loadType == TYP_BYTE) || (loadType == TYP_UBYTE) ||
                 (loadType == TYP_SHORT) || (loadType == TYP_USHORT);
      }

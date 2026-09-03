@@ -503,7 +503,7 @@ diff --git a/src/coreclr/jit/riscv64extension.h b/src/coreclr/jit/riscv64extensi
 new file mode 100644
 --- /dev/null
 +++ b/src/coreclr/jit/riscv64extension.h
-@@ -0,0 +1,172 @@
+@@ -0,0 +1,195 @@
 +// Licensed to the .NET Foundation under one or more agreements.
 +// The .NET Foundation licenses this file to you under the MIT license.
 +
@@ -633,6 +633,9 @@ new file mode 100644
 +//       is excluded, as lwu zero-extends and may leave bit 31 set;
 +//     - AND/OR/XOR, which RV64 has no W-form for and therefore computes over all 64 bits:
 +//       they preserve sign-extension only when both operands already have it;
++//     - a cast that actually normalizes: to a small signed type, or the long->int narrowing
++//       RV64 spells with an explicit sext.w. A same-width cast is a no-op the backend can
++//       elide entirely, so it defers to its operand;
 +//     - any value with a provable unsigned width, whose clear bit 31 makes it its own
 +//       sign extension.
 +//
@@ -647,19 +650,39 @@ new file mode 100644
 +        return true;
 +    }
 +    if (node->OperIs(GT_ADD, GT_SUB, GT_MUL, GT_DIV, GT_MOD, GT_UDIV, GT_UMOD, GT_LSH, GT_RSH, GT_RSZ, GT_NEG,
-+                     GT_CALL, GT_CNS_INT, GT_ARR_LENGTH))
++                     GT_CALL, GT_ARR_LENGTH))
 +    {
 +        return true;
++    }
++    if (node->OperIs(GT_CNS_INT))
++    {
++        // Materialized sign-extended, as long as the icon really holds an int32.
++        const ssize_t value = node->AsIntCon()->IconValue();
++        return (value >= INT32_MIN) && (value <= INT32_MAX);
 +    }
 +    if (node->OperIs(GT_AND, GT_OR, GT_XOR))
 +    {
 +        return RiscV64ValueIsSignExtendedInt32(compiler, node->gtGetOp1()) &&
 +               RiscV64ValueIsSignExtendedInt32(compiler, node->gtGetOp2());
 +    }
-+    if (node->OperIs(GT_CAST))
++    if (node->OperIs(GT_CAST) && !node->gtOverflow())
 +    {
-+        // A signed cast sign-extends its result; an unsigned (zero-extending) cast does not.
-+        return !node->IsUnsigned();
++        GenTree* const  castOp     = node->AsCast()->CastOp();
++        const var_types castToType = node->AsCast()->CastToType();
++        if ((castToType == TYP_BYTE) || (castToType == TYP_SHORT))
++        {
++            return true;
++        }
++        // A long->int narrowing cast normalizes with an explicit sext.w on RV64; a
++        // same-width cast is a GenIntCastDesc::COPY that genIntToIntCast elides outright
++        // when the operand already sits in the destination register, so it is only as
++        // sign-extended as its operand is.
++        if ((castToType == TYP_INT) || (castToType == TYP_UINT))
++        {
++            return (genActualType(castOp->TypeGet()) == TYP_LONG) ||
++                   RiscV64ValueIsSignExtendedInt32(compiler, castOp);
++        }
++        return false;
 +    }
 +    if (node->OperIs(GT_IND, GT_LCL_FLD))
 +    {
