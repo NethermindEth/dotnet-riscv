@@ -300,3 +300,22 @@ diff --git a/src/coreclr/nativeaot/Runtime/Full/CMakeLists.txt b/src/coreclr/nat
  install_static_library(standalonegc-disabled aotsdk nativeaot)
  install_static_library(standalonegc-enabled aotsdk nativeaot)
  install_static_library(aotminipal aotsdk nativeaot)
+diff --git a/src/installer/pkg/sfx/Microsoft.NETCore.App/Directory.Build.props b/src/installer/pkg/sfx/Microsoft.NETCore.App/Directory.Build.props
+--- a/src/installer/pkg/sfx/Microsoft.NETCore.App/Directory.Build.props
++++ b/src/installer/pkg/sfx/Microsoft.NETCore.App/Directory.Build.props
+@@ -156,6 +156,7 @@
+     <PlatformManifestFileEntry Include="libRuntime.WorkstationGC.a" IsNative="true" />
+     <PlatformManifestFileEntry Include="libRuntime.VxSortDisabled.a" IsNative="true" />
+     <PlatformManifestFileEntry Include="libRuntime.VxSortEnabled.a" IsNative="true" />
++    <PlatformManifestFileEntry Include="libRuntime.SingleThreaded.a" IsNative="true" />
+     <PlatformManifestFileEntry Include="libstandalonegc-disabled.a" IsNative="true" />
+     <PlatformManifestFileEntry Include="libstandalonegc-enabled.a" IsNative="true" />
+     <PlatformManifestFileEntry Include="libaotminipal.a" IsNative="true" />
+@@ -170,6 +171,7 @@
+     <PlatformManifestFileEntry Include="Runtime.WorkstationGC.lib" IsNative="true" />
+     <PlatformManifestFileEntry Include="Runtime.VxsortEnabled.lib" IsNative="true" />
+     <PlatformManifestFileEntry Include="Runtime.VxsortDisabled.lib" IsNative="true" />
++    <PlatformManifestFileEntry Include="Runtime.SingleThreaded.lib" IsNative="true" />
+     <PlatformManifestFileEntry Include="standalonegc-disabled.lib" IsNative="true" />
+     <PlatformManifestFileEntry Include="standalonegc-enabled.lib" IsNative="true" />
+     <PlatformManifestFileEntry Include="System.Globalization.Native.Aot.lib" IsNative="true" />
