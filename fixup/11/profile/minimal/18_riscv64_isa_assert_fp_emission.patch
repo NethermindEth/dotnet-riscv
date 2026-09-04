@@ -34,7 +34,7 @@ diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
 +        case MajorOpcode::Fsd:
 +        case MajorOpcode::FldSp:
 +        case MajorOpcode::FsdSp:
-+            assert(m_compiler->compIsaSupportedDebugOnly(InstructionSet_F));
++            assert(m_compiler->compIsaSupportedDebugOnly(InstructionSet_RiscV64F));
 +            break;
 +        default:
 +            break;
