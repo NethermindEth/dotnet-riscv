@@ -1,15 +1,15 @@
 diff --git a/src/coreclr/inc/corinfoinstructionset.h b/src/coreclr/inc/corinfoinstructionset.h
-index 6336d39d..1f29955b 100644
+index 6336d39d..602061b2 100644
 --- a/src/coreclr/inc/corinfoinstructionset.h
 +++ b/src/coreclr/inc/corinfoinstructionset.h
 @@ -63,6 +63,10 @@ enum CORINFO_InstructionSet
      InstructionSet_Zbb=3,
      InstructionSet_Zbs=4,
      InstructionSet_Zicond=5,
-+    InstructionSet_RiscV64F=6,
-+    InstructionSet_RiscV64D=7,
-+    InstructionSet_RiscV64C=8,
-+    InstructionSet_RiscV64A=9,
++    InstructionSet_F=6,
++    InstructionSet_D=7,
++    InstructionSet_C=8,
++    InstructionSet_A=9,
  #endif // TARGET_RISCV64
  #ifdef TARGET_WASM
      InstructionSet_WasmBase=1,
@@ -17,14 +17,14 @@ index 6336d39d..1f29955b 100644
              resultflags.RemoveInstructionSet(InstructionSet_Zbs);
          if (resultflags.HasInstructionSet(InstructionSet_Zicond) && !resultflags.HasInstructionSet(InstructionSet_RiscV64Base))
              resultflags.RemoveInstructionSet(InstructionSet_Zicond);
-+        if (resultflags.HasInstructionSet(InstructionSet_RiscV64F) && !resultflags.HasInstructionSet(InstructionSet_RiscV64Base))
-+            resultflags.RemoveInstructionSet(InstructionSet_RiscV64F);
-+        if (resultflags.HasInstructionSet(InstructionSet_RiscV64D) && !resultflags.HasInstructionSet(InstructionSet_RiscV64F))
-+            resultflags.RemoveInstructionSet(InstructionSet_RiscV64D);
-+        if (resultflags.HasInstructionSet(InstructionSet_RiscV64C) && !resultflags.HasInstructionSet(InstructionSet_RiscV64Base))
-+            resultflags.RemoveInstructionSet(InstructionSet_RiscV64C);
-+        if (resultflags.HasInstructionSet(InstructionSet_RiscV64A) && !resultflags.HasInstructionSet(InstructionSet_RiscV64Base))
-+            resultflags.RemoveInstructionSet(InstructionSet_RiscV64A);
++        if (resultflags.HasInstructionSet(InstructionSet_F) && !resultflags.HasInstructionSet(InstructionSet_RiscV64Base))
++            resultflags.RemoveInstructionSet(InstructionSet_F);
++        if (resultflags.HasInstructionSet(InstructionSet_D) && !resultflags.HasInstructionSet(InstructionSet_F))
++            resultflags.RemoveInstructionSet(InstructionSet_D);
++        if (resultflags.HasInstructionSet(InstructionSet_C) && !resultflags.HasInstructionSet(InstructionSet_RiscV64Base))
++            resultflags.RemoveInstructionSet(InstructionSet_C);
++        if (resultflags.HasInstructionSet(InstructionSet_A) && !resultflags.HasInstructionSet(InstructionSet_RiscV64Base))
++            resultflags.RemoveInstructionSet(InstructionSet_A);
  #endif // TARGET_RISCV64
  #ifdef TARGET_WASM
          if (resultflags.HasInstructionSet(InstructionSet_Vector128) && !resultflags.HasInstructionSet(InstructionSet_PackedSimd))
@@ -32,14 +32,14 @@ index 6336d39d..1f29955b 100644
              return "Zbs";
          case InstructionSet_Zicond :
              return "Zicond";
-+        case InstructionSet_RiscV64F :
-+            return "RiscV64F";
-+        case InstructionSet_RiscV64D :
-+            return "RiscV64D";
-+        case InstructionSet_RiscV64C :
-+            return "RiscV64C";
-+        case InstructionSet_RiscV64A :
-+            return "RiscV64A";
++        case InstructionSet_F :
++            return "F";
++        case InstructionSet_D :
++            return "D";
++        case InstructionSet_C :
++            return "C";
++        case InstructionSet_A :
++            return "A";
  #endif // TARGET_RISCV64
  #ifdef TARGET_WASM
          case InstructionSet_WasmBase :
@@ -47,15 +47,15 @@ index 6336d39d..1f29955b 100644
          case READYTORUN_INSTRUCTION_Zbb: return InstructionSet_Zbb;
          case READYTORUN_INSTRUCTION_Zbs: return InstructionSet_Zbs;
          case READYTORUN_INSTRUCTION_Zicond: return InstructionSet_Zicond;
-+        case READYTORUN_INSTRUCTION_RiscV64F: return InstructionSet_RiscV64F;
-+        case READYTORUN_INSTRUCTION_RiscV64D: return InstructionSet_RiscV64D;
-+        case READYTORUN_INSTRUCTION_RiscV64C: return InstructionSet_RiscV64C;
-+        case READYTORUN_INSTRUCTION_RiscV64A: return InstructionSet_RiscV64A;
++        case READYTORUN_INSTRUCTION_RiscV64F: return InstructionSet_F;
++        case READYTORUN_INSTRUCTION_RiscV64D: return InstructionSet_D;
++        case READYTORUN_INSTRUCTION_RiscV64C: return InstructionSet_C;
++        case READYTORUN_INSTRUCTION_RiscV64A: return InstructionSet_A;
  #endif // TARGET_RISCV64
  #ifdef TARGET_WASM
          case READYTORUN_INSTRUCTION_WasmBase: return InstructionSet_WasmBase;
 diff --git a/src/coreclr/inc/jiteeversionguid.h b/src/coreclr/inc/jiteeversionguid.h
-index e48e3753..78b44a52 100644
+index e48e3753..76e6329f 100644
 --- a/src/coreclr/inc/jiteeversionguid.h
 +++ b/src/coreclr/inc/jiteeversionguid.h
 @@ -37,11 +37,11 @@
@@ -67,11 +67,11 @@ index e48e3753..78b44a52 100644
 -    0xe8fa,
 -    0x41d4,
 -    {0x94, 0x96, 0xc4, 0x36, 0x97, 0x4c, 0x00, 0xf5}
-+constexpr GUID JITEEVersionIdentifier = { /* cc7a3215-6c0a-472c-ba70-ca3cb8df766a */
-+    0xcc7a3215,
-+    0x6c0a,
-+    0x472c,
-+    {0xba, 0x70, 0xca, 0x3c, 0xb8, 0xdf, 0x76, 0x6a}
++constexpr GUID JITEEVersionIdentifier = { /* 62eb16ee-8b93-40f7-a702-82b74f1bffd3 */
++    0x62eb16ee,
++    0x8b93,
++    0x40f7,
++    {0xa7, 0x02, 0x82, 0xb7, 0x4f, 0x1b, 0xff, 0xd3}
    };
  
  #endif // JIT_EE_VERSIONING_GUID_H
@@ -106,32 +106,32 @@ index 3a581d76..b6be0b3b 100644
      }
  }
 diff --git a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunInstructionSetHelper.cs b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunInstructionSetHelper.cs
-index c4e7bee7..7b2a21bf 100644
+index c4e7bee7..2f0aae91 100644
 --- a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunInstructionSetHelper.cs
 +++ b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunInstructionSetHelper.cs
 @@ -75,6 +75,10 @@ public static class ReadyToRunInstructionSetHelper
                          case InstructionSet.RiscV64_Zbb: return ReadyToRunInstructionSet.Zbb;
                          case InstructionSet.RiscV64_Zbs: return ReadyToRunInstructionSet.Zbs;
                          case InstructionSet.RiscV64_Zicond: return ReadyToRunInstructionSet.Zicond;
-+                        case InstructionSet.RiscV64_RiscV64F: return ReadyToRunInstructionSet.RiscV64F;
-+                        case InstructionSet.RiscV64_RiscV64D: return ReadyToRunInstructionSet.RiscV64D;
-+                        case InstructionSet.RiscV64_RiscV64C: return ReadyToRunInstructionSet.RiscV64C;
-+                        case InstructionSet.RiscV64_RiscV64A: return ReadyToRunInstructionSet.RiscV64A;
++                        case InstructionSet.RiscV64_F: return ReadyToRunInstructionSet.RiscV64F;
++                        case InstructionSet.RiscV64_D: return ReadyToRunInstructionSet.RiscV64D;
++                        case InstructionSet.RiscV64_C: return ReadyToRunInstructionSet.RiscV64C;
++                        case InstructionSet.RiscV64_A: return ReadyToRunInstructionSet.RiscV64A;
  
                          default: throw new Exception("Unknown instruction set");
                      }
 diff --git a/src/coreclr/tools/Common/JitInterface/CorInfoInstructionSet.cs b/src/coreclr/tools/Common/JitInterface/CorInfoInstructionSet.cs
-index 05ce0e29..bb2fd690 100644
+index 05ce0e29..998df237 100644
 --- a/src/coreclr/tools/Common/JitInterface/CorInfoInstructionSet.cs
 +++ b/src/coreclr/tools/Common/JitInterface/CorInfoInstructionSet.cs
 @@ -61,6 +61,10 @@ public enum InstructionSet
          RiscV64_Zbb = InstructionSet_RiscV64.Zbb,
          RiscV64_Zbs = InstructionSet_RiscV64.Zbs,
          RiscV64_Zicond = InstructionSet_RiscV64.Zicond,
-+        RiscV64_RiscV64F = InstructionSet_RiscV64.RiscV64F,
-+        RiscV64_RiscV64D = InstructionSet_RiscV64.RiscV64D,
-+        RiscV64_RiscV64C = InstructionSet_RiscV64.RiscV64C,
-+        RiscV64_RiscV64A = InstructionSet_RiscV64.RiscV64A,
++        RiscV64_F = InstructionSet_RiscV64.F,
++        RiscV64_D = InstructionSet_RiscV64.D,
++        RiscV64_C = InstructionSet_RiscV64.C,
++        RiscV64_A = InstructionSet_RiscV64.A,
          Wasm32_WasmBase = InstructionSet_Wasm32.WasmBase,
          Wasm32_PackedSimd = InstructionSet_Wasm32.PackedSimd,
          Wasm32_Vector128 = InstructionSet_Wasm32.Vector128,
@@ -139,10 +139,10 @@ index 05ce0e29..bb2fd690 100644
          Zbb = 3,
          Zbs = 4,
          Zicond = 5,
-+        RiscV64F = 6,
-+        RiscV64D = 7,
-+        RiscV64C = 8,
-+        RiscV64A = 9,
++        F = 6,
++        D = 7,
++        C = 8,
++        A = 9,
      }
  
      public enum InstructionSet_Wasm32
@@ -150,13 +150,13 @@ index 05ce0e29..bb2fd690 100644
                              resultflags.AddInstructionSet(InstructionSet.RiscV64_RiscV64Base);
                          if (resultflags.HasInstructionSet(InstructionSet.RiscV64_Zicond))
                              resultflags.AddInstructionSet(InstructionSet.RiscV64_RiscV64Base);
-+                        if (resultflags.HasInstructionSet(InstructionSet.RiscV64_RiscV64F))
++                        if (resultflags.HasInstructionSet(InstructionSet.RiscV64_F))
 +                            resultflags.AddInstructionSet(InstructionSet.RiscV64_RiscV64Base);
-+                        if (resultflags.HasInstructionSet(InstructionSet.RiscV64_RiscV64D))
-+                            resultflags.AddInstructionSet(InstructionSet.RiscV64_RiscV64F);
-+                        if (resultflags.HasInstructionSet(InstructionSet.RiscV64_RiscV64C))
++                        if (resultflags.HasInstructionSet(InstructionSet.RiscV64_D))
++                            resultflags.AddInstructionSet(InstructionSet.RiscV64_F);
++                        if (resultflags.HasInstructionSet(InstructionSet.RiscV64_C))
 +                            resultflags.AddInstructionSet(InstructionSet.RiscV64_RiscV64Base);
-+                        if (resultflags.HasInstructionSet(InstructionSet.RiscV64_RiscV64A))
++                        if (resultflags.HasInstructionSet(InstructionSet.RiscV64_A))
 +                            resultflags.AddInstructionSet(InstructionSet.RiscV64_RiscV64Base);
                          break;
  
@@ -166,13 +166,13 @@ index 05ce0e29..bb2fd690 100644
                          if (resultflags.HasInstructionSet(InstructionSet.RiscV64_RiscV64Base))
                              resultflags.AddInstructionSet(InstructionSet.RiscV64_Zicond);
 +                        if (resultflags.HasInstructionSet(InstructionSet.RiscV64_RiscV64Base))
-+                            resultflags.AddInstructionSet(InstructionSet.RiscV64_RiscV64F);
-+                        if (resultflags.HasInstructionSet(InstructionSet.RiscV64_RiscV64F))
-+                            resultflags.AddInstructionSet(InstructionSet.RiscV64_RiscV64D);
++                            resultflags.AddInstructionSet(InstructionSet.RiscV64_F);
++                        if (resultflags.HasInstructionSet(InstructionSet.RiscV64_F))
++                            resultflags.AddInstructionSet(InstructionSet.RiscV64_D);
 +                        if (resultflags.HasInstructionSet(InstructionSet.RiscV64_RiscV64Base))
-+                            resultflags.AddInstructionSet(InstructionSet.RiscV64_RiscV64C);
++                            resultflags.AddInstructionSet(InstructionSet.RiscV64_C);
 +                        if (resultflags.HasInstructionSet(InstructionSet.RiscV64_RiscV64Base))
-+                            resultflags.AddInstructionSet(InstructionSet.RiscV64_RiscV64A);
++                            resultflags.AddInstructionSet(InstructionSet.RiscV64_A);
                          break;
  
                      case TargetArchitecture.Wasm32:
@@ -180,15 +180,15 @@ index 05ce0e29..bb2fd690 100644
                      yield return new InstructionSetInfo("zbb", "", InstructionSet.RiscV64_Zbb, true);
                      yield return new InstructionSetInfo("zbs", "", InstructionSet.RiscV64_Zbs, true);
                      yield return new InstructionSetInfo("zicond", "", InstructionSet.RiscV64_Zicond, true);
-+                    yield return new InstructionSetInfo("f", "", InstructionSet.RiscV64_RiscV64F, true);
-+                    yield return new InstructionSetInfo("d", "", InstructionSet.RiscV64_RiscV64D, true);
-+                    yield return new InstructionSetInfo("c", "", InstructionSet.RiscV64_RiscV64C, true);
-+                    yield return new InstructionSetInfo("a", "", InstructionSet.RiscV64_RiscV64A, true);
++                    yield return new InstructionSetInfo("f", "", InstructionSet.RiscV64_F, true);
++                    yield return new InstructionSetInfo("d", "", InstructionSet.RiscV64_D, true);
++                    yield return new InstructionSetInfo("c", "", InstructionSet.RiscV64_C, true);
++                    yield return new InstructionSetInfo("a", "", InstructionSet.RiscV64_A, true);
                      break;
  
                  case TargetArchitecture.Wasm32:
 diff --git a/src/coreclr/tools/Common/JitInterface/ThunkGenerator/InstructionSetDesc.txt b/src/coreclr/tools/Common/JitInterface/ThunkGenerator/InstructionSetDesc.txt
-index 87a52852..ea67541f 100644
+index 87a52852..0e0abdab 100644
 --- a/src/coreclr/tools/Common/JitInterface/ThunkGenerator/InstructionSetDesc.txt
 +++ b/src/coreclr/tools/Common/JitInterface/ThunkGenerator/InstructionSetDesc.txt
 @@ -26,7 +26,7 @@
@@ -204,19 +204,19 @@ index 87a52852..ea67541f 100644
  instructionset     ,RiscV64 , ,Zbb               ,58 ,Zbb                 ,zbb
  instructionset     ,RiscV64 , ,Zbs               ,84 ,Zbs                 ,zbs
  instructionset     ,RiscV64 , ,Zicond            ,94 ,Zicond              ,zicond
-+instructionset     ,RiscV64 , ,RiscV64F          ,96 ,RiscV64F            ,f
-+instructionset     ,RiscV64 , ,RiscV64D          ,97 ,RiscV64D            ,d
-+instructionset     ,RiscV64 , ,RiscV64C          ,98 ,RiscV64C            ,c
-+instructionset     ,RiscV64 , ,RiscV64A          ,99 ,RiscV64A            ,a
++instructionset     ,RiscV64 , ,RiscV64F          ,96 ,F                   ,f
++instructionset     ,RiscV64 , ,RiscV64D          ,97 ,D                   ,d
++instructionset     ,RiscV64 , ,RiscV64C          ,98 ,C                   ,c
++instructionset     ,RiscV64 , ,RiscV64A          ,99 ,A                   ,a
  
  implication        ,RiscV64 ,Zbb                 ,RiscV64Base
  implication        ,RiscV64 ,Zba                 ,RiscV64Base
  implication        ,RiscV64 ,Zbs                 ,RiscV64Base
  implication        ,RiscV64 ,Zicond              ,RiscV64Base
-+implication        ,RiscV64 ,RiscV64F            ,RiscV64Base
-+implication        ,RiscV64 ,RiscV64D            ,RiscV64F
-+implication        ,RiscV64 ,RiscV64C            ,RiscV64Base
-+implication        ,RiscV64 ,RiscV64A            ,RiscV64Base
++implication        ,RiscV64 ,F                   ,RiscV64Base
++implication        ,RiscV64 ,D                   ,F
++implication        ,RiscV64 ,C                   ,RiscV64Base
++implication        ,RiscV64 ,A                   ,RiscV64Base
  
  ;                    ,name and aliases           ,archs    ,lower baselines included by implication
  instructionsetgroup  ,x86-64-v2                  ,X64 X86  ,base

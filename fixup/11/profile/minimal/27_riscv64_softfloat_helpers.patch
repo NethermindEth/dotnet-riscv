@@ -37,11 +37,11 @@ diff --git a/src/coreclr/inc/jiteeversionguid.h b/src/coreclr/inc/jiteeversiongu
  
  #include <minipal/guid.h>
  
--constexpr GUID JITEEVersionIdentifier = { /* cc7a3215-6c0a-472c-ba70-ca3cb8df766a */
--    0xcc7a3215,
--    0x6c0a,
--    0x472c,
--    {0xba, 0x70, 0xca, 0x3c, 0xb8, 0xdf, 0x76, 0x6a}
+-constexpr GUID JITEEVersionIdentifier = { /* 62eb16ee-8b93-40f7-a702-82b74f1bffd3 */
+-    0x62eb16ee,
+-    0x8b93,
+-    0x40f7,
+-    {0xa7, 0x02, 0x82, 0xb7, 0x4f, 0x1b, 0xff, 0xd3}
 +constexpr GUID JITEEVersionIdentifier = { /* ad6f1601-8ca2-48b7-804e-2cbd0cd36a5f */
 +    0xad6f1601,
 +    0x8ca2,

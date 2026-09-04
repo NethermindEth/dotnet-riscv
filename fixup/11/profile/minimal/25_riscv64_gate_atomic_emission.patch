@@ -6,7 +6,7 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
              noway_assert(!"Unexpected treeNode->gtOper");
      }
 -    GetEmitter()->emitIns_R_R_R(ins, dataSize, targetReg, addrReg, dataReg);
-+    if (!m_compiler->compOpportunisticallyDependsOn(InstructionSet_RiscV64A))
++    if (!m_compiler->compOpportunisticallyDependsOn(InstructionSet_A))
 +    {
 +        // Single-hart target: no amo. Plain read/modify/store. XCHG needs no
 +        // scratch; the arithmetic/bitwise forms compute the new value in an
@@ -72,7 +72,7 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
 -    e->emitIns_R_R_R(is4 ? INS_sc_w : INS_sc_d, size, storeErr, loc, val);  // try to update
 -    e->emitIns_J_cond_la(INS_bnez, retry, storeErr);                        // retry if update failed
 -    genDefineTempLabel(fail);
-+    if (!m_compiler->compOpportunisticallyDependsOn(InstructionSet_RiscV64A))
++    if (!m_compiler->compOpportunisticallyDependsOn(InstructionSet_A))
 +    {
 +        // Single-hart target: no lr/sc reservation. Plain compare-and-swap.
 +        // old = *loc; if (old == comparand) *loc = val; result = old.
@@ -106,7 +106,7 @@ diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
 +            // and data registers after the first instruction, so their lifetimes
 +            // must be extended past the def; the arithmetic/bitwise forms also
 +            // need one scratch register for the new value.
-+            const bool plainAtomic = !m_compiler->compOpportunisticallyDependsOn(InstructionSet_RiscV64A);
++            const bool plainAtomic = !m_compiler->compOpportunisticallyDependsOn(InstructionSet_A);
 +
              srcCount = 1;
 -            BuildUse(addr);

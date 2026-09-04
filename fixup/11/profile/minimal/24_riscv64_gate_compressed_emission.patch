@@ -7,7 +7,7 @@ diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
  {
 +    // Targets without the C extension (e.g. a zkVM guest on rv64im) must never
 +    // receive a compressed encoding. This is the only place the JIT emits one.
-+    if (!m_compiler->compOpportunisticallyDependsOn(InstructionSet_RiscV64C))
++    if (!m_compiler->compOpportunisticallyDependsOn(InstructionSet_C))
 +    {
 +        return false;
 +    }
