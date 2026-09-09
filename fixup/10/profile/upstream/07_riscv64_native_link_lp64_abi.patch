@@ -1,0 +1,19 @@
+[RISC-V] Pass -mabi=lp64 to the native linker for riscv64-lp64
+
+Backported from the .NET 11 upstream profile (patch 14). .NET 10 has no
+aggregate-executable shim, so only the main link needs the flag.
+
+diff --git a/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets b/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets
+--- a/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets	2026-09-09 17:18:29
++++ b/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets	2026-09-09 17:20:06
+@@ -232,6 +232,10 @@
+       <LinkerArg Include="--sysroot=&quot;$(SysRoot)&quot;" Condition="'$(SysRoot)' != '' and '$(_IsApplePlatform)' != 'true'" />
+       <LinkerArg Include="-isysroot &quot;$(SysRoot)&quot;" Condition="'$(SysRoot)' != '' and '$(_IsApplePlatform)' == 'true'" />
+       <LinkerArg Include="--target=$(TargetTriple)" Condition="'$(TargetTriple)' != ''" />
++      <!-- The RISC-V lp64 (soft-float) target: the object writer already stamps the
++           soft-float ABI on what ilc emits (see _targetArchitectureWithAbi), but the
++           final link picks the CRT by ABI, so it has to be told explicitly. -->
++      <LinkerArg Include="-mabi=lp64" Condition="'$(_targetArchitectureWithAbi)' == 'riscv64-lp64'" />
+       <LinkerArg Include="-g" Condition="$(NativeDebugSymbols) == 'true'" />
+       <LinkerArg Include="-Wl,--strip-debug" Condition="$(NativeDebugSymbols) != 'true' and '$(_IsApplePlatform)' != 'true'" />
+       <LinkerArg Include="-Wl,-install_name,&quot;$(SharedLibraryInstallName)&quot;" Condition="'$(_IsApplePlatform)' == 'true' and '$(NativeLib)' == 'Shared'" />
