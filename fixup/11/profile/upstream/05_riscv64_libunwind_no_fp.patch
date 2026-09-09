@@ -1,0 +1,105 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Maxim Menshikov <maximmenshchikov@gmail.com>
+Date: Wed, 9 Sep 2026 00:01:40 +0100
+Subject: [PATCH] [RISC-V] Build libunwind for targets without the F/D
+ extensions
+
+The riscv64 port refuses to compile when __riscv_flen is not 32 or 64, so a
+target built for the base integer ISA cannot build the PAL's unwinder at all:
+libunwind-riscv.h has no unw_tdep_fpreg_t, asm.h has no load/store width, and
+dwarf_getfp/dwarf_putfp hit an #error because __riscv_xlen != __riscv_flen.
+
+There is nothing to unwind in that configuration - the target has no
+floating-point registers - so the three cases are answered rather than made to
+work:
+
+  * unw_tdep_fpreg_t is part of the public API, so it stays, as an integer of
+    the width the double-precision ABI uses.
+  * asm.h leaves SZFREG/STORE_FP/LOAD_FP undefined; getcontext.S and
+    setcontext.S already guard every use with #ifdef, so they save and restore
+    the integer registers alone.
+  * dwarf_getfp and dwarf_putfp return -UNW_EBADREG: with no floating-point
+    registers, no floating-point location is valid.
+
+Targets that have F or D are unaffected - the existing branches are untouched
+and still the only ones taken.
+---
+ .../external/libunwind/include/libunwind-riscv.h     |  6 ++++++
+ .../libunwind/include/tdep-riscv/libunwind_i.h       | 12 ++++++++++++
+ src/native/external/libunwind/src/riscv/asm.h        |  5 +++--
+ 3 files changed, 21 insertions(+), 2 deletions(-)
+
+diff --git a/src/native/external/libunwind/include/libunwind-riscv.h b/src/native/external/libunwind/include/libunwind-riscv.h
+index 55605fe7..075eacd2 100644
+--- a/src/native/external/libunwind/include/libunwind-riscv.h
++++ b/src/native/external/libunwind/include/libunwind-riscv.h
+@@ -68,6 +68,12 @@ typedef int64_t unw_sword_t;
+ typedef double unw_tdep_fpreg_t;
+ #elif __riscv_flen == 32
+ typedef float unw_tdep_fpreg_t;
++#elif !defined(__riscv_flen)
++/* Built for a target without F/D. There are no floating-point registers to
++   unwind, but the type is part of the public API, so keep it the width the
++   double-precision ABI uses and make it an integer so that the header does not
++   require floating point of its includer. */
++typedef uint64_t unw_tdep_fpreg_t;
+ #else
+ # error "Unsupported RISC-V floating-point size"
+ #endif
+diff --git a/src/native/external/libunwind/include/tdep-riscv/libunwind_i.h b/src/native/external/libunwind/include/tdep-riscv/libunwind_i.h
+index b0aebc35..6c752a3d 100644
+--- a/src/native/external/libunwind/include/tdep-riscv/libunwind_i.h
++++ b/src/native/external/libunwind/include/tdep-riscv/libunwind_i.h
+@@ -162,6 +162,12 @@ dwarf_put (struct dwarf_cursor *c, dwarf_loc_t loc, unw_word_t val)
+ static inline int
+ dwarf_getfp (struct dwarf_cursor *c, dwarf_loc_t loc, unw_fpreg_t *val)
+ {
++#if !defined(__riscv_flen)
++  /* No F/D extension: the target has no floating-point registers, so no
++     floating-point location can be valid. */
++  (void) c; (void) loc; (void) val;
++  return -UNW_EBADREG;
++#else
+   char *valp = (char *) &val;
+   unw_word_t addr;
+ 
+@@ -180,11 +186,16 @@ dwarf_getfp (struct dwarf_cursor *c, dwarf_loc_t loc, unw_fpreg_t *val)
+ #else
+ # error "FIXME"
+ #endif
++#endif /* !defined(__riscv_flen) */
+ }
+ 
+ static inline int
+ dwarf_putfp (struct dwarf_cursor *c, dwarf_loc_t loc, unw_fpreg_t val)
+ {
++#if !defined(__riscv_flen)
++  (void) c; (void) loc; (void) val;
++  return -UNW_EBADREG;
++#else
+   char *valp = (char *) &val;
+   unw_word_t addr;
+ 
+@@ -203,6 +214,7 @@ dwarf_putfp (struct dwarf_cursor *c, dwarf_loc_t loc, unw_fpreg_t val)
+ #else
+ # error "FIXME"
+ #endif
++#endif /* !defined(__riscv_flen) */
+ }
+ 
+ static inline int
+diff --git a/src/native/external/libunwind/src/riscv/asm.h b/src/native/external/libunwind/src/riscv/asm.h
+index 7f7b444f..2939ab7f 100644
+--- a/src/native/external/libunwind/src/riscv/asm.h
++++ b/src/native/external/libunwind/src/riscv/asm.h
+@@ -40,7 +40,8 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.  */
+ # define SZFREG 4
+ # define STORE_FP fsw
+ # define LOAD_FP flw
+-#else
+-# error "Unsupported RISC-V floating-point length"
+ #endif
++/* Without F/D there are no floating-point registers to save or restore, so
++   SZFREG/STORE_FP/LOAD_FP stay undefined; getcontext.S and setcontext.S
++   already guard their use with #ifdef STORE_FP / #ifdef LOAD_FP. */
+ 

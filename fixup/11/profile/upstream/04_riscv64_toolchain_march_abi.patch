@@ -1,0 +1,51 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Maxim Menshikov <maximmenshchikov@gmail.com>
+Date: Tue, 8 Sep 2026 23:39:42 +0100
+Subject: [PATCH] [RISC-V] Apply the ISA string and ABI to the cross toolchain
+ probes
+
+configurecompiler.cmake settles the RISC-V ISA and ABI for the project, but
+cmake compiles and links its own probes at project() time, before any of the
+project's options exist. On a sysroot built for an ABI other than the compiler
+default those probes fail to link - lld does not reconcile float ABIs - and
+cmake reports the compiler as broken before the build starts.
+
+Apply the same two variables from the cross toolchain file, which is in effect
+for the probes as well, and list them in CMAKE_TRY_COMPILE_PLATFORM_VARIABLES so
+they survive nested try_compile passes. Both are unset by default, so the
+toolchain's own defaults stay in place and nothing changes for existing targets.
+
+This follows what the arm/armel branch above already does for -mfpu and
+-mfloat-abi.
+---
+ eng/common/cross/toolchain.cmake | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/eng/common/cross/toolchain.cmake b/eng/common/cross/toolchain.cmake
+index 70b71395..d00abc04 100644
+--- a/eng/common/cross/toolchain.cmake
++++ b/eng/common/cross/toolchain.cmake
+@@ -333,6 +333,23 @@ if(TARGET_ARCH_NAME MATCHES "^(arm|armel)$")
+   if(TARGET_ARCH_NAME STREQUAL "armel")
+     add_compile_options(-mfloat-abi=softfp)
+   endif()
++elseif(TARGET_ARCH_NAME STREQUAL "riscv64")
++  # The ISA string and the ABI have to be settled here rather than in
++  # configurecompiler.cmake alone: cmake compiles and links its own probes
++  # before the project's options are applied, and a probe built for a different
++  # ABI than the sysroot fails to link, so the compiler looks broken. Both are
++  # unset by default, which leaves the toolchain's own defaults in place.
++  if(DEFINED CLR_CMAKE_RISCV64_MARCH)
++    add_compile_options(-march=${CLR_CMAKE_RISCV64_MARCH})
++    add_toolchain_linker_flag(-march=${CLR_CMAKE_RISCV64_MARCH})
++  endif()
++  if(DEFINED CLR_CMAKE_RISCV64_MABI)
++    add_compile_options(-mabi=${CLR_CMAKE_RISCV64_MABI})
++    add_toolchain_linker_flag(-mabi=${CLR_CMAKE_RISCV64_MABI})
++  endif()
++
++  # persist variables across multiple try_compile passes
++  list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES CLR_CMAKE_RISCV64_MARCH CLR_CMAKE_RISCV64_MABI)
+ elseif(TARGET_ARCH_NAME STREQUAL "s390x")
+   add_compile_options("--target=${TOOLCHAIN}")
+ elseif(TARGET_ARCH_NAME STREQUAL "x86")
