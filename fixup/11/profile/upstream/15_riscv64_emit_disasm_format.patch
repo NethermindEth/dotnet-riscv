@@ -1,0 +1,12 @@
+diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
+--- a/src/coreclr/jit/emitriscv64.cpp
++++ b/src/coreclr/jit/emitriscv64.cpp
+@@ -4772,7 +4772,7 @@
+         default:
+         {
+             printf("CODE: %#x\n", code);
+-            printf("MajorOpcode: %d\n", GetMajorOpcode(code));
++            printf("MajorOpcode: %d\n", static_cast<int>(GetMajorOpcode(code)));
+             NO_WAY("illegal ins within emitDisInsName!");
+         }
+     }
