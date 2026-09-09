@@ -27,10 +27,10 @@ This mirrors how armel selects -mfloat-abi=softfp a few lines above.
  1 file changed, 16 insertions(+), 2 deletions(-)
 
 diff --git a/eng/native/configurecompiler.cmake b/eng/native/configurecompiler.cmake
-index bc5fcb17..847c977a 100644
+index bc5fcb1..8b29d1a 100644
 --- a/eng/native/configurecompiler.cmake
 +++ b/eng/native/configurecompiler.cmake
-@@ -915,8 +915,22 @@ if(CLR_CMAKE_HOST_UNIX_ARMV6)
+@@ -915,8 +915,39 @@ if(CLR_CMAKE_HOST_UNIX_ARMV6)
  endif(CLR_CMAKE_HOST_UNIX_ARMV6)
  
  if(CLR_CMAKE_HOST_UNIX_RISCV64)
@@ -48,6 +48,23 @@ index bc5fcb17..847c977a 100644
 +  # selects the matching CRT and builtins.
 +  set(CLR_CMAKE_RISCV64_MARCH "rv64gc" CACHE STRING "RISC-V ISA string for the native runtime build")
 +  set(CLR_CMAKE_RISCV64_MABI "lp64d" CACHE STRING "RISC-V ABI for the native runtime build")
++
++  # Also settable from the environment, the way CLR_CC, ROOTFS_DIR and TOOLCHAIN
++  # already are: a build driven through a superproject cannot always reach the
++  # cmake command line of an individual repository.
++  if(DEFINED ENV{CLR_CMAKE_RISCV64_MARCH})
++    set(CLR_CMAKE_RISCV64_MARCH "$ENV{CLR_CMAKE_RISCV64_MARCH}")
++  endif()
++  if(DEFINED ENV{CLR_CMAKE_RISCV64_MABI})
++    set(CLR_CMAKE_RISCV64_MABI "$ENV{CLR_CMAKE_RISCV64_MABI}")
++  endif()
++
++  # Without the A extension every __atomic_* call is "not lock-free" and clang
++  # warns; the runtime builds with -Werror, which would make that fatal.
++  if(NOT CLR_CMAKE_RISCV64_MARCH MATCHES "a")
++    add_compile_options(-Wno-atomic-alignment)
++  endif()
++
 +  add_compile_options(-march=${CLR_CMAKE_RISCV64_MARCH})
 +  add_compile_options(-mabi=${CLR_CMAKE_RISCV64_MABI})
 +  add_link_options(-march=${CLR_CMAKE_RISCV64_MARCH})

@@ -22,10 +22,10 @@ This follows what the arm/armel branch above already does for -mfpu and
  1 file changed, 17 insertions(+)
 
 diff --git a/eng/common/cross/toolchain.cmake b/eng/common/cross/toolchain.cmake
-index 70b71395..d00abc04 100644
+index 70b7139..1d7bb99 100644
 --- a/eng/common/cross/toolchain.cmake
 +++ b/eng/common/cross/toolchain.cmake
-@@ -333,6 +333,23 @@ if(TARGET_ARCH_NAME MATCHES "^(arm|armel)$")
+@@ -333,6 +333,29 @@ if(TARGET_ARCH_NAME MATCHES "^(arm|armel)$")
    if(TARGET_ARCH_NAME STREQUAL "armel")
      add_compile_options(-mfloat-abi=softfp)
    endif()
@@ -35,6 +35,12 @@ index 70b71395..d00abc04 100644
 +  # before the project's options are applied, and a probe built for a different
 +  # ABI than the sysroot fails to link, so the compiler looks broken. Both are
 +  # unset by default, which leaves the toolchain's own defaults in place.
++  if(DEFINED ENV{CLR_CMAKE_RISCV64_MARCH})
++    set(CLR_CMAKE_RISCV64_MARCH "$ENV{CLR_CMAKE_RISCV64_MARCH}")
++  endif()
++  if(DEFINED ENV{CLR_CMAKE_RISCV64_MABI})
++    set(CLR_CMAKE_RISCV64_MABI "$ENV{CLR_CMAKE_RISCV64_MABI}")
++  endif()
 +  if(DEFINED CLR_CMAKE_RISCV64_MARCH)
 +    add_compile_options(-march=${CLR_CMAKE_RISCV64_MARCH})
 +    add_toolchain_linker_flag(-march=${CLR_CMAKE_RISCV64_MARCH})
