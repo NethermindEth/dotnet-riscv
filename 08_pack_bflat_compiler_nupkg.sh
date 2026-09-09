@@ -128,6 +128,10 @@ PYEOF
         # compiled. We only need the managed (NetCoreAppToolCurrent) ILCompiler
         # assemblies and never a full-framework build task, so empty
         # NetFrameworkToolCurrent to drop the net472 target entirely.
+        #
+        # FeatureXplatEventSource=false matches the main build: the LTTng
+        # XplatEventSource path is off there, and the cross rootfs carries no
+        # lttng-ust-dev, which the native configure would otherwise demand.
         ./build.sh -s clr+clr.aot+clr.tools \
                    -c Release \
                    -rc Release \
@@ -137,6 +141,7 @@ PYEOF
                    -cross \
                    -p:StageOneBuild=true \
                    -p:NetFrameworkToolCurrent= \
+                   -p:FeatureXplatEventSource=false \
                    -p:RestoreAdditionalProjectSources="${local_packs}" \
                    "${version_args[@]}"
     popd
