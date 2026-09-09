@@ -116,15 +116,18 @@ jobs:
 
     - name: Build
       run: |
-        # No quoting needed: none of these values contains a space (the list
-        # separators are %3B, see fixup/11/profile/upstream/README.md).
-        abi_args=""
+        # Passed as environment variables, not -cmakeargs: the VMR's build.sh
+        # has no such switch (it forwards unknown arguments to MSBuild, which
+        # fails with MSB1001), and only repo-projects/runtime.proj may add
+        # --cmakeargs to the inner runtime build. The riscv64 block of
+        # configurecompiler.cmake reads these from the environment, the way
+        # ROOTFS_DIR, TOOLCHAIN and CLR_CC already are read.
+        abi_env=""
         if [ "${{ inputs.soft_float_abi }}" = "true" ] ; then
-          abi_args="-cmakeargs -DCLR_CMAKE_RISCV64_MABI=lp64"
-          abi_args="$abi_args -cmakeargs -DCLR_CMAKE_RISCV64_MARCH=rv64im"
-          abi_args="$abi_args -cmakeargs -DCLR_ADDITIONAL_COMPILER_OPTIONS=-mno-relax%3B-gdwarf-4%3B-fno-jump-tables%3B-Wno-atomic-alignment%3B-fno-use-cxa-atexit"
+          abi_env="-e CLR_CMAKE_RISCV64_MABI=lp64 -e CLR_CMAKE_RISCV64_MARCH=rv64im"
         fi
         docker run --platform linux/amd64 --rm \
+          $abi_env \
           -v${{ github.workspace }}/dotnet:/dotnet \
           -v${{ github.workspace }}/crossrootfs:/crossrootfs \
           -w /dotnet \
@@ -136,7 +139,6 @@ jobs:
                        --rid linux-musl-riscv64 \
                        --verbosity normal \
                        --arch riscv64 \
-                       $abi_args \
                        -p:OfficialBuildId=$(date +%Y%m%d).99
 
     - name: Check everything is lp64 after the linker
