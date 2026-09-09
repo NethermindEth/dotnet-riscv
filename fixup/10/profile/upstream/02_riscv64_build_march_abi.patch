@@ -1,0 +1,160 @@
+[RISC-V] Make the native build's ISA/ABI configurable; libunwind without F/D
+
+Backported from the .NET 11 upstream profile; see fixup/11/profile/upstream.
+
+diff --git a/eng/common/cross/toolchain.cmake b/eng/common/cross/toolchain.cmake
+index f65c689..511ce78 100644
+--- a/eng/common/cross/toolchain.cmake
++++ b/eng/common/cross/toolchain.cmake
+@@ -330,6 +330,29 @@ if(TARGET_ARCH_NAME MATCHES "^(arm|armel)$")
+   if(TARGET_ARCH_NAME STREQUAL "armel")
+     add_compile_options(-mfloat-abi=softfp)
+   endif()
++elseif(TARGET_ARCH_NAME STREQUAL "riscv64")
++  # The ISA string and the ABI have to be settled here rather than in
++  # configurecompiler.cmake alone: cmake compiles and links its own probes
++  # before the project's options are applied, and a probe built for a different
++  # ABI than the sysroot fails to link, so the compiler looks broken. Both are
++  # unset by default, which leaves the toolchain's own defaults in place.
++  if(DEFINED ENV{CLR_CMAKE_RISCV64_MARCH})
++    set(CLR_CMAKE_RISCV64_MARCH "$ENV{CLR_CMAKE_RISCV64_MARCH}")
++  endif()
++  if(DEFINED ENV{CLR_CMAKE_RISCV64_MABI})
++    set(CLR_CMAKE_RISCV64_MABI "$ENV{CLR_CMAKE_RISCV64_MABI}")
++  endif()
++  if(DEFINED CLR_CMAKE_RISCV64_MARCH)
++    add_compile_options(-march=${CLR_CMAKE_RISCV64_MARCH})
++    add_toolchain_linker_flag(-march=${CLR_CMAKE_RISCV64_MARCH})
++  endif()
++  if(DEFINED CLR_CMAKE_RISCV64_MABI)
++    add_compile_options(-mabi=${CLR_CMAKE_RISCV64_MABI})
++    add_toolchain_linker_flag(-mabi=${CLR_CMAKE_RISCV64_MABI})
++  endif()
++
++  # persist variables across multiple try_compile passes
++  list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES CLR_CMAKE_RISCV64_MARCH CLR_CMAKE_RISCV64_MABI)
+ elseif(TARGET_ARCH_NAME STREQUAL "s390x")
+   add_compile_options("--target=${TOOLCHAIN}")
+ elseif(TARGET_ARCH_NAME STREQUAL "x86")
+diff --git a/eng/native/configurecompiler.cmake b/eng/native/configurecompiler.cmake
+index 9564149..eb1de82 100644
+--- a/eng/native/configurecompiler.cmake
++++ b/eng/native/configurecompiler.cmake
+@@ -804,6 +804,43 @@ if(CLR_CMAKE_HOST_UNIX_ARMV6)
+    add_compile_options(-mfloat-abi=hard)
+ endif(CLR_CMAKE_HOST_UNIX_ARMV6)
+ 
++if(CLR_CMAKE_HOST_UNIX_RISCV64)
++  # The ISA string and the ABI the native runtime is built with. The defaults are
++  # the rv64gc/lp64d baseline the compiler already assumes, so an unconfigured
++  # build is unchanged. A target whose sysroot is built for a different ABI - a
++  # soft-float lp64 userspace, for instance - selects it here, the way armel
++  # selects -mfloat-abi=softfp above, instead of overriding the flags further
++  # down the command line.
++  #
++  # The float-ABI field of e_flags follows -mabi (not -march), so setting the ABI
++  # once here is what makes the whole native build agree with the sysroot; the
++  # linker rejects a mix, and it is also passed at link time so that the driver
++  # selects the matching CRT and builtins.
++  set(CLR_CMAKE_RISCV64_MARCH "rv64gc" CACHE STRING "RISC-V ISA string for the native runtime build")
++  set(CLR_CMAKE_RISCV64_MABI "lp64d" CACHE STRING "RISC-V ABI for the native runtime build")
++
++  # Also settable from the environment, the way CLR_CC, ROOTFS_DIR and TOOLCHAIN
++  # already are: a build driven through a superproject cannot always reach the
++  # cmake command line of an individual repository.
++  if(DEFINED ENV{CLR_CMAKE_RISCV64_MARCH})
++    set(CLR_CMAKE_RISCV64_MARCH "$ENV{CLR_CMAKE_RISCV64_MARCH}")
++  endif()
++  if(DEFINED ENV{CLR_CMAKE_RISCV64_MABI})
++    set(CLR_CMAKE_RISCV64_MABI "$ENV{CLR_CMAKE_RISCV64_MABI}")
++  endif()
++
++  # Without the A extension every __atomic_* call is "not lock-free" and clang
++  # warns; the runtime builds with -Werror, which would make that fatal.
++  if(NOT CLR_CMAKE_RISCV64_MARCH MATCHES "a")
++    add_compile_options(-Wno-atomic-alignment)
++  endif()
++
++  add_compile_options(-march=${CLR_CMAKE_RISCV64_MARCH})
++  add_compile_options(-mabi=${CLR_CMAKE_RISCV64_MABI})
++  add_link_options(-march=${CLR_CMAKE_RISCV64_MARCH})
++  add_link_options(-mabi=${CLR_CMAKE_RISCV64_MABI})
++endif(CLR_CMAKE_HOST_UNIX_RISCV64)
++
+ if(CLR_CMAKE_HOST_UNIX_X86)
+   add_compile_options(-msse2)
+ endif()
+diff --git a/src/native/external/libunwind/include/libunwind-riscv.h b/src/native/external/libunwind/include/libunwind-riscv.h
+index 55605fe..075eacd 100644
+--- a/src/native/external/libunwind/include/libunwind-riscv.h
++++ b/src/native/external/libunwind/include/libunwind-riscv.h
+@@ -68,6 +68,12 @@ typedef int64_t unw_sword_t;
+ typedef double unw_tdep_fpreg_t;
+ #elif __riscv_flen == 32
+ typedef float unw_tdep_fpreg_t;
++#elif !defined(__riscv_flen)
++/* Built for a target without F/D. There are no floating-point registers to
++   unwind, but the type is part of the public API, so keep it the width the
++   double-precision ABI uses and make it an integer so that the header does not
++   require floating point of its includer. */
++typedef uint64_t unw_tdep_fpreg_t;
+ #else
+ # error "Unsupported RISC-V floating-point size"
+ #endif
+diff --git a/src/native/external/libunwind/include/tdep-riscv/libunwind_i.h b/src/native/external/libunwind/include/tdep-riscv/libunwind_i.h
+index b0aebc3..6c752a3 100644
+--- a/src/native/external/libunwind/include/tdep-riscv/libunwind_i.h
++++ b/src/native/external/libunwind/include/tdep-riscv/libunwind_i.h
+@@ -162,6 +162,12 @@ dwarf_put (struct dwarf_cursor *c, dwarf_loc_t loc, unw_word_t val)
+ static inline int
+ dwarf_getfp (struct dwarf_cursor *c, dwarf_loc_t loc, unw_fpreg_t *val)
+ {
++#if !defined(__riscv_flen)
++  /* No F/D extension: the target has no floating-point registers, so no
++     floating-point location can be valid. */
++  (void) c; (void) loc; (void) val;
++  return -UNW_EBADREG;
++#else
+   char *valp = (char *) &val;
+   unw_word_t addr;
+ 
+@@ -180,11 +186,16 @@ dwarf_getfp (struct dwarf_cursor *c, dwarf_loc_t loc, unw_fpreg_t *val)
+ #else
+ # error "FIXME"
+ #endif
++#endif /* !defined(__riscv_flen) */
+ }
+ 
+ static inline int
+ dwarf_putfp (struct dwarf_cursor *c, dwarf_loc_t loc, unw_fpreg_t val)
+ {
++#if !defined(__riscv_flen)
++  (void) c; (void) loc; (void) val;
++  return -UNW_EBADREG;
++#else
+   char *valp = (char *) &val;
+   unw_word_t addr;
+ 
+@@ -203,6 +214,7 @@ dwarf_putfp (struct dwarf_cursor *c, dwarf_loc_t loc, unw_fpreg_t val)
+ #else
+ # error "FIXME"
+ #endif
++#endif /* !defined(__riscv_flen) */
+ }
+ 
+ static inline int
+diff --git a/src/native/external/libunwind/src/riscv/asm.h b/src/native/external/libunwind/src/riscv/asm.h
+index 7f7b444..2939ab7 100644
+--- a/src/native/external/libunwind/src/riscv/asm.h
++++ b/src/native/external/libunwind/src/riscv/asm.h
+@@ -40,7 +40,8 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.  */
+ # define SZFREG 4
+ # define STORE_FP fsw
+ # define LOAD_FP flw
+-#else
+-# error "Unsupported RISC-V floating-point length"
+ #endif
++/* Without F/D there are no floating-point registers to save or restore, so
++   SZFREG/STORE_FP/LOAD_FP stay undefined; getcontext.S and setcontext.S
++   already guard their use with #ifdef STORE_FP / #ifdef LOAD_FP. */
+ 
