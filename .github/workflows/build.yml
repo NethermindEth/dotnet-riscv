@@ -102,6 +102,9 @@ jobs:
                                                --rootfsdir /crossrootfs/riscv64
 
     - name: Provision GSSAPI stub into rootfs
+      # Only the custom lp64 rootfs needs it: 12_alpine_custom.patch drops
+      # krb5-dev from the package set. The stock userspace ships it.
+      if: ${{ inputs.soft_float_abi }}
       run: |
         docker run --platform linux/amd64 --rm \
           -v${{ github.workspace }}:/work \
