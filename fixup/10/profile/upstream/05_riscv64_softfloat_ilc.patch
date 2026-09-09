@@ -6,32 +6,10 @@ diff --git a/src/coreclr/inc/corinfo.h b/src/coreclr/inc/corinfo.h
 index b0d0108..25a162e 100644
 --- a/src/coreclr/inc/corinfo.h
 +++ b/src/coreclr/inc/corinfo.h
-@@ -349,6 +349,50 @@ enum CorInfoHelpFunc
+@@ -349,6 +349,28 @@ enum CorInfoHelpFunc
      CORINFO_HELP_FLTREM,
      CORINFO_HELP_DBLREM,
  
-+    /* Soft-float helpers, for targets without a floating-point unit (RISC-V
-+       without the F/D extensions). The arithmetic helpers have the same
-+       semantics as the corresponding IL instructions. The compare helpers
-+       return a three-way result (< 0, 0, > 0 for less, equal, greater) and
-+       differ only for unordered operands: CMP_LE returns 1 and CMP_GE returns
-+       -1 (the libgcc __le*f2/__ge*f2 conventions), so that every ordered and
-+       unordered IL comparison maps onto a single call. */
-+    CORINFO_HELP_FLTADD,
-+    CORINFO_HELP_FLTSUB,
-+    CORINFO_HELP_FLTMUL,
-+    CORINFO_HELP_FLTDIV,
-+    CORINFO_HELP_DBLADD,
-+    CORINFO_HELP_DBLSUB,
-+    CORINFO_HELP_DBLMUL,
-+    CORINFO_HELP_DBLDIV,
-+    CORINFO_HELP_FLTCMP_LE,
-+    CORINFO_HELP_FLTCMP_GE,
-+    CORINFO_HELP_DBLCMP_LE,
-+    CORINFO_HELP_DBLCMP_GE,
-+    CORINFO_HELP_FLT2DBL,
-+    CORINFO_HELP_DBL2FLT,
-+
 +    /* Soft-float helpers, for targets without a floating-point unit (RISC-V
 +       without the F/D extensions). The arithmetic helpers have the same
 +       semantics as the corresponding IL instructions. The compare helpers
@@ -76,28 +54,10 @@ diff --git a/src/coreclr/inc/jithelpers.h b/src/coreclr/inc/jithelpers.h
 index 8839694..2ebdfbd 100644
 --- a/src/coreclr/inc/jithelpers.h
 +++ b/src/coreclr/inc/jithelpers.h
-@@ -96,6 +96,42 @@
+@@ -96,6 +96,24 @@
      JITHELPER(CORINFO_HELP_FLTREM,              JIT_FltRem,         METHOD__NIL)
      JITHELPER(CORINFO_HELP_DBLREM,              JIT_DblRem,         METHOD__NIL)
  
-+    // Soft-float helpers. The JIT only requests them under CORJIT_FLAG_SOFTFP_ABI on
-+    // targets without an FPU (NativeAOT for RISC-V without F/D, where the AOT
-+    // compiler binds them to the compiler-rt builtins); the VM never sets that flag.
-+    JITHELPER(CORINFO_HELP_FLTADD,                 NULL,               METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_FLTSUB,                 NULL,               METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_FLTMUL,                 NULL,               METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_FLTDIV,                 NULL,               METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_DBLADD,                 NULL,               METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_DBLSUB,                 NULL,               METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_DBLMUL,                 NULL,               METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_DBLDIV,                 NULL,               METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_FLTCMP_LE,              NULL,               METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_FLTCMP_GE,              NULL,               METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_DBLCMP_LE,              NULL,               METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_DBLCMP_GE,              NULL,               METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_FLT2DBL,                NULL,               METHOD__NIL)
-+    JITHELPER(CORINFO_HELP_DBL2FLT,                NULL,               METHOD__NIL)
-+
 +    // Soft-float helpers. The JIT only requests them under CORJIT_FLAG_SOFTFP_ABI on
 +    // targets without an FPU (NativeAOT for RISC-V without F/D, where the AOT
 +    // compiler binds them to the compiler-rt builtins); the VM never sets that flag.
@@ -184,26 +144,10 @@ diff --git a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs b/
 index 623422b..f416d45 100644
 --- a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs
 +++ b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs
-@@ -383,6 +383,38 @@ namespace Internal.ReadyToRunConstants
+@@ -383,6 +383,22 @@ namespace Internal.ReadyToRunConstants
          TypeHandleToRuntimeType,
          GetRefAny,
          TypeHandleToRuntimeTypeHandle,
-+
-+        // Soft-float arithmetic (targets without an FPU). NativeAOT only.
-+        FltAdd,
-+        FltSub,
-+        FltMul,
-+        FltDiv,
-+        DblAdd,
-+        DblSub,
-+        DblMul,
-+        DblDiv,
-+        FltCmpLe,
-+        FltCmpGe,
-+        DblCmpLe,
-+        DblCmpGe,
-+        Flt2Dbl,
-+        Dbl2Flt,
 +
 +        // Soft-float arithmetic (targets without an FPU). NativeAOT only.
 +        FltAdd,
@@ -227,26 +171,10 @@ diff --git a/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs b/src/core
 index 2a8e08f..58b7400 100644
 --- a/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs
 +++ b/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs
-@@ -41,6 +41,38 @@ namespace Internal.JitInterface
+@@ -41,6 +41,22 @@ namespace Internal.JitInterface
          CORINFO_HELP_FLTREM,
          CORINFO_HELP_DBLREM,
  
-+        // Soft-float helpers (targets without an FPU); see corinfo.h
-+        CORINFO_HELP_FLTADD,
-+        CORINFO_HELP_FLTSUB,
-+        CORINFO_HELP_FLTMUL,
-+        CORINFO_HELP_FLTDIV,
-+        CORINFO_HELP_DBLADD,
-+        CORINFO_HELP_DBLSUB,
-+        CORINFO_HELP_DBLMUL,
-+        CORINFO_HELP_DBLDIV,
-+        CORINFO_HELP_FLTCMP_LE,
-+        CORINFO_HELP_FLTCMP_GE,
-+        CORINFO_HELP_DBLCMP_LE,
-+        CORINFO_HELP_DBLCMP_GE,
-+        CORINFO_HELP_FLT2DBL,
-+        CORINFO_HELP_DBL2FLT,
-+
 +        // Soft-float helpers (targets without an FPU); see corinfo.h
 +        CORINFO_HELP_FLTADD,
 +        CORINFO_HELP_FLTSUB,
@@ -348,54 +276,10 @@ diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs b/s
 index 62dc89d..841bd00 100644
 --- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs
-@@ -216,6 +216,94 @@ namespace ILCompiler
+@@ -216,6 +216,50 @@ namespace ILCompiler
                      mangledName = "fmodf";
                      break;
  
-+                // Soft-float arithmetic: the compiler-rt/libgcc builtins of the target toolchain
-+                case ReadyToRunHelper.FltAdd:
-+                    mangledName = "__addsf3";
-+                    break;
-+                case ReadyToRunHelper.FltSub:
-+                    mangledName = "__subsf3";
-+                    break;
-+                case ReadyToRunHelper.FltMul:
-+                    mangledName = "__mulsf3";
-+                    break;
-+                case ReadyToRunHelper.FltDiv:
-+                    mangledName = "__divsf3";
-+                    break;
-+                case ReadyToRunHelper.DblAdd:
-+                    mangledName = "__adddf3";
-+                    break;
-+                case ReadyToRunHelper.DblSub:
-+                    mangledName = "__subdf3";
-+                    break;
-+                case ReadyToRunHelper.DblMul:
-+                    mangledName = "__muldf3";
-+                    break;
-+                case ReadyToRunHelper.DblDiv:
-+                    mangledName = "__divdf3";
-+                    break;
-+                case ReadyToRunHelper.FltCmpLe:
-+                    mangledName = "__lesf2";
-+                    break;
-+                case ReadyToRunHelper.FltCmpGe:
-+                    mangledName = "__gesf2";
-+                    break;
-+                case ReadyToRunHelper.DblCmpLe:
-+                    mangledName = "__ledf2";
-+                    break;
-+                case ReadyToRunHelper.DblCmpGe:
-+                    mangledName = "__gedf2";
-+                    break;
-+                case ReadyToRunHelper.Flt2Dbl:
-+                    mangledName = "__extendsfdf2";
-+                    break;
-+                case ReadyToRunHelper.Dbl2Flt:
-+                    mangledName = "__truncdfsf2";
-+                    break;
-+
 +                // Soft-float arithmetic: the compiler-rt/libgcc builtins of the target toolchain
 +                case ReadyToRunHelper.FltAdd:
 +                    mangledName = "__addsf3";
@@ -516,13 +400,10 @@ diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/ILCompiler.Compiler.cspro
 index 862404c..4771e0b 100644
 --- a/src/coreclr/tools/aot/ILCompiler.Compiler/ILCompiler.Compiler.csproj
 +++ b/src/coreclr/tools/aot/ILCompiler.Compiler/ILCompiler.Compiler.csproj
-@@ -764,4 +764,10 @@
+@@ -764,4 +764,7 @@
    <Import Project="..\..\..\..\tools\illink\src\ILLink.Shared\ILLink.Shared.projitems" Label="Shared" />
    <Import Project="..\..\Common\Compiler\GenericCycleDetection\GenericCycleDetection.projitems" />
  
-+  <ItemGroup>
-+    <InternalsVisibleTo Include="ILCompiler.Compiler.Tests" />
-+  </ItemGroup>
 +  <ItemGroup>
 +    <InternalsVisibleTo Include="ILCompiler.Compiler.Tests" />
 +  </ItemGroup>
@@ -531,11 +412,10 @@ diff --git a/src/coreclr/tools/aot/ILCompiler.Diagnostics/PerfMapWriter.cs b/src
 index 16f8202..c991fb4 100644
 --- a/src/coreclr/tools/aot/ILCompiler.Diagnostics/PerfMapWriter.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.Diagnostics/PerfMapWriter.cs
-@@ -125,6 +125,8 @@ namespace ILCompiler.Diagnostics
+@@ -125,6 +125,7 @@ namespace ILCompiler.Diagnostics
                  TargetAbi.Unknown => PerfMapAbiToken.Unknown,
                  TargetAbi.NativeAot => PerfMapAbiToken.Default,
                  TargetAbi.NativeAotArmel => PerfMapAbiToken.Armel,
-+                TargetAbi.NativeAotRiscV64SoftFloat => PerfMapAbiToken.Default,
 +                TargetAbi.NativeAotRiscV64SoftFloat => PerfMapAbiToken.Default,
                  _ => throw new NotImplementedException(details.Abi.ToString())
              };
@@ -544,7 +424,7 @@ diff --git a/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.
 index 98b214e..4a6f011 100644
 --- a/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs
-@@ -54,6 +54,46 @@ namespace ILCompiler
+@@ -54,6 +54,26 @@ namespace ILCompiler
              _compilationOptions = options;
              InstructionSetSupport = instructionSetSupport;
  
@@ -568,37 +448,13 @@ index 98b214e..4a6f011 100644
 +                }
 +            }
 +
-+            if (nodeFactory.Target.Architecture == TargetArchitecture.RiscV64)
-+            {
-+                // The ABI is a property of the target, not of the instruction set: opting out of
-+                // F/D does not make the runtime and the native libraries lp64, and the lp64
-+                // target has no F/D by definition. The lp64f ABI (F without D) is not supported.
-+                bool hasF = instructionSetSupport.IsInstructionSetSupported(InstructionSet.RiscV64_F);
-+                bool hasD = instructionSetSupport.IsInstructionSetSupported(InstructionSet.RiscV64_D);
-+                if (nodeFactory.Target.Abi == TargetAbi.NativeAotRiscV64SoftFloat)
-+                {
-+                    if (hasF || hasD)
-+                        throw new NotSupportedException(
-+                            "The riscv64-lp64 (soft-float) ABI target has no F and D extensions; remove them from the instruction set.");
-+                }
-+                else if (!hasF || !hasD)
-+                {
-+                    throw new NotSupportedException(
-+                        "The riscv64 lp64d ABI requires the F and D extensions; targets without them must use the riscv64-lp64 (soft-float) ABI.");
-+                }
-+            }
-+
              _profileDataManager = profileDataManager;
  
              _methodImportationErrorProvider = errorProvider;
-@@ -116,6 +156,14 @@ namespace ILCompiler
+@@ -116,6 +156,10 @@ namespace ILCompiler
              if ((_compilationOptions & RyuJitCompilationOptions.ControlFlowGuardAnnotations) != 0)
                  options |= ObjectWritingOptions.ControlFlowGuard;
  
-+            if ((NodeFactory.Target.Architecture == TargetArchitecture.RiscV64)
-+                && InstructionSetSupport.IsInstructionSetSupported(InstructionSet.RiscV64_C))
-+                options |= ObjectWritingOptions.RiscV64Compressed;
-+
 +            if ((NodeFactory.Target.Architecture == TargetArchitecture.RiscV64)
 +                && InstructionSetSupport.IsInstructionSetSupported(InstructionSet.RiscV64_C))
 +                options |= ObjectWritingOptions.RiscV64Compressed;
@@ -610,52 +466,10 @@ diff --git a/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.Ry
 index d3882b8..148abfb 100644
 --- a/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs
-@@ -711,6 +711,90 @@ namespace Internal.JitInterface
+@@ -711,6 +711,48 @@ namespace Internal.JitInterface
                  case CorInfoHelpFunc.CORINFO_HELP_DBLREM:
                      id = ReadyToRunHelper.DblRem;
                      break;
-+                case CorInfoHelpFunc.CORINFO_HELP_FLTADD:
-+                    id = ReadyToRunHelper.FltAdd;
-+                    break;
-+                case CorInfoHelpFunc.CORINFO_HELP_FLTSUB:
-+                    id = ReadyToRunHelper.FltSub;
-+                    break;
-+                case CorInfoHelpFunc.CORINFO_HELP_FLTMUL:
-+                    id = ReadyToRunHelper.FltMul;
-+                    break;
-+                case CorInfoHelpFunc.CORINFO_HELP_FLTDIV:
-+                    id = ReadyToRunHelper.FltDiv;
-+                    break;
-+                case CorInfoHelpFunc.CORINFO_HELP_DBLADD:
-+                    id = ReadyToRunHelper.DblAdd;
-+                    break;
-+                case CorInfoHelpFunc.CORINFO_HELP_DBLSUB:
-+                    id = ReadyToRunHelper.DblSub;
-+                    break;
-+                case CorInfoHelpFunc.CORINFO_HELP_DBLMUL:
-+                    id = ReadyToRunHelper.DblMul;
-+                    break;
-+                case CorInfoHelpFunc.CORINFO_HELP_DBLDIV:
-+                    id = ReadyToRunHelper.DblDiv;
-+                    break;
-+                case CorInfoHelpFunc.CORINFO_HELP_FLTCMP_LE:
-+                    id = ReadyToRunHelper.FltCmpLe;
-+                    break;
-+                case CorInfoHelpFunc.CORINFO_HELP_FLTCMP_GE:
-+                    id = ReadyToRunHelper.FltCmpGe;
-+                    break;
-+                case CorInfoHelpFunc.CORINFO_HELP_DBLCMP_LE:
-+                    id = ReadyToRunHelper.DblCmpLe;
-+                    break;
-+                case CorInfoHelpFunc.CORINFO_HELP_DBLCMP_GE:
-+                    id = ReadyToRunHelper.DblCmpGe;
-+                    break;
-+                case CorInfoHelpFunc.CORINFO_HELP_FLT2DBL:
-+                    id = ReadyToRunHelper.Flt2Dbl;
-+                    break;
-+                case CorInfoHelpFunc.CORINFO_HELP_DBL2FLT:
-+                    id = ReadyToRunHelper.Dbl2Flt;
-+                    break;
 +                case CorInfoHelpFunc.CORINFO_HELP_FLTADD:
 +                    id = ReadyToRunHelper.FltAdd;
 +                    break;
