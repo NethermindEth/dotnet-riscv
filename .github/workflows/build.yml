@@ -220,7 +220,16 @@ jobs:
       if: ${{ ! inputs.whole_source }}
       run: |
         cd ${{ github.workspace }}
-        sudo ./08_pack_bflat_compiler_nupkg.sh
+        # This script runs its own stage-one runtime build (build.sh on the
+        # host), which configures CMake for riscv64 again. It needs the same
+        # ISA/ABI selection as the main build: without it the try_compile
+        # probe is emitted as lp64d and lld refuses to link it against the
+        # lp64 rootfs.
+        abi_env=""
+        if [ "${{ inputs.soft_float_abi }}" = "true" ] ; then
+          abi_env="CLR_CMAKE_RISCV64_MABI=lp64 CLR_CMAKE_RISCV64_MARCH=rv64im IlcRiscV64SoftFloat=true"
+        fi
+        sudo $abi_env ./08_pack_bflat_compiler_nupkg.sh
 
     - name: Pack bflat-compiler-native-linux
       if: ${{ ! inputs.whole_source }}
