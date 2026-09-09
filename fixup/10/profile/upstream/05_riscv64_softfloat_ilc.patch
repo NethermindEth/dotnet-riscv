@@ -285,18 +285,13 @@ index e6fd0d4..8ce1ae6 100644
          }
  
 diff --git a/src/coreclr/tools/Common/TypeSystem/Common/TargetDetails.cs b/src/coreclr/tools/Common/TypeSystem/Common/TargetDetails.cs
-index bb7929b..025ecc8 100644
+index bb7929b..0c794e2 100644
 --- a/src/coreclr/tools/Common/TypeSystem/Common/TargetDetails.cs
 +++ b/src/coreclr/tools/Common/TypeSystem/Common/TargetDetails.cs
-@@ -37,6 +37,16 @@ namespace Internal.TypeSystem
+@@ -37,6 +37,11 @@ namespace Internal.TypeSystem
          /// model for armel execution model
          /// </summary>
          NativeAotArmel,
-+        /// <summary>
-+        /// RISC-V lp64 (soft-float) execution model: no F/D extensions, floating-point
-+        /// values are passed in integer registers and computed by the soft-float helpers
-+        /// </summary>
-+        NativeAotRiscV64SoftFloat,
 +        /// <summary>
 +        /// RISC-V lp64 (soft-float) execution model: no F/D extensions, floating-point
 +        /// values are passed in integer registers and computed by the soft-float helpers
@@ -306,14 +301,13 @@ index bb7929b..025ecc8 100644
  
      /// <summary>
 diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler.Tests/ILCompiler.Compiler.Tests.csproj b/src/coreclr/tools/aot/ILCompiler.Compiler.Tests/ILCompiler.Compiler.Tests.csproj
-index 69e9d87..9c712b5 100644
+index 69e9d87..3f6add4 100644
 --- a/src/coreclr/tools/aot/ILCompiler.Compiler.Tests/ILCompiler.Compiler.Tests.csproj
 +++ b/src/coreclr/tools/aot/ILCompiler.Compiler.Tests/ILCompiler.Compiler.Tests.csproj
-@@ -42,6 +42,8 @@
+@@ -42,6 +42,7 @@
    <ItemGroup>
      <Compile Include="DependencyGraphTests.cs" />
      <Compile Include="DevirtualizationTests.cs" />
-+    <Compile Include="RiscV64ObjectWriterTests.cs" />
 +    <Compile Include="RiscV64ObjectWriterTests.cs" />
      <Compile Include="SwiftLoweringTests.cs" />
    </ItemGroup>
