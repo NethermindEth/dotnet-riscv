@@ -1,0 +1,1259 @@
+[RISC-V] Soft-float ABI and code generation in the JIT
+
+Backported from the .NET 11 upstream profile; see fixup/11/profile/upstream.
+
+diff --git a/src/coreclr/jit/codegencommon.cpp b/src/coreclr/jit/codegencommon.cpp
+index 81bf190..9e14534 100644
+--- a/src/coreclr/jit/codegencommon.cpp
++++ b/src/coreclr/jit/codegencommon.cpp
+@@ -7938,6 +7938,15 @@ void CodeGen::genPoisonFrame(regMaskTP regLiveIn)
+ //
+ void CodeGen::genBitCast(var_types targetType, regNumber targetReg, var_types srcType, regNumber srcReg)
+ {
++#ifdef TARGET_RISCV64
++    if (m_compiler->opts.compUseSoftFP && (srcType == TYP_FLOAT) && (targetType == TYP_INT))
++    {
++        // Soft-float: a float lives in an integer register with unspecified upper
++        // bits (RISC-V psABI), while an int is expected to be sign-extended.
++        GetEmitter()->emitIns_R_R_I(INS_addiw, EA_4BYTE, targetReg, srcReg, 0);
++        return;
++    }
++#endif // TARGET_RISCV64
+     const bool srcFltReg = varTypeUsesFloatReg(srcType);
+     assert(srcFltReg == genIsValidFloatReg(srcReg));
+ 
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+index 33aa664..1c4e5b8 100644
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -952,6 +952,26 @@ void CodeGen::genSetRegToConst(regNumber targetReg, var_types targetType, GenTre
+             emitAttr size       = emitActualTypeSize(tree);
+             double   constValue = tree->AsDblCon()->DconValue();
+ 
++            if (m_compiler->opts.compUseSoftFP)
++            {
++                // No FP registers: the constant is its IEEE 754 bit pattern in an integer register.
++                assert(genIsValidIntReg(targetReg));
++                int64_t bits;
++                if (size == EA_4BYTE)
++                {
++                    float   fltValue = (float)constValue;
++                    int32_t fltBits;
++                    memcpy(&fltBits, &fltValue, sizeof(fltBits));
++                    bits = fltBits;
++                }
++                else
++                {
++                    memcpy(&bits, &constValue, sizeof(bits));
++                }
++                instGen_Set_Reg_To_Imm(size, targetReg, bits);
++                break;
++            }
++
+             assert(emitter::isFloatReg(targetReg));
+             int64_t bits;
+             if (emitter::isSingleInstructionFpImm(constValue, size, &bits))
+diff --git a/src/coreclr/jit/compiler.cpp b/src/coreclr/jit/compiler.cpp
+index 4680ba9..ec29723 100644
+--- a/src/coreclr/jit/compiler.cpp
++++ b/src/coreclr/jit/compiler.cpp
+@@ -53,6 +53,9 @@ MethodSet* Compiler::s_pJitMethodSet               = nullptr;
+ bool GlobalJitOptions::compFeatureHfa          = false;
+ LONG GlobalJitOptions::compUseSoftFPConfigured = 0;
+ #endif // CONFIGURABLE_ARM_ABI
++#ifdef TARGET_RISCV64
++LONG GlobalJitOptions::compUseSoftFPConfigured = 0;
++#endif // TARGET_RISCV64
+ 
+ /*****************************************************************************
+  *
+@@ -835,7 +838,7 @@ var_types Compiler::getReturnTypeForStruct(CORINFO_CLASS_HANDLE     clsHnd,
+         useType             = TYP_UNKNOWN;
+     }
+ #elif defined(TARGET_RISCV64) || defined(TARGET_LOONGARCH64)
+-    if (structSize <= (TARGET_POINTER_SIZE * 2))
++    if ((structSize <= (TARGET_POINTER_SIZE * 2)) && !opts.compUseSoftFP)
+     {
+         const CORINFO_FPSTRUCT_LOWERING* lowering = GetFpStructLowering(clsHnd);
+         if (!lowering->byIntegerCallConv)
+@@ -1991,6 +1994,35 @@ void Compiler::compSetProcessor()
+     // Add virtual vector ISAs. These are both supported as part of the required baseline.
+     instructionSetFlags.AddInstructionSet(InstructionSet_Vector64);
+     instructionSetFlags.AddInstructionSet(InstructionSet_Vector128);
++#elif defined(TARGET_RISCV64)
++    // Ensure the required baseline ISA is supported in JIT code, even if not passed in by the VM.
++    instructionSetFlags.AddInstructionSet(InstructionSet_RiscV64Base);
++
++    // F/D/C/A are part of the rv64gc baseline the VM (or AOT driver) seeds by
++    // default. Honor explicit config opt-outs here, so reduced-ISA targets can
++    // drop them with the DOTNET_/-codegenopt knobs no matter how the flags were
++    // seeded; the validity pass below also drops D when F is disabled.
++    if (JitConfig.EnableRiscV64F() == 0)
++    {
++        instructionSetFlags.RemoveInstructionSet(InstructionSet_F);
++    }
++
++    if (JitConfig.EnableRiscV64D() == 0)
++    {
++        instructionSetFlags.RemoveInstructionSet(InstructionSet_D);
++    }
++
++    if (JitConfig.EnableRiscV64Compressed() == 0)
++    {
++        instructionSetFlags.RemoveInstructionSet(InstructionSet_C);
++    }
++
++    if (JitConfig.EnableRiscV64Atomic() == 0)
++    {
++        instructionSetFlags.RemoveInstructionSet(InstructionSet_A);
++    }
++
++    instructionSetFlags = EnsureInstructionSetFlagsAreValid(instructionSetFlags);
+ #endif // TARGET_ARM64
+ 
+     assert(instructionSetFlags.Equals(EnsureInstructionSetFlagsAreValid(instructionSetFlags)));
+@@ -2537,6 +2569,11 @@ void Compiler::compInitOptions(JitFlags* jitFlags)
+ 
+     if (compIsForInlining())
+     {
++#ifdef TARGET_RISCV64
++        // The soft-float mode is decided by the root compilation (see below); the
++        // importer of an inlinee needs it too, for the intrinsics and casts it expands.
++        opts.compUseSoftFP = impInlineInfo->InlinerCompiler->opts.compUseSoftFP;
++#endif // TARGET_RISCV64
+         return;
+     }
+ 
+@@ -2941,6 +2978,51 @@ void Compiler::compInitOptions(JitFlags* jitFlags)
+     }
+ 
+     GlobalJitOptions::compFeatureHfa = !opts.compUseSoftFP;
++#elif defined(TARGET_RISCV64)
++    // Soft-float, for targets without the F/D extensions (set by the AOT driver):
++    // the lp64 calling convention passes FP values in integer registers, and
++    // TYP_FLOAT/TYP_DOUBLE values live in the integer register file altogether;
++    // the FP arithmetic is done by helper calls (see fgMorphSmpOp). The register
++    // class of a type is a process-wide table, so the setting cannot change
++    // during the lifetime of the process.
++    opts.compUseSoftFP = jitFlags->IsSet(JitFlags::JIT_FLAG_SOFTFP_ABI);
++
++    // The first compilation of the process fixes the mode: it claims the
++    // configuration, initializes the table and then publishes the mode. Every
++    // other compilation waits for the publication and must request the same
++    // mode, so the table is never written while another compilation may read it.
++    enum SoftFPConfig : LONG
++    {
++        SoftFPConfigUnset        = 0,
++        SoftFPConfigHard         = 1,
++        SoftFPConfigSoft         = 2,
++        SoftFPConfigInitializing = 3,
++    };
++    const LONG softFPConfig    = opts.compUseSoftFP ? SoftFPConfigSoft : SoftFPConfigHard;
++    LONG       oldSoftFPConfig = InterlockedCompareExchange(&GlobalJitOptions::compUseSoftFPConfigured,
++                                                            SoftFPConfigInitializing, SoftFPConfigUnset);
++    if (oldSoftFPConfig == SoftFPConfigUnset)
++    {
++        if (opts.compUseSoftFP)
++        {
++            varTypeRegister[TYP_FLOAT]  = VTR_INT;
++            varTypeRegister[TYP_DOUBLE] = VTR_INT;
++        }
++        InterlockedExchange(&GlobalJitOptions::compUseSoftFPConfigured, softFPConfig);
++    }
++    else
++    {
++        while (oldSoftFPConfig == SoftFPConfigInitializing)
++        {
++            // Atomic read; the initialization window is two byte stores long.
++            oldSoftFPConfig = InterlockedCompareExchange(&GlobalJitOptions::compUseSoftFPConfigured,
++                                                         SoftFPConfigUnset, SoftFPConfigUnset);
++        }
++        if (oldSoftFPConfig != softFPConfig)
++        {
++            NO_WAY("SoftFP setting changed during lifetime of process");
++        }
++    }
+ #elif defined(ARM_SOFTFP) && defined(TARGET_ARM)
+     // Armel is unconditionally enabled in the JIT. Verify that the VM side agrees.
+     assert(jitFlags->IsSet(JitFlags::JIT_FLAG_SOFTFP_ABI));
+@@ -6165,6 +6247,26 @@ int Compiler::compCompile(CORINFO_MODULE_HANDLE classPtr,
+         {
+             instructionSetFlags.AddInstructionSet(InstructionSet_Zbb);
+         }
++
++        if (JitConfig.EnableRiscV64F() != 0)
++        {
++            instructionSetFlags.AddInstructionSet(InstructionSet_F);
++        }
++
++        if (JitConfig.EnableRiscV64D() != 0)
++        {
++            instructionSetFlags.AddInstructionSet(InstructionSet_D);
++        }
++
++        if (JitConfig.EnableRiscV64Compressed() != 0)
++        {
++            instructionSetFlags.AddInstructionSet(InstructionSet_C);
++        }
++
++        if (JitConfig.EnableRiscV64Atomic() != 0)
++        {
++            instructionSetFlags.AddInstructionSet(InstructionSet_A);
++        }
+ #endif
+ 
+         // These calls are important and explicitly ordered to ensure that the flags are correct in
+diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
+index 90a74bd..d96f9ce 100644
+--- a/src/coreclr/jit/compiler.h
++++ b/src/coreclr/jit/compiler.h
+@@ -6553,6 +6553,15 @@ private:
+     bool fgIsBlockCold(BasicBlock* block);
+ 
+     GenTree* fgMorphCastIntoHelper(GenTree* tree, int helper, GenTree* oper);
++#ifdef TARGET_RISCV64
++    // Soft-float expansion of the FP operations into helper calls
++    GenTree*        fgMorphSoftFloatArith(GenTreeOp* tree);
++    GenTree*        fgMorphSoftFloatCast(GenTreeCast* tree, CorInfoHelpFunc helper, GenTree* oper);
++    GenTree*        fgMorphSoftFloatNeg(GenTreeOp* neg);
++    GenTree*        fgMorphSoftFloatRelop(GenTreeOp* relop);
++    GenTree*        fgMorphSoftFloatCkFinite(GenTreeOp* ckFinite);
++    GenTree*        fgMorphSoftFloatCastToInt32(GenTree* src, bool toUnsigned);
++#endif // TARGET_RISCV64
+ 
+     GenTree* fgMorphIntoHelperCall(
+         GenTree* tree, int helper, bool morphArgs, GenTree* arg1 = nullptr, GenTree* arg2 = nullptr);
+@@ -9591,7 +9600,7 @@ private:
+     // support/nonsupport for an instruction set
+     bool compIsaSupportedDebugOnly(CORINFO_InstructionSet isa) const
+     {
+-#if defined(TARGET_XARCH) || defined(TARGET_ARM64)
++#if defined(TARGET_XARCH) || defined(TARGET_ARM64) || defined(TARGET_RISCV64)
+         return opts.compSupportsISA.HasInstructionSet(isa);
+ #else
+         return false;
+@@ -10252,7 +10261,9 @@ public:
+         int compJitSaveFpLrWithCalleeSavedRegisters;
+ #endif // defined(TARGET_ARM64)
+ 
+-#ifdef CONFIGURABLE_ARM_ABI
++#if defined(CONFIGURABLE_ARM_ABI) || defined(TARGET_RISCV64)
++        // On RISCV64 the lp64 soft-float ABI is selected per compilation by
++        // JIT_FLAG_SOFTFP_ABI (no-F targets); see compInitOptions.
+         bool compUseSoftFP = false;
+ #else
+ #ifdef ARM_SOFTFP
+diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
+index c0c8041..13772c1 100644
+--- a/src/coreclr/jit/emitriscv64.cpp
++++ b/src/coreclr/jit/emitriscv64.cpp
+@@ -2249,6 +2249,24 @@ unsigned emitter::emitOutput_Instr(BYTE* dst, code_t code) const
+ {
+     assert(dst != nullptr);
+     static_assert(sizeof(code_t) == 4, "code_t must be 4 bytes");
++#ifdef DEBUG
++    // On rv64 these major opcodes decode exclusively to F/D-extension
++    // instructions, so a no-F target must never emit one.
++    switch (GetMajorOpcode(code))
++    {
++        case MajorOpcode::LoadFp:
++        case MajorOpcode::StoreFp:
++        case MajorOpcode::MAdd:
++        case MajorOpcode::MSub:
++        case MajorOpcode::NmSub:
++        case MajorOpcode::NmAdd:
++        case MajorOpcode::OpFp:
++            assert(m_compiler->compIsaSupportedDebugOnly(InstructionSet_F));
++            break;
++        default:
++            break;
++    }
++#endif // DEBUG
+     memcpy(dst + writeableOffset, &code, sizeof(code));
+     return sizeof(code_t);
+ }
+diff --git a/src/coreclr/jit/flowgraph.cpp b/src/coreclr/jit/flowgraph.cpp
+index 1bff7f9..bb46fde 100644
+--- a/src/coreclr/jit/flowgraph.cpp
++++ b/src/coreclr/jit/flowgraph.cpp
+@@ -2057,7 +2057,7 @@ private:
+                 retVarDsc->lvType = retLclType;
+             }
+ 
+-            if (varTypeIsFloating(retVarDsc->TypeGet()))
++            if (varTypeUsesFloatReg(retVarDsc->TypeGet()))
+             {
+                 comp->compFloatingPointUsed = true;
+             }
+diff --git a/src/coreclr/jit/gentree.cpp b/src/coreclr/jit/gentree.cpp
+index 7f6a1a3..56997eb 100644
+--- a/src/coreclr/jit/gentree.cpp
++++ b/src/coreclr/jit/gentree.cpp
+@@ -31116,11 +31116,14 @@ void ReturnTypeDesc::InitializeStructReturnType(Compiler*                comp,
+             m_regType[0] = returnType;
+ 
+ #if defined(TARGET_RISCV64) || defined(TARGET_LOONGARCH64)
+-            const CORINFO_FPSTRUCT_LOWERING* lowering = comp->GetFpStructLowering(retClsHnd);
+-            if (!lowering->byIntegerCallConv)
++            if (!comp->opts.compUseSoftFP)
+             {
+-                assert(lowering->numLoweredElements == 1);
+-                m_fieldOffset[0] = lowering->offsets[0];
++                const CORINFO_FPSTRUCT_LOWERING* lowering = comp->GetFpStructLowering(retClsHnd);
++                if (!lowering->byIntegerCallConv)
++                {
++                    assert(lowering->numLoweredElements == 1);
++                    m_fieldOffset[0] = lowering->offsets[0];
++                }
+             }
+ #endif // defined(TARGET_RISCV64) || defined(TARGET_LOONGARCH64)
+             break;
+@@ -31192,8 +31195,9 @@ void ReturnTypeDesc::InitializeStructReturnType(Compiler*                comp,
+             assert(structSize <= (2 * TARGET_POINTER_SIZE));
+             BYTE gcPtrs[2] = {TYPE_GC_NONE, TYPE_GC_NONE};
+             comp->info.compCompHnd->getClassGClayout(retClsHnd, &gcPtrs[0]);
+-            const CORINFO_FPSTRUCT_LOWERING* lowering = comp->GetFpStructLowering(retClsHnd);
+-            if (!lowering->byIntegerCallConv)
++            const CORINFO_FPSTRUCT_LOWERING* lowering =
++                comp->opts.compUseSoftFP ? nullptr : comp->GetFpStructLowering(retClsHnd);
++            if ((lowering != nullptr) && !lowering->byIntegerCallConv)
+             {
+                 comp->compFloatingPointUsed = true;
+                 assert(lowering->numLoweredElements == MAX_RET_REG_COUNT);
+diff --git a/src/coreclr/jit/importer.cpp b/src/coreclr/jit/importer.cpp
+index 887ab04..e33440e 100644
+--- a/src/coreclr/jit/importer.cpp
++++ b/src/coreclr/jit/importer.cpp
+@@ -41,7 +41,7 @@ void Compiler::impPushOnStack(GenTree* tree, typeInfo ti)
+     {
+         compLongUsed = true;
+     }
+-    else if (tree->TypeIs(TYP_FLOAT) || tree->TypeIs(TYP_DOUBLE))
++    else if (varTypeUsesFloatReg(tree))
+     {
+         compFloatingPointUsed = true;
+     }
+diff --git a/src/coreclr/jit/importercalls.cpp b/src/coreclr/jit/importercalls.cpp
+index 838d7ca..946f0c2 100644
+--- a/src/coreclr/jit/importercalls.cpp
++++ b/src/coreclr/jit/importercalls.cpp
+@@ -10089,6 +10089,15 @@ GenTree* Compiler::impMathIntrinsic(CORINFO_METHOD_HANDLE method,
+     assert(IsMathIntrinsic(intrinsicName));
+     assert(isSpecial != nullptr);
+ 
++#ifdef TARGET_RISCV64
++    if (opts.compUseSoftFP && varTypeIsFloating(callType))
++    {
++        // No FP instructions: leave the call to the managed implementation.
++        JITDUMP("Soft-float: math intrinsic %d is left as a call\n", (int)intrinsicName);
++        return nullptr;
++    }
++#endif // TARGET_RISCV64
++
+     op1 = nullptr;
+ 
+     bool isIntrinsicImplementedByUserCall = IsIntrinsicImplementedByUserCall(intrinsicName);
+diff --git a/src/coreclr/jit/instr.cpp b/src/coreclr/jit/instr.cpp
+index 844a621..bd8564c 100644
+--- a/src/coreclr/jit/instr.cpp
++++ b/src/coreclr/jit/instr.cpp
+@@ -2167,8 +2167,9 @@ instruction CodeGenInterface::ins_Load(var_types srcType, bool aligned /*=false*
+             else
+                 ins = INS_lh;
+         }
+-        else if (TYP_INT == srcType)
++        else if ((TYP_INT == srcType) || (TYP_FLOAT == srcType))
+         {
++            // TYP_FLOAT: soft-float, the value lives in an integer register.
+             ins = INS_lw;
+         }
+         else
+@@ -2496,8 +2497,8 @@ instruction CodeGenInterface::ins_Store(var_types dstType, bool aligned /*=false
+             ins = INS_sb;
+         else if (varTypeIsShort(dstType))
+             ins = INS_sh;
+-        else if (TYP_INT == dstType)
+-            ins = INS_sw;
++        else if ((TYP_INT == dstType) || (TYP_FLOAT == dstType))
++            ins = INS_sw; // TYP_FLOAT: soft-float, the value lives in an integer register.
+         else
+             ins = INS_sd;
+ #else
+diff --git a/src/coreclr/jit/jit.h b/src/coreclr/jit/jit.h
+index d1e6995..414c4ee 100644
+--- a/src/coreclr/jit/jit.h
++++ b/src/coreclr/jit/jit.h
+@@ -449,6 +449,12 @@ public:
+ #else  // !FEATURE_HFA
+     static const bool compFeatureHfa = false;
+ #endif // FEATURE_HFA
++#ifdef TARGET_RISCV64
++    // Soft-float changes the register class of TYP_FLOAT/TYP_DOUBLE (varTypeRegister),
++    // which is a process-wide table; the mode is fixed by the first compilation
++    // (see compInitOptions for the states).
++    static LONG compUseSoftFPConfigured;
++#endif // TARGET_RISCV64
+ 
+ #ifdef FEATURE_HFA
+ #undef FEATURE_HFA
+diff --git a/src/coreclr/jit/jitee.h b/src/coreclr/jit/jitee.h
+index c8f0e64..a2b06c6 100644
+--- a/src/coreclr/jit/jitee.h
++++ b/src/coreclr/jit/jitee.h
+@@ -41,7 +41,9 @@ public:
+ 
+ #if defined(TARGET_ARM)
+         JIT_FLAG_RELATIVE_CODE_RELOCS    = 29, // JIT should generate PC-relative address computations instead of EE relocation records
+-        JIT_FLAG_SOFTFP_ABI              = 30, // Enable armel calling convention
++#endif
++#if defined(TARGET_ARM) || defined(TARGET_RISCV64)
++        JIT_FLAG_SOFTFP_ABI              = 30, // Enable the soft-float calling convention (armel; lp64 on RISC-V)
+ #endif
+ 
+         JIT_FLAG_ASYNC                   = 31, // Generate code for use as an async function
+@@ -140,8 +142,10 @@ public:
+ 
+ #if defined(TARGET_ARM)
+         FLAGS_EQUAL(CORJIT_FLAGS::CORJIT_FLAG_RELATIVE_CODE_RELOCS, JIT_FLAG_RELATIVE_CODE_RELOCS);
+-        FLAGS_EQUAL(CORJIT_FLAGS::CORJIT_FLAG_SOFTFP_ABI, JIT_FLAG_SOFTFP_ABI);
+ #endif // TARGET_ARM
++#if defined(TARGET_ARM) || defined(TARGET_RISCV64)
++        FLAGS_EQUAL(CORJIT_FLAGS::CORJIT_FLAG_SOFTFP_ABI, JIT_FLAG_SOFTFP_ABI);
++#endif // TARGET_ARM || TARGET_RISCV64
+         FLAGS_EQUAL(CORJIT_FLAGS::CORJIT_FLAG_ASYNC, JIT_FLAG_ASYNC);
+ 
+ #undef FLAGS_EQUAL
+diff --git a/src/coreclr/jit/lclvars.cpp b/src/coreclr/jit/lclvars.cpp
+index 4e6b559..c5ecd92 100644
+--- a/src/coreclr/jit/lclvars.cpp
++++ b/src/coreclr/jit/lclvars.cpp
+@@ -552,7 +552,10 @@ void Compiler::lvaInitUserArgs(unsigned* curVarNum, unsigned skipArgs, unsigned
+         }
+ #endif
+ 
+-        if (info.compIsVarArgs || (opts.compUseSoftFP && varTypeIsFloating(varDsc)))
++        // Under a soft-float ABI a parameter that lives in a floating-point register
++        // arrives in an integer one (armel); a parameter whose type is itself in the
++        // integer register file (RISC-V lp64) is an ordinary integer parameter.
++        if (info.compIsVarArgs || (opts.compUseSoftFP && varTypeUsesFloatReg(varDsc)))
+         {
+ #ifndef TARGET_X86
+             // TODO-CQ: We shouldn't have to go as far as to declare these
+@@ -776,7 +779,7 @@ void Compiler::lvaInitVarDsc(LclVarDsc*              varDsc,
+     }
+ 
+     var_types type = JITtype2varType(corInfoType);
+-    if (varTypeIsFloating(type))
++    if (varTypeUsesFloatReg(type))
+     {
+         compFloatingPointUsed = true;
+     }
+diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
+index 5f8cbd9..d178a60 100644
+--- a/src/coreclr/jit/lower.cpp
++++ b/src/coreclr/jit/lower.cpp
+@@ -5310,7 +5310,10 @@ void Lowering::LowerFieldListToFieldListOfRegisters(GenTreeFieldList*   fieldLis
+             }
+ 
+             // If this is a float -> int insertion, then we need the bitcast now.
+-            if (varTypeUsesFloatReg(value) && varTypeUsesIntReg(regInfo.RegType))
++            // (Checked by type, not by register class: under a soft-float ABI the
++            // FP value already lives in an integer register but still needs the
++            // integer view for the widening and shifting below.)
++            if (varTypeIsFloating(value) && varTypeUsesIntReg(regInfo.RegType))
+             {
+                 assert((genTypeSize(value) == 4) || (genTypeSize(value) == 8));
+                 var_types castType = genTypeSize(value) == 4 ? TYP_INT : TYP_LONG;
+diff --git a/src/coreclr/jit/lsra.cpp b/src/coreclr/jit/lsra.cpp
+index 4473b6a..af8f8c7 100644
+--- a/src/coreclr/jit/lsra.cpp
++++ b/src/coreclr/jit/lsra.cpp
+@@ -998,6 +998,14 @@ LinearScan::LinearScan(Compiler* theCompiler)
+     availableRegs[static_cast<int>(TYP_##tn)] = &regFld;
+ #include "typelist.h"
+ #undef DEF_TP
++#ifdef TARGET_RISCV64
++    if (m_compiler->opts.compUseSoftFP)
++    {
++        // No FP register file: float and double values are allocated integer registers.
++        availableRegs[TYP_FLOAT]  = &availableIntRegs;
++        availableRegs[TYP_DOUBLE] = &availableIntRegs;
++    }
++#endif // TARGET_RISCV64
+     // Updating lowGprRegs with final value
+ #if defined(TARGET_XARCH)
+ #if defined(TARGET_AMD64)
+diff --git a/src/coreclr/jit/lsrabuild.cpp b/src/coreclr/jit/lsrabuild.cpp
+index 4ee0389..58971f4 100644
+--- a/src/coreclr/jit/lsrabuild.cpp
++++ b/src/coreclr/jit/lsrabuild.cpp
+@@ -4384,6 +4384,15 @@ int LinearScan::BuildReturn(GenTree* tree)
+             else
+ #endif // FEATURE_MULTIREG_RET
+             {
++#ifdef TARGET_RISCV64
++                if (varTypeIsFloating(tree) && !varTypeUsesFloatReg(tree))
++                {
++                    // Soft-float: FP values are returned in the integer return register.
++                    BuildUse(op1, RBM_INTRET.GetIntRegSet());
++                    return 1;
++                }
++#endif // TARGET_RISCV64
++
+                 // Non-struct type return - determine useCandidates
+                 switch (tree->TypeGet())
+                 {
+diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
+index a2a6152..71b0ba7 100644
+--- a/src/coreclr/jit/lsrariscv64.cpp
++++ b/src/coreclr/jit/lsrariscv64.cpp
+@@ -145,7 +145,9 @@ int LinearScan::BuildNode(GenTree* tree)
+         {
+             emitAttr size = emitActualTypeSize(tree);
+             int64_t  bits;
+-            if (emitter::isSingleInstructionFpImm(tree->AsDblCon()->DconValue(), size, &bits) && bits != 0)
++            // Under soft-float the bit pattern is materialized directly into the (integer) target register.
++            if (!m_compiler->opts.compUseSoftFP &&
++                emitter::isSingleInstructionFpImm(tree->AsDblCon()->DconValue(), size, &bits) && bits != 0)
+             {
+                 buildInternalIntRegisterDefForNode(tree);
+                 buildInternalRegisterUses();
+diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
+index 3a02970..500551b 100644
+--- a/src/coreclr/jit/morph.cpp
++++ b/src/coreclr/jit/morph.cpp
+@@ -253,6 +253,335 @@ GenTree* Compiler::fgMorphIntoHelperCall(GenTree* tree, int helper, bool morphAr
+     return tree;
+ }
+ 
++#ifdef TARGET_RISCV64
++
++//------------------------------------------------------------------------
++// Soft-float (RISC-V without the F/D extensions)
++//
++// Under opts.compUseSoftFP there are no floating-point instructions or
++// registers: float/double values live in integer registers (see
++// Compiler::compInitOptions), and every floating-point arithmetic operation,
++// comparison and conversion is expanded during global morph into a call to
++// one of the soft-float helpers, so that no such node survives into the
++// backend. The IR keeps its floating-point types, so value numbering,
++// constant folding and CSE work unchanged; the helpers are modelled as the
++// operations they implement (see fgValueNumberJitHelperMethodVNFunc).
++//
++
++//------------------------------------------------------------------------
++// fgMorphSoftFloatArith: expand an FP arithmetic operation into a helper call
++//
++// Arguments:
++//    tree - the GT_ADD, GT_SUB, GT_MUL or GT_DIV node
++//
++// Return Value:
++//    The morphed replacement tree.
++//
++// Notes:
++//    Unlike USE_HELPER_FOR_ARITH this builds a new call node: the importer
++//    only allocates add/sub as small nodes, which cannot be turned into a
++//    call in place.
++//
++GenTree* Compiler::fgMorphSoftFloatArith(GenTreeOp* tree)
++{
++    assert(opts.compUseSoftFP && tree->OperIs(GT_ADD, GT_SUB, GT_MUL, GT_DIV) && varTypeIsFloating(tree));
++
++    const var_types type = tree->TypeGet();
++
++    // The IL stack has a single F type, so the operands may differ in size
++    // from the result; the helpers take operands of the result type.
++    for (GenTree** use : {&tree->gtOp1, &tree->gtOp2})
++    {
++        if ((*use)->TypeGet() != type)
++        {
++            *use = gtNewCastNode(type, *use, false, type);
++        }
++    }
++
++    GenTree* folded = gtFoldExpr(tree);
++    if (folded != tree)
++    {
++        return fgMorphTree(folded);
++    }
++    if (folded->OperIsLeaf())
++    {
++        return fgMorphLeaf(folded);
++    }
++
++    const bool      isFloat = (type == TYP_FLOAT);
++    CorInfoHelpFunc helper;
++    switch (tree->OperGet())
++    {
++        case GT_ADD:
++            helper = isFloat ? CORINFO_HELP_FLTADD : CORINFO_HELP_DBLADD;
++            break;
++        case GT_SUB:
++            helper = isFloat ? CORINFO_HELP_FLTSUB : CORINFO_HELP_DBLSUB;
++            break;
++        case GT_MUL:
++            helper = isFloat ? CORINFO_HELP_FLTMUL : CORINFO_HELP_DBLMUL;
++            break;
++        default:
++            helper = isFloat ? CORINFO_HELP_FLTDIV : CORINFO_HELP_DBLDIV;
++            break;
++    }
++
++    GenTreeCall* call = gtNewHelperCallNode(helper, type, tree->gtGetOp1(), tree->gtGetOp2());
++    return fgMorphTree(call);
++}
++
++//------------------------------------------------------------------------
++// fgMorphSoftFloatCast: expand a conversion into a helper call
++//
++// Arguments:
++//    tree   - the cast node
++//    helper - the conversion helper
++//    oper   - the (possibly widened) operand, tree's cast operand
++//
++// Return Value:
++//    The morphed replacement tree.
++//
++// Notes:
++//    The counterpart of fgMorphCastIntoHelper that builds a new node: casts
++//    created after import (impImplicitR4orR8Cast, the widening in
++//    fgMorphExpandCast) are not large enough to become a call in place.
++//
++GenTree* Compiler::fgMorphSoftFloatCast(GenTreeCast* tree, CorInfoHelpFunc helper, GenTree* oper)
++{
++    assert(opts.compUseSoftFP && (tree->CastOp() == oper));
++
++    if (oper->OperIsConst())
++    {
++        GenTree* folded = gtFoldExprConst(tree);
++        if (folded != tree)
++        {
++            return fgMorphTree(folded);
++        }
++        if (folded->OperIsConst())
++        {
++            return fgMorphConst(folded);
++        }
++    }
++
++    GenTreeCall* call = gtNewHelperCallNode(helper, genActualType(tree->CastToType()), oper);
++    return fgMorphTree(call);
++}
++
++//------------------------------------------------------------------------
++// fgMorphSoftFloatNeg: expand an FP negation into a sign-bit flip
++//
++// Arguments:
++//    neg - the GT_NEG node
++//
++// Return Value:
++//    The replacement tree, not yet morphed.
++//
++GenTree* Compiler::fgMorphSoftFloatNeg(GenTreeOp* neg)
++{
++    assert(opts.compUseSoftFP && neg->OperIs(GT_NEG) && varTypeIsFloating(neg));
++
++    const var_types type = neg->TypeGet();
++    GenTree*        op   = neg->gtGetOp1();
++
++    if (op->IsCnsFltOrDbl())
++    {
++        return gtNewDconNode(-op->AsDblCon()->DconValue(), type);
++    }
++
++    // -x == x ^ signBit, computed in the integer domain.
++    const var_types intType = (type == TYP_FLOAT) ? TYP_INT : TYP_LONG;
++    GenTree*        signBit = (type == TYP_FLOAT) ? gtNewIconNode(INT32_MIN, TYP_INT) : gtNewLconNode(INT64_MIN);
++    GenTree*        bits    = gtNewOperNode(GT_XOR, intType, gtNewBitCastNode(intType, op), signBit);
++    return gtNewBitCastNode(type, bits);
++}
++
++//------------------------------------------------------------------------
++// fgMorphSoftFloatRelop: expand an FP comparison into a compare helper call
++//
++// Arguments:
++//    relop - the comparison node
++//
++// Return Value:
++//    The replacement tree, an integer comparison of the helper result, not yet morphed.
++//
++// Notes:
++//    The helpers return a three-way result and differ only for unordered
++//    operands (CMP_LE returns 1, CMP_GE returns -1), which lets each IL form
++//    be expressed with a single call and a comparison of its result with 0:
++//
++//        oeq: LE == 0   une: LE != 0
++//        olt: LE <  0   ult: GE <  0
++//        ole: LE <= 0   ule: GE <= 0
++//        ogt: GE >  0   ugt: LE >  0
++//        oge: GE >= 0   uge: LE >= 0
++//
++//    ueq and one need both results:
++//
++//        ueq = (LE >= 0) && (GE <= 0)   one = (LE < 0) || (GE > 0)
++//
++GenTree* Compiler::fgMorphSoftFloatRelop(GenTreeOp* relop)
++{
++    assert(opts.compUseSoftFP && relop->OperIsCompare());
++
++    GenTree* op1 = relop->gtGetOp1();
++    GenTree* op2 = relop->gtGetOp2();
++    assert(varTypeIsFloating(op1) && (op1->TypeGet() == op2->TypeGet()));
++
++    const bool            isFloat     = op1->TypeIs(TYP_FLOAT);
++    const bool            isUnordered = (relop->gtFlags & GTF_RELOP_NAN_UN) != 0;
++    const genTreeOps      oper        = relop->OperGet();
++    const CorInfoHelpFunc cmpLE       = isFloat ? CORINFO_HELP_FLTCMP_LE : CORINFO_HELP_DBLCMP_LE;
++    const CorInfoHelpFunc cmpGE       = isFloat ? CORINFO_HELP_FLTCMP_GE : CORINFO_HELP_DBLCMP_GE;
++
++    GenTree* result;
++    if (oper == (isUnordered ? GT_EQ : GT_NE))
++    {
++        // ueq / one: both helpers are needed, so the operands go into temps.
++        // The stores are placed in the first operand of the AND/OR; the two
++        // operands both contain calls, so their evaluation order is fixed.
++        TempInfo tmp1 = fgMakeTemp(op1);
++        TempInfo tmp2 = fgMakeTemp(op2);
++
++        GenTree* le = gtNewHelperCallNode(cmpLE, TYP_INT, tmp1.load, tmp2.load);
++        le          = gtNewOperNode(GT_COMMA, TYP_INT, tmp1.store, gtNewOperNode(GT_COMMA, TYP_INT, tmp2.store, le));
++        GenTree* ge = gtNewHelperCallNode(cmpGE, TYP_INT, gtCloneExpr(tmp1.load), gtCloneExpr(tmp2.load));
++
++        GenTree* cmp;
++        if (oper == GT_EQ)
++        {
++            cmp = gtNewOperNode(GT_AND, TYP_INT, gtNewOperNode(GT_GE, TYP_INT, le, gtNewIconNode(0)),
++                                gtNewOperNode(GT_LE, TYP_INT, ge, gtNewIconNode(0)));
++        }
++        else
++        {
++            cmp = gtNewOperNode(GT_OR, TYP_INT, gtNewOperNode(GT_LT, TYP_INT, le, gtNewIconNode(0)),
++                                gtNewOperNode(GT_GT, TYP_INT, ge, gtNewIconNode(0)));
++        }
++        // Keep the tree rooted at a comparison, for GT_JTRUE users.
++        result = gtNewOperNode(GT_NE, TYP_INT, cmp, gtNewIconNode(0));
++    }
++    else
++    {
++        CorInfoHelpFunc helper;
++        switch (oper)
++        {
++            case GT_EQ:
++            case GT_NE:
++                helper = cmpLE;
++                break;
++            case GT_LT:
++            case GT_LE:
++                helper = isUnordered ? cmpGE : cmpLE;
++                break;
++            default:
++                assert((oper == GT_GT) || (oper == GT_GE));
++                helper = isUnordered ? cmpLE : cmpGE;
++                break;
++        }
++        GenTree* call = gtNewHelperCallNode(helper, TYP_INT, op1, op2);
++        result        = gtNewOperNode(oper, TYP_INT, call, gtNewIconNode(0));
++    }
++
++    // A JTRUE/QMARK condition carries GTF_RELOP_JMP_USED and GTF_DONT_CSE (set by
++    // the parent before its operands are morphed); the replacement must keep both
++    // so that CSE does not turn the condition into a local.
++    result->gtFlags |= (relop->gtFlags & (GTF_RELOP_JMP_USED | GTF_DONT_CSE));
++    return result;
++}
++
++//------------------------------------------------------------------------
++// fgMorphSoftFloatCkFinite: expand GT_CKFINITE into an exponent check
++//
++// Arguments:
++//    ckFinite - the GT_CKFINITE node
++//
++// Return Value:
++//    The replacement tree, not yet morphed:
++//
++//        COMMA(tmp = x, COMMA(BOUNDS_CHECK((bits(tmp) >> expShift) & expMask, expMask), tmp))
++//
++//    NaN and the infinities have all exponent bits set, so the bounds check
++//    (index >= length) throws exactly for them.
++//
++GenTree* Compiler::fgMorphSoftFloatCkFinite(GenTreeOp* ckFinite)
++{
++    assert(opts.compUseSoftFP && ckFinite->OperIs(GT_CKFINITE));
++
++    const var_types type    = ckFinite->TypeGet();
++    const bool      isFloat = (type == TYP_FLOAT);
++    const var_types intType = isFloat ? TYP_INT : TYP_LONG;
++    const int       expBits = isFloat ? 8 : 11;
++    const int       expMask = (1 << expBits) - 1;
++
++    TempInfo tmp  = fgMakeTemp(ckFinite->gtGetOp1());
++    GenTree* bits = gtNewBitCastNode(intType, tmp.load);
++    GenTree* exp  = gtNewOperNode(GT_RSZ, intType, bits, gtNewIconNode(genTypeSize(type) * 8 - 1 - expBits));
++    exp           = gtNewOperNode(GT_AND, intType, exp, isFloat ? gtNewIconNode(expMask) : gtNewLconNode(expMask));
++    if (!isFloat)
++    {
++        exp = gtNewCastNode(TYP_INT, exp, false, TYP_INT);
++    }
++    GenTree* check = new (this, GT_BOUNDS_CHECK) GenTreeBoundsChk(exp, gtNewIconNode(expMask), SCK_ARITH_EXCPN);
++
++    GenTree* result = gtNewOperNode(GT_COMMA, type, check, gtCloneExpr(tmp.load));
++    return gtNewOperNode(GT_COMMA, type, tmp.store, result);
++}
++
++//------------------------------------------------------------------------
++// fgMorphSoftFloatCastToInt32: expand a non-overflow double -> int/uint cast
++//
++// Arguments:
++//    src        - the TYP_DOUBLE source
++//    toUnsigned - true for uint
++//
++// Return Value:
++//    The replacement tree, not yet morphed.
++//
++// Notes:
++//    The 64-bit conversion helpers implement the .NET semantics (NaN -> 0,
++//    saturation); their result is saturated to the 32-bit range here. The
++//    clamping is branchless and does not use GT_SELECT, which on RISC-V needs
++//    Zicond. The temps are stored first in an explicit COMMA chain since the
++//    store-before-use dependency is not otherwise expressed in the IR.
++//
++GenTree* Compiler::fgMorphSoftFloatCastToInt32(GenTree* src, bool toUnsigned)
++{
++    assert(opts.compUseSoftFP && src->TypeIs(TYP_DOUBLE));
++
++    GenTreeCall* cvt = gtNewHelperCallNode(toUnsigned ? CORINFO_HELP_DBL2ULNG : CORINFO_HELP_DBL2LNG, TYP_LONG, src);
++    TempInfo     tmpVal = fgMakeTemp(cvt);
++
++    if (toUnsigned)
++    {
++        // result = (uint)val | -(val > UINT32_MAX); the helper never returns a negative value.
++        GenTree* isHi = gtNewOperNode(GT_GT, TYP_INT, gtCloneExpr(tmpVal.load), gtNewLconNode((int64_t)UINT32_MAX));
++        isHi->gtFlags |= GTF_UNSIGNED;
++        GenTree* trunc  = gtNewCastNode(TYP_INT, tmpVal.load, false, TYP_UINT);
++        GenTree* result = gtNewOperNode(GT_OR, TYP_INT, trunc, gtNewOperNode(GT_NEG, TYP_INT, isHi));
++        return gtNewOperNode(GT_COMMA, TYP_INT, tmpVal.store, result);
++    }
++
++    // maskHi = -(val > INT32_MAX); maskLo = -(val < INT32_MIN);
++    // result = ((int)val & ~(maskHi | maskLo)) | (INT32_MAX & maskHi) | (INT32_MIN & maskLo)
++    TempInfo tmpHi = fgMakeTemp(gtNewOperNode(
++        GT_NEG, TYP_INT, gtNewOperNode(GT_GT, TYP_INT, gtCloneExpr(tmpVal.load), gtNewLconNode(INT32_MAX))));
++    TempInfo tmpLo = fgMakeTemp(gtNewOperNode(
++        GT_NEG, TYP_INT, gtNewOperNode(GT_LT, TYP_INT, gtCloneExpr(tmpVal.load), gtNewLconNode(INT32_MIN))));
++
++    GenTree* trunc   = gtNewCastNode(TYP_INT, tmpVal.load, false, TYP_INT);
++    GenTree* outMask = gtNewOperNode(GT_OR, TYP_INT, tmpHi.load, tmpLo.load);
++    GenTree* inVal   = gtNewOperNode(GT_AND, TYP_INT, trunc, gtNewOperNode(GT_NOT, TYP_INT, outMask));
++    GenTree* hiVal = gtNewOperNode(GT_AND, TYP_INT, gtNewIconNode(INT32_MAX, TYP_INT), gtCloneExpr(tmpHi.load));
++    GenTree* loVal = gtNewOperNode(GT_AND, TYP_INT, gtNewIconNode(INT32_MIN, TYP_INT), gtCloneExpr(tmpLo.load));
++    GenTree* result = gtNewOperNode(GT_OR, TYP_INT, gtNewOperNode(GT_OR, TYP_INT, inVal, hiVal), loVal);
++
++    result = gtNewOperNode(GT_COMMA, TYP_INT, tmpLo.store, result);
++    result = gtNewOperNode(GT_COMMA, TYP_INT, tmpHi.store, result);
++    return gtNewOperNode(GT_COMMA, TYP_INT, tmpVal.store, result);
++}
++
++#endif // TARGET_RISCV64
++
+ //------------------------------------------------------------------------
+ // fgMorphExpandCast: Performs the pre-order (required) morphing for a cast.
+ //
+@@ -283,6 +612,7 @@ GenTree* Compiler::fgMorphIntoHelperCall(GenTree* tree, int helper, bool morphAr
+ //    in which case the cast may be transformed into an unchecked one
+ //    and its operand changed (the cast "expanded" into two).
+ //
++
+ GenTree* Compiler::fgMorphExpandCast(GenTreeCast* tree)
+ {
+     GenTree*  oper    = tree->CastOp();
+@@ -322,6 +652,35 @@ GenTree* Compiler::fgMorphExpandCast(GenTreeCast* tree)
+         {
+             if (!tree->gtOverflow())
+             {
++#ifdef TARGET_RISCV64
++                // Soft-float: there are no conversion instructions, so every
++                // float-to-integer cast is a helper call. The 32-bit results are
++                // saturated from the 64-bit helpers, which already implement the
++                // .NET semantics (NaN -> 0, saturation).
++                if (opts.compUseSoftFP)
++                {
++                    switch (dstType)
++                    {
++                        case TYP_INT:
++                        case TYP_UINT:
++                            if (tree->CastOp()->OperIsConst())
++                            {
++                                GenTree* folded = gtFoldExprConst(tree);
++                                if (folded != tree)
++                                {
++                                    return fgMorphTree(folded);
++                                }
++                            }
++                            return fgMorphTree(fgMorphSoftFloatCastToInt32(oper, dstType == TYP_UINT));
++                        case TYP_LONG:
++                            return fgMorphSoftFloatCast(tree, CORINFO_HELP_DBL2LNG, oper);
++                        case TYP_ULONG:
++                            return fgMorphSoftFloatCast(tree, CORINFO_HELP_DBL2ULNG, oper);
++                        default:
++                            break;
++                    }
++                }
++#endif // TARGET_RISCV64
+ #ifdef TARGET_64BIT
+                 return nullptr;
+ #else
+@@ -375,6 +734,42 @@ GenTree* Compiler::fgMorphExpandCast(GenTreeCast* tree)
+         return fgMorphTree(oper);
+     }
+ 
++#ifdef TARGET_RISCV64
++    else if (opts.compUseSoftFP && varTypeIsFloating(dstType))
++    {
++        // Soft-float: conversions to floating point are helper calls.
++        if (varTypeIsFloating(srcType))
++        {
++            if (srcType == dstType)
++            {
++                return fgMorphTree(oper);
++            }
++            return fgMorphSoftFloatCast(tree, (dstType == TYP_DOUBLE) ? CORINFO_HELP_FLT2DBL : CORINFO_HELP_DBL2FLT,
++                                        oper);
++        }
++
++        assert(varTypeIsIntegral(srcType));
++        if (!varTypeIsLong(srcType))
++        {
++            // Widen to 64 bits first; a zero-extended uint is exact in the signed helper.
++            oper = gtNewCastNode(TYP_LONG, oper, tree->IsUnsigned(), TYP_LONG);
++            tree->ClearUnsigned();
++            tree->CastOp() = oper;
++        }
++
++        CorInfoHelpFunc helper;
++        if (dstType == TYP_FLOAT)
++        {
++            helper = tree->IsUnsigned() ? CORINFO_HELP_ULNG2FLT : CORINFO_HELP_LNG2FLT;
++        }
++        else
++        {
++            helper = tree->IsUnsigned() ? CORINFO_HELP_ULNG2DBL : CORINFO_HELP_LNG2DBL;
++        }
++        return fgMorphSoftFloatCast(tree, helper, oper);
++    }
++#endif // TARGET_RISCV64
++
+ #ifndef TARGET_64BIT
+     // The code generation phase (for x86 & ARM32) does not handle casts
+     // directly from [u]long to anything other than [u]int. Insert an
+@@ -7041,6 +7436,40 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, MorphAddrContext* mac, bool* optA
+         // Some arithmetic operators need to use a helper call to the EE
+         int helper;
+ 
++#ifdef TARGET_RISCV64
++        // Soft-float: expand the FP operations into helper calls before morphing their operands.
++        case GT_ADD:
++        case GT_SUB:
++            if (opts.compUseSoftFP && varTypeIsFloating(typ))
++            {
++                return fgMorphSoftFloatArith(tree->AsOp());
++            }
++            break;
++
++        case GT_NEG:
++            if (opts.compUseSoftFP && varTypeIsFloating(typ))
++            {
++                return fgMorphTree(fgMorphSoftFloatNeg(tree->AsOp()));
++            }
++            break;
++
++        case GT_LT:
++        case GT_LE:
++        case GT_GE:
++            if (opts.compUseSoftFP && varTypeIsFloating(op1))
++            {
++                return fgMorphTree(fgMorphSoftFloatRelop(tree->AsOp()));
++            }
++            break;
++
++        case GT_CKFINITE:
++            if (opts.compUseSoftFP)
++            {
++                return fgMorphTree(fgMorphSoftFloatCkFinite(tree->AsOp()));
++            }
++            break;
++#endif // TARGET_RISCV64
++
+         case GT_STORE_LCL_VAR:
+         case GT_STORE_LCL_FLD:
+         {
+@@ -7512,6 +7941,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, MorphAddrContext* mac, bool* optA
+         case GT_EQ:
+         case GT_NE:
+         {
++#ifdef TARGET_RISCV64
++            if (opts.compUseSoftFP && varTypeIsFloating(op1))
++            {
++                return fgMorphTree(fgMorphSoftFloatRelop(tree->AsOp()));
++            }
++#endif // TARGET_RISCV64
++
+             if (opts.OptimizationEnabled())
+             {
+                 GenTree* optimizedTree = gtFoldTypeCompare(tree);
+@@ -7557,6 +7993,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, MorphAddrContext* mac, bool* optA
+ 
+         case GT_GT:
+         {
++#ifdef TARGET_RISCV64
++            if (opts.compUseSoftFP && varTypeIsFloating(op1))
++            {
++                return fgMorphTree(fgMorphSoftFloatRelop(tree->AsOp()));
++            }
++#endif // TARGET_RISCV64
++
+             // Try and optimize nullable boxes feeding compares
+             GenTree* optimizedTree = gtFoldBoxNullable(tree);
+ 
+diff --git a/src/coreclr/jit/targetriscv64.cpp b/src/coreclr/jit/targetriscv64.cpp
+index 4290ad0..04bd025 100644
+--- a/src/coreclr/jit/targetriscv64.cpp
++++ b/src/coreclr/jit/targetriscv64.cpp
+@@ -72,7 +72,7 @@ ABIPassingInformation RiscV64Classifier::Classify(Compiler*    comp,
+             passedByRef = true;
+             passedSize  = TARGET_POINTER_SIZE;
+         }
+-        else if (!structLayout->IsBlockLayout())
++        else if (!structLayout->IsBlockLayout() && !comp->opts.compUseSoftFP)
+         {
+             lowering = comp->GetFpStructLowering(structLayout->GetClassHandle());
+             if (!lowering->byIntegerCallConv)
+@@ -94,7 +94,7 @@ ABIPassingInformation RiscV64Classifier::Classify(Compiler*    comp,
+     {
+         passedSize = genTypeSize(type);
+         assert(passedSize <= TARGET_POINTER_SIZE);
+-        floatFields = varTypeIsFloating(type) ? 1 : 0;
++        floatFields = (varTypeIsFloating(type) && !comp->opts.compUseSoftFP) ? 1 : 0;
+     }
+ 
+     assert((floatFields > 0) || (intFields == 0));
+diff --git a/src/coreclr/jit/utils.cpp b/src/coreclr/jit/utils.cpp
+index c28ba5b..b074561 100644
+--- a/src/coreclr/jit/utils.cpp
++++ b/src/coreclr/jit/utils.cpp
+@@ -86,7 +86,11 @@ const BYTE varTypeClassification[] = {
+ #undef DEF_TP
+ };
+ 
++#ifdef TARGET_RISCV64
++BYTE varTypeRegister[] = {
++#else
+ const BYTE varTypeRegister[] = {
++#endif
+ #define DEF_TP(tn, nm, jitType, sz, sze, asze, st, al, regTyp, regFld, csr, ctr, tf) regTyp,
+ #include "typelist.h"
+ #undef DEF_TP
+@@ -1527,6 +1531,36 @@ void HelperCallProperties::init()
+             case CORINFO_HELP_LLSH:
+             case CORINFO_HELP_LRSH:
+             case CORINFO_HELP_LRSZ:
++            // Soft-float helpers: leaf compiler-rt routines, no GC interaction.
++            case CORINFO_HELP_FLTADD:
++            case CORINFO_HELP_FLTSUB:
++            case CORINFO_HELP_FLTMUL:
++            case CORINFO_HELP_FLTDIV:
++            case CORINFO_HELP_DBLADD:
++            case CORINFO_HELP_DBLSUB:
++            case CORINFO_HELP_DBLMUL:
++            case CORINFO_HELP_DBLDIV:
++            case CORINFO_HELP_FLTCMP_LE:
++            case CORINFO_HELP_FLTCMP_GE:
++            case CORINFO_HELP_DBLCMP_LE:
++            case CORINFO_HELP_DBLCMP_GE:
++            case CORINFO_HELP_FLT2DBL:
++            case CORINFO_HELP_DBL2FLT:
++            // Soft-float helpers: leaf compiler-rt routines, no GC interaction.
++            case CORINFO_HELP_FLTADD:
++            case CORINFO_HELP_FLTSUB:
++            case CORINFO_HELP_FLTMUL:
++            case CORINFO_HELP_FLTDIV:
++            case CORINFO_HELP_DBLADD:
++            case CORINFO_HELP_DBLSUB:
++            case CORINFO_HELP_DBLMUL:
++            case CORINFO_HELP_DBLDIV:
++            case CORINFO_HELP_FLTCMP_LE:
++            case CORINFO_HELP_FLTCMP_GE:
++            case CORINFO_HELP_DBLCMP_LE:
++            case CORINFO_HELP_DBLCMP_GE:
++            case CORINFO_HELP_FLT2DBL:
++            case CORINFO_HELP_DBL2FLT:
+                 isNoGC = true;
+                 FALLTHROUGH;
+             case CORINFO_HELP_LMUL:
+diff --git a/src/coreclr/jit/valuenum.cpp b/src/coreclr/jit/valuenum.cpp
+index 01f0d4f..bd69cd6 100644
+--- a/src/coreclr/jit/valuenum.cpp
++++ b/src/coreclr/jit/valuenum.cpp
+@@ -14075,6 +14075,14 @@ void Compiler::fgValueNumberCastHelper(GenTreeCall* call)
+             castFromType     = TYP_DOUBLE;
+             hasOverflowCheck = true;
+             break;
++        case CORINFO_HELP_FLT2DBL:
++            castToType   = TYP_DOUBLE;
++            castFromType = TYP_FLOAT;
++            break;
++        case CORINFO_HELP_DBL2FLT:
++            castToType   = TYP_FLOAT;
++            castFromType = TYP_DOUBLE;
++            break;
+ 
+         default:
+             unreached();
+@@ -14142,6 +14150,42 @@ VNFunc Compiler::fgValueNumberJitHelperMethodVNFunc(CorInfoHelpFunc helpFunc)
+         case CORINFO_HELP_DBLREM:
+             vnf = VNFunc(GT_MOD);
+             break;
++        case CORINFO_HELP_FLTADD:
++            vnf = VNFunc(GT_ADD);
++            break;
++        case CORINFO_HELP_DBLADD:
++            vnf = VNFunc(GT_ADD);
++            break;
++        case CORINFO_HELP_FLTSUB:
++            vnf = VNFunc(GT_SUB);
++            break;
++        case CORINFO_HELP_DBLSUB:
++            vnf = VNFunc(GT_SUB);
++            break;
++        case CORINFO_HELP_FLTMUL:
++            vnf = VNFunc(GT_MUL);
++            break;
++        case CORINFO_HELP_DBLMUL:
++            vnf = VNFunc(GT_MUL);
++            break;
++        case CORINFO_HELP_FLTDIV:
++            vnf = VNFunc(GT_DIV);
++            break;
++        case CORINFO_HELP_DBLDIV:
++            vnf = VNFunc(GT_DIV);
++            break;
++        case CORINFO_HELP_FLTCMP_LE:
++            vnf = VNF_SoftFPCmpLE;
++            break;
++        case CORINFO_HELP_DBLCMP_LE:
++            vnf = VNF_SoftFPCmpLE;
++            break;
++        case CORINFO_HELP_FLTCMP_GE:
++            vnf = VNF_SoftFPCmpGE;
++            break;
++        case CORINFO_HELP_DBLCMP_GE:
++            vnf = VNF_SoftFPCmpGE;
++            break;
+ 
+         // These allocation operations probably require some augmentation -- perhaps allocSiteId,
+         // something about array length...
+@@ -14358,6 +14402,50 @@ VNFunc Compiler::fgValueNumberJitHelperMethodVNFunc(CorInfoHelpFunc helpFunc)
+         case CORINFO_HELP_BOX_NULLABLE:
+             vnf = VNF_BoxNullable;
+             break;
++        case CORINFO_HELP_FLT2DBL:
++            castToType   = TYP_DOUBLE;
++            castFromType = TYP_FLOAT;
++            break;
++        case CORINFO_HELP_DBL2FLT:
++            castToType   = TYP_FLOAT;
++            castFromType = TYP_DOUBLE;
++            break;
++        case CORINFO_HELP_FLTADD:
++            vnf = VNFunc(GT_ADD);
++            break;
++        case CORINFO_HELP_DBLADD:
++            vnf = VNFunc(GT_ADD);
++            break;
++        case CORINFO_HELP_FLTSUB:
++            vnf = VNFunc(GT_SUB);
++            break;
++        case CORINFO_HELP_DBLSUB:
++            vnf = VNFunc(GT_SUB);
++            break;
++        case CORINFO_HELP_FLTMUL:
++            vnf = VNFunc(GT_MUL);
++            break;
++        case CORINFO_HELP_DBLMUL:
++            vnf = VNFunc(GT_MUL);
++            break;
++        case CORINFO_HELP_FLTDIV:
++            vnf = VNFunc(GT_DIV);
++            break;
++        case CORINFO_HELP_DBLDIV:
++            vnf = VNFunc(GT_DIV);
++            break;
++        case CORINFO_HELP_FLTCMP_LE:
++            vnf = VNF_SoftFPCmpLE;
++            break;
++        case CORINFO_HELP_DBLCMP_LE:
++            vnf = VNF_SoftFPCmpLE;
++            break;
++        case CORINFO_HELP_FLTCMP_GE:
++            vnf = VNF_SoftFPCmpGE;
++            break;
++        case CORINFO_HELP_DBLCMP_GE:
++            vnf = VNF_SoftFPCmpGE;
++            break;
+ 
+         default:
+             unreached();
+@@ -14381,6 +14469,8 @@ bool Compiler::fgValueNumberHelperCall(GenTreeCall* call)
+         case CORINFO_HELP_DBL2LNG:
+         case CORINFO_HELP_DBL2LNG_OVF:
+         case CORINFO_HELP_DBL2UINT_OVF:
++        case CORINFO_HELP_FLT2DBL:
++        case CORINFO_HELP_DBL2FLT:
+         case CORINFO_HELP_DBL2ULNG:
+         case CORINFO_HELP_DBL2ULNG_OVF:
+             fgValueNumberCastHelper(call);
+diff --git a/src/coreclr/jit/valuenumfuncs.h b/src/coreclr/jit/valuenumfuncs.h
+index 3290046..6aad8ab 100644
+--- a/src/coreclr/jit/valuenumfuncs.h
++++ b/src/coreclr/jit/valuenumfuncs.h
+@@ -213,6 +213,12 @@ ValueNumFuncDef(HWI_##isa##_##name, ((argCount == -1) ? -1 : (argCount + 1)), ((
+ #error Unsupported platform
+ #endif
+ 
++// Three-way floating-point comparisons of the soft-float compare helpers
++// (CORINFO_HELP_FLTCMP_LE & co). Not commutative: swapping the operands
++// negates the result, and the two forms differ for unordered operands.
++ValueNumFuncDef(SoftFPCmpLE, 2, false, false, false)
++ValueNumFuncDef(SoftFPCmpGE, 2, false, false, false)
++
+ // clang-format on
+ 
+ #undef ValueNumFuncDef
+diff --git a/src/coreclr/jit/vartype.h b/src/coreclr/jit/vartype.h
+index e214d1f..e034314 100644
+--- a/src/coreclr/jit/vartype.h
++++ b/src/coreclr/jit/vartype.h
+@@ -46,7 +46,13 @@ enum var_types_register
+ /*****************************************************************************/
+ 
+ const extern BYTE varTypeClassification[TYP_COUNT];
++#ifdef TARGET_RISCV64
++// Not const: a soft-float (no F/D) process moves TYP_FLOAT/TYP_DOUBLE to the
++// integer register file, see Compiler::compInitOptions.
++extern BYTE varTypeRegister[TYP_COUNT];
++#else
+ const extern BYTE varTypeRegister[TYP_COUNT];
++#endif
+ 
+ // make any class with a TypeGet member also have a function TypeGet() that does the same thing
+ template <class T>
+@@ -337,6 +343,10 @@ inline bool varTypeUsesFloatArgReg(T vt)
+     // Exception: Windows arm64 native varargs passes them using general-purpose (integer) registers or
+     // by value on the stack, or split between registers and stack.
+     return varTypeUsesFloatReg(vt);
++#elif defined(TARGET_RISCV64)
++    // The register class of TYP_FLOAT/TYP_DOUBLE follows the ABI: under the soft-float
++    // (lp64) ABI they live in, and are returned in, integer registers.
++    return varTypeUsesFloatReg(vt);
+ #else
+     // Other targets pass them as regular structs - by reference or by value.
+     return varTypeIsFloating(vt);

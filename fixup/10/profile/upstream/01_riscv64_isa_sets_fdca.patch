@@ -1,0 +1,327 @@
+[RISC-V] Model the F, D, C and A extensions as instruction sets
+
+Backported from the .NET 11 upstream profile; see fixup/11/profile/upstream.
+
+diff --git a/src/coreclr/inc/clrconfigvalues.h b/src/coreclr/inc/clrconfigvalues.h
+index 0de388d..26c7e2f 100644
+--- a/src/coreclr/inc/clrconfigvalues.h
++++ b/src/coreclr/inc/clrconfigvalues.h
+@@ -708,6 +708,10 @@ RETAIL_CONFIG_DWORD_INFO(EXTERNAL_EnableArm64Sve2,              W("EnableArm64Sv
+ #elif defined(TARGET_RISCV64)
+ RETAIL_CONFIG_DWORD_INFO(EXTERNAL_EnableRiscV64Zba,             W("EnableRiscV64Zba"),          1, "Allows RiscV64 Zba hardware intrinsics to be disabled")
+ RETAIL_CONFIG_DWORD_INFO(EXTERNAL_EnableRiscV64Zbb,             W("EnableRiscV64Zbb"),          1, "Allows RiscV64 Zbb hardware intrinsics to be disabled")
++RETAIL_CONFIG_DWORD_INFO(EXTERNAL_EnableRiscV64F,               W("EnableRiscV64F"),            1, "Allows the RiscV64 F (single-precision FP) instruction set to be disabled")
++RETAIL_CONFIG_DWORD_INFO(EXTERNAL_EnableRiscV64D,               W("EnableRiscV64D"),            1, "Allows the RiscV64 D (double-precision FP) instruction set to be disabled")
++RETAIL_CONFIG_DWORD_INFO(EXTERNAL_EnableRiscV64Compressed,      W("EnableRiscV64Compressed"),   1, "Allows the RiscV64 C (compressed) instruction set to be disabled")
++RETAIL_CONFIG_DWORD_INFO(EXTERNAL_EnableRiscV64Atomic,          W("EnableRiscV64Atomic"),       1, "Allows the RiscV64 A (atomic) instruction set to be disabled")
+ #endif
+ 
+ // Runtime-async
+diff --git a/src/coreclr/inc/corinfoinstructionset.h b/src/coreclr/inc/corinfoinstructionset.h
+index 9d2f2aa..ec38b71 100644
+--- a/src/coreclr/inc/corinfoinstructionset.h
++++ b/src/coreclr/inc/corinfoinstructionset.h
+@@ -48,6 +48,10 @@ enum CORINFO_InstructionSet
+     InstructionSet_RiscV64Base=1,
+     InstructionSet_Zba=2,
+     InstructionSet_Zbb=3,
++    InstructionSet_F=4,
++    InstructionSet_D=5,
++    InstructionSet_C=6,
++    InstructionSet_A=7,
+ #endif // TARGET_RISCV64
+ #ifdef TARGET_AMD64
+     InstructionSet_X86Base=1,
+@@ -387,6 +391,14 @@ inline CORINFO_InstructionSetFlags EnsureInstructionSetFlagsAreValid(CORINFO_Ins
+ #ifdef TARGET_RISCV64
+         if (resultflags.HasInstructionSet(InstructionSet_Zbb) && !resultflags.HasInstructionSet(InstructionSet_RiscV64Base))
+             resultflags.RemoveInstructionSet(InstructionSet_Zbb);
++        if (resultflags.HasInstructionSet(InstructionSet_F) && !resultflags.HasInstructionSet(InstructionSet_RiscV64Base))
++            resultflags.RemoveInstructionSet(InstructionSet_F);
++        if (resultflags.HasInstructionSet(InstructionSet_D) && !resultflags.HasInstructionSet(InstructionSet_F))
++            resultflags.RemoveInstructionSet(InstructionSet_D);
++        if (resultflags.HasInstructionSet(InstructionSet_C) && !resultflags.HasInstructionSet(InstructionSet_RiscV64Base))
++            resultflags.RemoveInstructionSet(InstructionSet_C);
++        if (resultflags.HasInstructionSet(InstructionSet_A) && !resultflags.HasInstructionSet(InstructionSet_RiscV64Base))
++            resultflags.RemoveInstructionSet(InstructionSet_A);
+         if (resultflags.HasInstructionSet(InstructionSet_Zba) && !resultflags.HasInstructionSet(InstructionSet_RiscV64Base))
+             resultflags.RemoveInstructionSet(InstructionSet_Zba);
+ #endif // TARGET_RISCV64
+@@ -667,6 +679,14 @@ inline const char *InstructionSetToString(CORINFO_InstructionSet instructionSet)
+             return "Zba";
+         case InstructionSet_Zbb :
+             return "Zbb";
++        case InstructionSet_F :
++            return "F";
++        case InstructionSet_D :
++            return "D";
++        case InstructionSet_C :
++            return "C";
++        case InstructionSet_A :
++            return "A";
+ #endif // TARGET_RISCV64
+ #ifdef TARGET_AMD64
+         case InstructionSet_X86Base :
+@@ -864,6 +884,10 @@ inline CORINFO_InstructionSet InstructionSetFromR2RInstructionSet(ReadyToRunInst
+         case READYTORUN_INSTRUCTION_RiscV64Base: return InstructionSet_RiscV64Base;
+         case READYTORUN_INSTRUCTION_Zba: return InstructionSet_Zba;
+         case READYTORUN_INSTRUCTION_Zbb: return InstructionSet_Zbb;
++        case READYTORUN_INSTRUCTION_RiscV64F: return InstructionSet_F;
++        case READYTORUN_INSTRUCTION_RiscV64D: return InstructionSet_D;
++        case READYTORUN_INSTRUCTION_RiscV64C: return InstructionSet_C;
++        case READYTORUN_INSTRUCTION_RiscV64A: return InstructionSet_A;
+ #endif // TARGET_RISCV64
+ #ifdef TARGET_AMD64
+         case READYTORUN_INSTRUCTION_X86Base: return InstructionSet_X86Base;
+diff --git a/src/coreclr/inc/readytoruninstructionset.h b/src/coreclr/inc/readytoruninstructionset.h
+index ee9e5fd..467653a 100644
+--- a/src/coreclr/inc/readytoruninstructionset.h
++++ b/src/coreclr/inc/readytoruninstructionset.h
+@@ -66,6 +66,10 @@ enum ReadyToRunInstructionSet
+     READYTORUN_INSTRUCTION_RiscV64Base=56,
+     READYTORUN_INSTRUCTION_Zba=57,
+     READYTORUN_INSTRUCTION_Zbb=58,
++    READYTORUN_INSTRUCTION_RiscV64F=84,
++    READYTORUN_INSTRUCTION_RiscV64D=85,
++    READYTORUN_INSTRUCTION_RiscV64C=86,
++    READYTORUN_INSTRUCTION_RiscV64A=87,
+     READYTORUN_INSTRUCTION_Sve2=59,
+     READYTORUN_INSTRUCTION_AvxVnniInt8=60,
+     READYTORUN_INSTRUCTION_AvxVnniInt8_V512=61,
+diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
+index f5d05b2..5063f0a 100644
+--- a/src/coreclr/jit/jitconfigvalues.h
++++ b/src/coreclr/jit/jitconfigvalues.h
+@@ -429,6 +429,10 @@ RELEASE_CONFIG_INTEGER(EnableArm64Sve2,             "EnableArm64Sve2",
+ #elif defined(TARGET_RISCV64)
+ RELEASE_CONFIG_INTEGER(EnableRiscV64Zba,            "EnableRiscV64Zba",          1) // Allows RiscV64 Zba hardware intrinsics to be disabled
+ RELEASE_CONFIG_INTEGER(EnableRiscV64Zbb,            "EnableRiscV64Zbb",          1) // Allows RiscV64 Zbb hardware intrinsics to be disabled
++RELEASE_CONFIG_INTEGER(EnableRiscV64F,              "EnableRiscV64F",            1) // Allows the RiscV64 F (single-precision FP) instruction set to be disabled
++RELEASE_CONFIG_INTEGER(EnableRiscV64D,              "EnableRiscV64D",            1) // Allows the RiscV64 D (double-precision FP) instruction set to be disabled
++RELEASE_CONFIG_INTEGER(EnableRiscV64Compressed,     "EnableRiscV64Compressed",   1) // Allows RiscV64 compressed (C) instruction emission to be disabled (0 for no-C zkVM targets)
++RELEASE_CONFIG_INTEGER(EnableRiscV64Atomic,         "EnableRiscV64Atomic",       1) // Allows RiscV64 atomic (A: lr/sc, amo*) emission to be disabled; 0 lowers interlocked ops to plain load/modify/store (single-hart zkVM)
+ #endif
+ 
+ RELEASE_CONFIG_INTEGER(EnableEmbeddedBroadcast,     "EnableEmbeddedBroadcast",   1) // Allows embedded broadcasts to be disabled
+diff --git a/src/coreclr/tools/Common/InstructionSetHelpers.cs b/src/coreclr/tools/Common/InstructionSetHelpers.cs
+index 4778fee..64e227e 100644
+--- a/src/coreclr/tools/Common/InstructionSetHelpers.cs
++++ b/src/coreclr/tools/Common/InstructionSetHelpers.cs
+@@ -17,7 +17,7 @@ namespace System.CommandLine
+     internal static partial class Helpers
+     {
+         public static InstructionSetSupport ConfigureInstructionSetSupport(string instructionSet, int maxVectorTBitWidth, bool isVectorTOptimistic, TargetArchitecture targetArchitecture, TargetOS targetOS,
+-            string mustNotBeMessage, string invalidImplicationMessage, Logger logger, bool optimizingForSize = false)
++            string mustNotBeMessage, string invalidImplicationMessage, Logger logger, TargetAbi targetAbi, bool optimizingForSize = false)
+         {
+             InstructionSetSupportBuilder instructionSetSupportBuilder = new(targetArchitecture);
+ 
+@@ -38,6 +38,20 @@ namespace System.CommandLine
+                     instructionSetSupportBuilder.AddSupportedInstructionSet("neon");
+                 }
+             }
++            else if (targetArchitecture == TargetArchitecture.RiscV64)
++            {
++                // The rv64gc baseline: D implies F, so "d", "c" and "a" cover
++                // the G+C extensions. Reduced-ISA targets (e.g. zkVM guests)
++                // opt out with --instruction-set=-a,-c,-d,-f. The lp64 (soft-float)
++                // ABI target has no F/D by definition.
++                instructionSetSupportBuilder.AddSupportedInstructionSet("base");
++                if (targetAbi != TargetAbi.NativeAotRiscV64SoftFloat)
++                {
++                    instructionSetSupportBuilder.AddSupportedInstructionSet("d");
++                }
++                instructionSetSupportBuilder.AddSupportedInstructionSet("c");
++                instructionSetSupportBuilder.AddSupportedInstructionSet("a");
++            }
+ 
+             // Whether to allow optimistically expanding the instruction sets beyond what was specified.
+             // We seed this from optimizingForSize - if we're size-optimizing, we don't want to unnecessarily
+diff --git a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunInstructionSet.cs b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunInstructionSet.cs
+index 30c9cee..dff9d89 100644
+--- a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunInstructionSet.cs
++++ b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunInstructionSet.cs
+@@ -69,6 +69,10 @@ namespace Internal.ReadyToRunConstants
+         RiscV64Base=56,
+         Zba=57,
+         Zbb=58,
++        RiscV64F=84,
++        RiscV64D=85,
++        RiscV64C=86,
++        RiscV64A=87,
+         Sve2=59,
+         AvxVnniInt8=60,
+         AvxVnniInt8_V512=61,
+diff --git a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunInstructionSetHelper.cs b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunInstructionSetHelper.cs
+index ef3c8b4..a38d01d 100644
+--- a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunInstructionSetHelper.cs
++++ b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunInstructionSetHelper.cs
+@@ -62,6 +62,10 @@ namespace Internal.ReadyToRunConstants
+                             case InstructionSet.RiscV64_RiscV64Base: return ReadyToRunInstructionSet.RiscV64Base;
+                             case InstructionSet.RiscV64_Zba: return ReadyToRunInstructionSet.Zba;
+                             case InstructionSet.RiscV64_Zbb: return ReadyToRunInstructionSet.Zbb;
++                            case InstructionSet.RiscV64_F: return ReadyToRunInstructionSet.RiscV64F;
++                            case InstructionSet.RiscV64_D: return ReadyToRunInstructionSet.RiscV64D;
++                            case InstructionSet.RiscV64_C: return ReadyToRunInstructionSet.RiscV64C;
++                            case InstructionSet.RiscV64_A: return ReadyToRunInstructionSet.RiscV64A;
+ 
+                             default: throw new Exception("Unknown instruction set");
+                         }
+diff --git a/src/coreclr/tools/Common/JitInterface/CorInfoInstructionSet.cs b/src/coreclr/tools/Common/JitInterface/CorInfoInstructionSet.cs
+index 0e3e406..f2dc2ff 100644
+--- a/src/coreclr/tools/Common/JitInterface/CorInfoInstructionSet.cs
++++ b/src/coreclr/tools/Common/JitInterface/CorInfoInstructionSet.cs
+@@ -46,6 +46,10 @@ namespace Internal.JitInterface
+         RiscV64_RiscV64Base = InstructionSet_RiscV64.RiscV64Base,
+         RiscV64_Zba = InstructionSet_RiscV64.Zba,
+         RiscV64_Zbb = InstructionSet_RiscV64.Zbb,
++        RiscV64_F = InstructionSet_RiscV64.F,
++        RiscV64_D = InstructionSet_RiscV64.D,
++        RiscV64_C = InstructionSet_RiscV64.C,
++        RiscV64_A = InstructionSet_RiscV64.A,
+         X64_X86Base = InstructionSet_X64.X86Base,
+         X64_SSE42 = InstructionSet_X64.SSE42,
+         X64_AVX = InstructionSet_X64.AVX,
+@@ -181,6 +185,10 @@ namespace Internal.JitInterface
+         RiscV64Base = 1,
+         Zba = 2,
+         Zbb = 3,
++        F = 4,
++        D = 5,
++        C = 6,
++        A = 7,
+     }
+ 
+     public enum InstructionSet_X64
+@@ -518,6 +526,14 @@ namespace Internal.JitInterface
+                         resultflags.AddInstructionSet(InstructionSet.RiscV64_RiscV64Base);
+                     if (resultflags.HasInstructionSet(InstructionSet.RiscV64_Zba))
+                         resultflags.AddInstructionSet(InstructionSet.RiscV64_RiscV64Base);
++                    if (resultflags.HasInstructionSet(InstructionSet.RiscV64_F))
++                        resultflags.AddInstructionSet(InstructionSet.RiscV64_RiscV64Base);
++                    if (resultflags.HasInstructionSet(InstructionSet.RiscV64_D))
++                        resultflags.AddInstructionSet(InstructionSet.RiscV64_F);
++                    if (resultflags.HasInstructionSet(InstructionSet.RiscV64_C))
++                        resultflags.AddInstructionSet(InstructionSet.RiscV64_RiscV64Base);
++                    if (resultflags.HasInstructionSet(InstructionSet.RiscV64_A))
++                        resultflags.AddInstructionSet(InstructionSet.RiscV64_RiscV64Base);
+                     break;
+ 
+                 case TargetArchitecture.X64:
+@@ -794,6 +810,14 @@ namespace Internal.JitInterface
+                         resultflags.AddInstructionSet(InstructionSet.RiscV64_Zbb);
+                     if (resultflags.HasInstructionSet(InstructionSet.RiscV64_RiscV64Base))
+                         resultflags.AddInstructionSet(InstructionSet.RiscV64_Zba);
++                    if (resultflags.HasInstructionSet(InstructionSet.RiscV64_RiscV64Base))
++                        resultflags.AddInstructionSet(InstructionSet.RiscV64_F);
++                    if (resultflags.HasInstructionSet(InstructionSet.RiscV64_F))
++                        resultflags.AddInstructionSet(InstructionSet.RiscV64_D);
++                    if (resultflags.HasInstructionSet(InstructionSet.RiscV64_RiscV64Base))
++                        resultflags.AddInstructionSet(InstructionSet.RiscV64_C);
++                    if (resultflags.HasInstructionSet(InstructionSet.RiscV64_RiscV64Base))
++                        resultflags.AddInstructionSet(InstructionSet.RiscV64_A);
+                     break;
+ 
+                 case TargetArchitecture.X64:
+@@ -1040,6 +1064,10 @@ namespace Internal.JitInterface
+                     yield return new InstructionSetInfo("base", "RiscV64Base", InstructionSet.RiscV64_RiscV64Base, true);
+                     yield return new InstructionSetInfo("zba", "Zba", InstructionSet.RiscV64_Zba, true);
+                     yield return new InstructionSetInfo("zbb", "Zbb", InstructionSet.RiscV64_Zbb, true);
++                    yield return new InstructionSetInfo("f", "", InstructionSet.RiscV64_F, true);
++                    yield return new InstructionSetInfo("d", "", InstructionSet.RiscV64_D, true);
++                    yield return new InstructionSetInfo("c", "", InstructionSet.RiscV64_C, true);
++                    yield return new InstructionSetInfo("a", "", InstructionSet.RiscV64_A, true);
+                     break;
+ 
+                 case TargetArchitecture.X64:
+diff --git a/src/coreclr/tools/Common/JitInterface/ThunkGenerator/InstructionSetDesc.txt b/src/coreclr/tools/Common/JitInterface/ThunkGenerator/InstructionSetDesc.txt
+index 24c3f47..3ac9fb4 100644
+--- a/src/coreclr/tools/Common/JitInterface/ThunkGenerator/InstructionSetDesc.txt
++++ b/src/coreclr/tools/Common/JitInterface/ThunkGenerator/InstructionSetDesc.txt
+@@ -23,7 +23,7 @@
+ ; DO NOT CHANGE R2R NUMERIC VALUES OF THE EXISTING SETS. Changing R2R numeric values definitions would be R2R format breaking change.
+ 
+ ; The ISA definitions should also be mapped to `hwintrinsicIsaRangeArray` in hwintrinsic.cpp.
+-; NEXT_AVAILABLE_R2R_BIT = 82
++; NEXT_AVAILABLE_R2R_BIT = 88
+ 
+ ; Definition of X86 instruction sets
+ definearch         ,X86   ,32Bit                ,X64, X64
+@@ -259,9 +259,17 @@ definearch         ,RiscV64 ,64Bit     ,RiscV64, RiscV64
+ instructionset     ,RiscV64 ,RiscV64Base         ,        ,56 ,RiscV64Base         ,base
+ instructionset     ,RiscV64 ,Zba                 ,        ,57 ,Zba                 ,zba
+ instructionset     ,RiscV64 ,Zbb                 ,        ,58 ,Zbb                 ,zbb
++instructionset     ,RiscV64 , ,RiscV64F          ,84 ,F                   ,f
++instructionset     ,RiscV64 , ,RiscV64D          ,85 ,D                   ,d
++instructionset     ,RiscV64 , ,RiscV64C          ,86 ,C                   ,c
++instructionset     ,RiscV64 , ,RiscV64A          ,87 ,A                   ,a
+ 
+ implication        ,RiscV64 ,Zbb                 ,RiscV64Base
+ implication        ,RiscV64 ,Zba                 ,RiscV64Base
++implication        ,RiscV64 ,F                   ,RiscV64Base
++implication        ,RiscV64 ,D                   ,F
++implication        ,RiscV64 ,C                   ,RiscV64Base
++implication        ,RiscV64 ,A                   ,RiscV64Base
+ 
+ ;                    ,name and aliases           ,archs    ,lower baselines included by implication
+ instructionsetgroup  ,x86-64                     ,X64 X86  ,base
+diff --git a/src/coreclr/vm/codeman.cpp b/src/coreclr/vm/codeman.cpp
+index cc5a1c2..0d76b07 100644
+--- a/src/coreclr/vm/codeman.cpp
++++ b/src/coreclr/vm/codeman.cpp
+@@ -1657,6 +1657,33 @@ void EEJitManager::SetCpuInfo()
+     if (CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableHWIntrinsic))
+     {
+         CPUCompileFlags.Set(InstructionSet_RiscV64Base);
++
++        // F/D/C/A belong to the rv64gc baseline and are not reported through
++        // hwprobe; the floor is the ISA this runtime itself was built for.
++#if defined(__riscv_flen) && __riscv_flen >= 32
++        if (CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableRiscV64F))
++        {
++            CPUCompileFlags.Set(InstructionSet_F);
++        }
++#endif
++#if defined(__riscv_flen) && __riscv_flen >= 64
++        if (CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableRiscV64D))
++        {
++            CPUCompileFlags.Set(InstructionSet_D);
++        }
++#endif
++#ifdef __riscv_compressed
++        if (CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableRiscV64Compressed))
++        {
++            CPUCompileFlags.Set(InstructionSet_C);
++        }
++#endif
++#ifdef __riscv_atomic
++        if (CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableRiscV64Atomic))
++        {
++            CPUCompileFlags.Set(InstructionSet_A);
++        }
++#endif
+     }
+ 
+     if (((cpuFeatures & RiscV64IntrinsicConstants_Zba) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableRiscV64Zba))
+diff --git a/src/native/minipal/cpufeatures.c b/src/native/minipal/cpufeatures.c
+index 9122f84..9b79093 100644
+--- a/src/native/minipal/cpufeatures.c
++++ b/src/native/minipal/cpufeatures.c
+@@ -593,9 +593,16 @@ int minipal_getcpufeatures(void)
+ 
+     if (syscall(__NR_riscv_hwprobe, pairs, 1, 0, NULL, 0) == 0)
+     {
+-        // Our baseline support is for RV64GC (see #73437)
++        // The hardware must implement at least the ISA the runtime was built
++        // for. RV64GC is the supported baseline (see #73437); a build for a
++        // reduced -march only assumes the extensions it was compiled with.
++        // (hwprobe has no F-only bit, so an F-without-D build asserts nothing.)
++#if defined(__riscv_flen) && __riscv_flen >= 64
+         assert(pairs[0].value & RISCV_HWPROBE_IMA_FD);
++#endif
++#ifdef __riscv_compressed
+         assert(pairs[0].value & RISCV_HWPROBE_IMA_C);
++#endif
+ 
+         if (pairs[0].value & RISCV_HWPROBE_EXT_ZBA)
+         {
