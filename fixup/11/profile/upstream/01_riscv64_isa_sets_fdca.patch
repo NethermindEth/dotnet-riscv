@@ -31,7 +31,6 @@ part of that contract.
 ---
  src/coreclr/inc/clrconfigvalues.h             |  4 ++
  src/coreclr/inc/corinfoinstructionset.h       | 24 +++++++++
- src/coreclr/inc/jiteeversionguid.h            | 10 ++--
  src/coreclr/inc/readytoruninstructionset.h    |  4 ++
  src/coreclr/jit/compiler.cpp                  | 49 +++++++++++++++++++
  src/coreclr/jit/jitconfigvalues.h             |  4 ++
@@ -41,7 +40,7 @@ part of that contract.
  .../JitInterface/CorInfoInstructionSet.cs     | 28 +++++++++++
  .../ThunkGenerator/InstructionSetDesc.txt     | 10 +++-
  src/coreclr/vm/codeman.cpp                    | 27 ++++++++++
- 12 files changed, 172 insertions(+), 6 deletions(-)
+ 11 files changed, 167 insertions(+), 1 deletion(-)
 
 diff --git a/src/coreclr/inc/clrconfigvalues.h b/src/coreclr/inc/clrconfigvalues.h
 index d6badce7..c72eb6df 100644
@@ -114,27 +113,6 @@ index 2f347572..027c542a 100644
  #endif // TARGET_RISCV64
  #ifdef TARGET_WASM
          case READYTORUN_INSTRUCTION_WasmBase: return InstructionSet_WasmBase;
-diff --git a/src/coreclr/inc/jiteeversionguid.h b/src/coreclr/inc/jiteeversionguid.h
-index e4f8303b..ddead8be 100644
---- a/src/coreclr/inc/jiteeversionguid.h
-+++ b/src/coreclr/inc/jiteeversionguid.h
-@@ -37,11 +37,11 @@
- 
- #include <minipal/guid.h>
- 
--constexpr GUID JITEEVersionIdentifier = { /* 5a3e8dc8-83bf-47e5-b032-531dbd307dbe */
--    0x5a3e8dc8,
--    0x83bf,
--    0x47e5,
--    {0xb0, 0x32, 0x53, 0x1d, 0xbd, 0x30, 0x7d, 0xbe}
-+constexpr GUID JITEEVersionIdentifier = { /* 4b0313ae-d4d4-4c79-a83d-e748c5ea09ab */
-+    0x4b0313ae,
-+    0xd4d4,
-+    0x4c79,
-+    {0xa8, 0x3d, 0xe7, 0x48, 0xc5, 0xea, 0x09, 0xab}
-   };
- 
- #endif // JIT_EE_VERSIONING_GUID_H
 diff --git a/src/coreclr/inc/readytoruninstructionset.h b/src/coreclr/inc/readytoruninstructionset.h
 index d2851e91..96121c5d 100644
 --- a/src/coreclr/inc/readytoruninstructionset.h
