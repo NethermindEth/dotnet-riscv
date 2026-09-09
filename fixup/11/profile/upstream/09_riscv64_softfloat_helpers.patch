@@ -21,7 +21,6 @@ CORINFO_HELP_LMUL is modelled on 32-bit targets; only the two three-way
 compares need VNFuncs of their own.
 ---
  src/coreclr/inc/corinfo.h                     | 22 +++++++++
- src/coreclr/inc/jiteeversionguid.h            | 31 ++-----------
  src/coreclr/inc/jithelpers.h                  | 18 ++++++++
  src/coreclr/jit/utils.cpp                     | 15 ++++++
  src/coreclr/jit/valuenum.cpp                  | 46 +++++++++++++++++++
@@ -46,7 +45,7 @@ compares need VNFuncs of their own.
  .../aot/ILCompiler/ILCompilerRootCommand.cs   |  4 +-
  src/coreclr/tools/aot/ILCompiler/Program.cs   |  3 +-
  src/coreclr/tools/aot/crossgen2/Program.cs    |  8 +++-
- 26 files changed, 384 insertions(+), 35 deletions(-)
+ 25 files changed, 379 insertions(+), 9 deletions(-)
  create mode 100644 src/coreclr/tools/aot/ILCompiler.Compiler.Tests/RiscV64ObjectWriterTests.cs
 
 diff --git a/src/coreclr/inc/corinfo.h b/src/coreclr/inc/corinfo.h
@@ -82,48 +81,6 @@ index 2b2802f9..3005dfde 100644
      /* Allocating a new object. Always use ICorClassInfo::getNewHelper() to decide
         which is the right helper to use to allocate an object of a given type. */
  
-diff --git a/src/coreclr/inc/jiteeversionguid.h b/src/coreclr/inc/jiteeversionguid.h
-index ddead8be..1a31f072 100644
---- a/src/coreclr/inc/jiteeversionguid.h
-+++ b/src/coreclr/inc/jiteeversionguid.h
-@@ -16,32 +16,11 @@
- // Note that this file is parsed by some tools, namely superpmi.py, so make sure the first line is exactly
- // of the form:
- //
--//   constexpr GUID JITEEVersionIdentifier = { /* 1776ab48-edfa-49be-a11f-ec216b28174c */
--//
--// (without the leading slashes or spaces).
--//
--// See docs/project/updating-jitinterface.md for details
--//
--// **** NOTE TO INTEGRATORS:
--//
--// If there is a merge conflict here, because the version changed in two different places, you must
--// create a **NEW** GUID, not simply choose one or the other!
--//
--// NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE
--//
--//////////////////////////////////////////////////////////////////////////////////////////////////////////
--//
--
--#ifndef JIT_EE_VERSIONING_GUID_H
--#define JIT_EE_VERSIONING_GUID_H
--
--#include <minipal/guid.h>
--
--constexpr GUID JITEEVersionIdentifier = { /* 4b0313ae-d4d4-4c79-a83d-e748c5ea09ab */
--    0x4b0313ae,
--    0xd4d4,
--    0x4c79,
--    {0xa8, 0x3d, 0xe7, 0x48, 0xc5, 0xea, 0x09, 0xab}
-+//   constexpr GUID JITEEVersionIdentifier = { /* ad6f1601-8ca2-48b7-804e-2cbd0cd36a5f */
-+    0xad6f1601,
-+    0x8ca2,
-+    0x48b7,
-+    {0x80, 0x4e, 0x2c, 0xbd, 0x0c, 0xd3, 0x6a, 0x5f}
-   };
- 
- #endif // JIT_EE_VERSIONING_GUID_H
 diff --git a/src/coreclr/inc/jithelpers.h b/src/coreclr/inc/jithelpers.h
 index 2d6eb1bb..14678850 100644
 --- a/src/coreclr/inc/jithelpers.h

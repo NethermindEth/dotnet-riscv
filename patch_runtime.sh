@@ -60,3 +60,9 @@ pushd dotnet/src/runtime
         done
     done
 popd
+
+# The patches add JIT helpers and a JIT flag, so the JIT/EE contract differs from
+# what upstream shipped and the GUID has to be rewritten. It is not done in a
+# patch: a patch names the old value, and upstream rolls that value constantly,
+# so it would stop applying on the next VMR bump.
+"${TOP_DIR}/bump_jitee_guid.sh" dotnet/src/runtime
