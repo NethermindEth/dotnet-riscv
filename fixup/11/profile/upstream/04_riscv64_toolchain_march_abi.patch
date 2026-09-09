@@ -22,14 +22,15 @@ This follows what the arm/armel branch above already does for -mfpu and
  1 file changed, 17 insertions(+)
 
 diff --git a/eng/common/cross/toolchain.cmake b/eng/common/cross/toolchain.cmake
-index 70b7139..60f2e7b 100644
+index 70b7139..3285d13 100644
 --- a/eng/common/cross/toolchain.cmake
 +++ b/eng/common/cross/toolchain.cmake
-@@ -333,6 +333,58 @@ if(TARGET_ARCH_NAME MATCHES "^(arm|armel)$")
+@@ -333,6 +333,61 @@ if(TARGET_ARCH_NAME MATCHES "^(arm|armel)$")
    if(TARGET_ARCH_NAME STREQUAL "armel")
      add_compile_options(-mfloat-abi=softfp)
    endif()
 +elseif(TARGET_ARCH_NAME STREQUAL "riscv64")
++  message(STATUS "RISCV64-DIAG reached: env march='$ENV{CLR_CMAKE_RISCV64_MARCH}' env mabi='$ENV{CLR_CMAKE_RISCV64_MABI}'")
 +  # The ISA string and the ABI have to be settled here rather than in
 +  # configurecompiler.cmake alone: cmake compiles and links its own probes at
 +  # project() time, and a probe built for a different ABI than the sysroot fails
@@ -78,6 +79,8 @@ index 70b7139..60f2e7b 100644
 +      endif()
 +    endforeach()
 +  endif()
++
++  message(STATUS "RISCV64-DIAG flags='${_riscv64_isa_flags}' cflags='${CMAKE_C_FLAGS}'")
 +
 +  # persist variables across multiple try_compile passes
 +  list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES CLR_CMAKE_RISCV64_MARCH CLR_CMAKE_RISCV64_MABI)
