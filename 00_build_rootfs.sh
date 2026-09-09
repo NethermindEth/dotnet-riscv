@@ -10,6 +10,8 @@ pip3 install aiohttp
 
 cd "${TOP_DIR}"
 
+. "${TOP_DIR}/alpine_mirror.sh"
+
 mkdir -p "${tmp_dir}"
 
 pushd "${tmp_dir}"
@@ -21,16 +23,11 @@ pushd "${tmp_dir}"
         # userspace. SOFT_FLOAT_ROOTFS=false selects that.
         if [ "${SOFT_FLOAT_ROOTFS:-true}" = "true" ] ; then
             patch -p1 < "${TOP_DIR}/fixup/rootfs/alpine_custom.patch"
+            substitute_alpine_mirror eng/common/cross/build-rootfs.sh
         fi
         echo Preparing GNU rootfs
         ./eng/common/cross/build-rootfs.sh riscv64 noble --skipemulation --skipunmount --rootfsdir $(pwd)/.tools/rootfs/riscv64-gnu
         echo Preparing musl rootfs
         ./eng/common/cross/build-rootfs.sh riscv64 alpineedge --skipemulation --skipunmount --rootfsdir $(pwd)/.tools/rootfs/riscv64-musl
-        # The Alpine feed ships musl built for rv64gc (compressed + atomic
-        # instructions). The zkVM guest decodes only base rv64im, so rebuild
-        # musl for rv64im from the same aport and overwrite the stock libc.a +
-        # crt in the musl rootfs; 04_pack_libs.sh then packs the clean copy.
-        echo Rebuilding musl for rv64im
-        "${TOP_DIR}/build_musl_rv64im.sh" "$(pwd)/.tools/rootfs/riscv64-musl/usr/lib"
     popd
 popd
