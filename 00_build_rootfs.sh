@@ -20,7 +20,7 @@ pushd "${tmp_dir}"
         # for the soft-float target - a stock lp64d build wants the stock
         # userspace. SOFT_FLOAT_ROOTFS=false selects that.
         if [ "${SOFT_FLOAT_ROOTFS:-true}" = "true" ] ; then
-            patch -p1 < "${TOP_DIR}/patches/bflat-runtime/12_alpine_custom.patch"
+            patch -p1 < "${TOP_DIR}/fixup/rootfs/alpine_custom.patch"
         fi
         echo Preparing GNU rootfs
         ./eng/common/cross/build-rootfs.sh riscv64 noble --skipemulation --skipunmount --rootfsdir $(pwd)/.tools/rootfs/riscv64-gnu

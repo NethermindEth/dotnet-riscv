@@ -3,7 +3,7 @@
 export TOP_DIR="$(cd "$(dirname "$(which "$0")")" ; pwd -P)"
 
 # Repoint the Alpine package mirror at the bflat-hosted one. Done with sed (not a
-# context hunk in 12_alpine_custom.patch) so it survives http/https flips and line
+# context hunk in fixup/rootfs/alpine_custom.patch) so it survives http/https flips and line
 # drift in arcade's build-rootfs.sh across VMR bumps. Idempotent.
 substitute_alpine_mirror() {
     sed -i -E \
@@ -15,7 +15,7 @@ substitute_alpine_mirror() {
 pushd dotnet > /dev/null 2> /dev/null
 
 br_path="eng/common/cross/build-rootfs.sh"
-patch -p1 < "${TOP_DIR}/patches/bflat-runtime/12_alpine_custom.patch"
+patch -p1 < "${TOP_DIR}/fixup/rootfs/alpine_custom.patch"
 if [ "$?" != "0" ] ; then
     echo "Failed to apply alpine patch (1)" >&2
     exit 1
@@ -29,7 +29,7 @@ for folder in $(ls src) ; do
     pushd src/$folder > /dev/null 2> /dev/null
     if [ -f $br_path ] ; then
         echo Project: $folder
-        patch -p1 < "${TOP_DIR}/patches/bflat-runtime/12_alpine_custom.patch"
+        patch -p1 < "${TOP_DIR}/fixup/rootfs/alpine_custom.patch"
         if [ "$?" != "0" ] ; then
             echo "Failed to apply alpine patch (2)" >&2
             exit 2
