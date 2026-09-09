@@ -4,6 +4,9 @@ export TOP_DIR="$(cd "$(dirname "$(which "$0")")" ; pwd -P)"
 
 # Fixup profile: "minimal" (default) applies only the correctness fixups;
 # "perf" additionally applies the riscv64 code-quality fixups on top.
+# "upstream" is standalone: only the patches staged for submission to
+# dotnet/runtime, so that the subset is proven to apply and build on its own.
+# See fixup/<major>/profile/upstream/README.md for the bar for inclusion.
 profile="${1:-minimal}"
 
 case "$profile" in
@@ -13,8 +16,11 @@ case "$profile" in
     perf|performance)
         profile_dirs="minimal perf"
         ;;
+    upstream)
+        profile_dirs="upstream"
+        ;;
     *)
-        echo "Unknown fixup profile: $profile (expected minimal or perf)" >&2
+        echo "Unknown fixup profile: $profile (expected minimal, perf or upstream)" >&2
         exit 1
         ;;
 esac
