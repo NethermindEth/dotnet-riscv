@@ -22,10 +22,10 @@ This follows what the arm/armel branch above already does for -mfpu and
  1 file changed, 17 insertions(+)
 
 diff --git a/eng/common/cross/toolchain.cmake b/eng/common/cross/toolchain.cmake
-index 70b7139..0452ba8 100644
+index 70b7139..60f2e7b 100644
 --- a/eng/common/cross/toolchain.cmake
 +++ b/eng/common/cross/toolchain.cmake
-@@ -333,6 +333,44 @@ if(TARGET_ARCH_NAME MATCHES "^(arm|armel)$")
+@@ -333,6 +333,58 @@ if(TARGET_ARCH_NAME MATCHES "^(arm|armel)$")
    if(TARGET_ARCH_NAME STREQUAL "armel")
      add_compile_options(-mfloat-abi=softfp)
    endif()
@@ -63,6 +63,20 @@ index 70b7139..0452ba8 100644
 +    string(APPEND CMAKE_ASM_FLAGS_INIT "${_riscv64_isa_flags}")
 +    string(APPEND CMAKE_EXE_LINKER_FLAGS_INIT "${_riscv64_isa_flags}")
 +    string(APPEND CMAKE_SHARED_LINKER_FLAGS_INIT "${_riscv64_isa_flags}")
++
++    # _INIT only seeds an empty cache, and the build configures more than once,
++    # so set the flags directly as well. The toolchain file is re-read inside
++    # every try_compile, so the probes get them either way.
++    foreach(_lang C CXX ASM)
++      if(NOT CMAKE_${_lang}_FLAGS MATCHES "${_riscv64_isa_flags}")
++        string(APPEND CMAKE_${_lang}_FLAGS "${_riscv64_isa_flags}")
++      endif()
++    endforeach()
++    foreach(_kind EXE SHARED MODULE)
++      if(NOT CMAKE_${_kind}_LINKER_FLAGS MATCHES "${_riscv64_isa_flags}")
++        string(APPEND CMAKE_${_kind}_LINKER_FLAGS "${_riscv64_isa_flags}")
++      endif()
++    endforeach()
 +  endif()
 +
 +  # persist variables across multiple try_compile passes
