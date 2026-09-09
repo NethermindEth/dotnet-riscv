@@ -73,6 +73,11 @@ jobs:
           ./patch_alpine.sh
         fi
         ./patch_runtime.sh ${{ inputs.profile }}
+        # The toolchain hunk has to reach every copy of eng/common in the VMR,
+        # not just the one under src/runtime - see patch_vmr_toolchain.sh.
+        if [ "${{ inputs.soft_float_abi }}" = "true" ] ; then
+          ./patch_vmr_toolchain.sh ${{ inputs.profile }}
+        fi
 
     - name: Pack whole source early
       if: ${{ inputs.whole_source_early }}
