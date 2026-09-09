@@ -1,0 +1,159 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Maxim Menshikov <maximmenshchikov@gmail.com>
+Date: Wed, 9 Sep 2026 11:27:22 +0100
+Subject: [PATCH 08/11] [RISC-V] Add the lp64 soft-float ABI to the JIT
+
+Under CORJIT_FLAG_SOFTFP_ABI - the flag armel already uses - riscv64 passes and
+returns floating-point scalars and floating-point struct fields by the integer
+calling convention, which is what the lp64 psABI prescribes for a target
+without F/D. Only the ABI classifier changes here; code generation still uses
+the FP registers, so this commit alone is not a usable target. It is separated
+because it is the part that is purely a calling convention.
+---
+ src/coreclr/inc/corjitflags.h     |  4 +++-
+ src/coreclr/jit/compiler.cpp      |  7 ++++++-
+ src/coreclr/jit/compiler.h        |  4 +++-
+ src/coreclr/jit/gentree.cpp       | 16 ++++++++++------
+ src/coreclr/jit/jitee.h           |  8 ++++++--
+ src/coreclr/jit/targetriscv64.cpp |  4 ++--
+ 6 files changed, 30 insertions(+), 13 deletions(-)
+
+diff --git a/src/coreclr/inc/corjitflags.h b/src/coreclr/inc/corjitflags.h
+index 67199b17..a5301dad 100644
+--- a/src/coreclr/inc/corjitflags.h
++++ b/src/coreclr/inc/corjitflags.h
+@@ -61,7 +61,9 @@ public:
+ 
+ #if defined(TARGET_ARM)
+         CORJIT_FLAG_RELATIVE_CODE_RELOCS    = 29, // JIT should generate PC-relative address computations instead of EE relocation records
+-        CORJIT_FLAG_SOFTFP_ABI              = 30, // Enable armel calling convention
++#endif
++#if defined(TARGET_ARM) || defined(TARGET_RISCV64)
++        CORJIT_FLAG_SOFTFP_ABI              = 30, // Enable the soft-float calling convention (armel; lp64 on RISC-V)
+ #endif
+         CORJIT_FLAG_USE_DISPATCH_HELPERS    = 31, // The JIT should use helpers for interface dispatch instead of virtual stub dispatch
+     };
+diff --git a/src/coreclr/jit/compiler.cpp b/src/coreclr/jit/compiler.cpp
+index 6e323316..a57582b8 100644
+--- a/src/coreclr/jit/compiler.cpp
++++ b/src/coreclr/jit/compiler.cpp
+@@ -867,7 +867,7 @@ var_types Compiler::getReturnTypeForStruct(CORINFO_CLASS_HANDLE     clsHnd,
+         useType             = TYP_UNKNOWN;
+     }
+ #elif defined(TARGET_RISCV64) || defined(TARGET_LOONGARCH64)
+-    if (structSize <= (TARGET_POINTER_SIZE * 2))
++    if ((structSize <= (TARGET_POINTER_SIZE * 2)) && !opts.compUseSoftFP)
+     {
+         const CORINFO_FPSTRUCT_LOWERING* lowering = GetFpStructLowering(clsHnd);
+         if (!lowering->byIntegerCallConv)
+@@ -2918,6 +2918,11 @@ void Compiler::compInitOptions(JitFlags* jitFlags)
+     }
+ 
+     GlobalJitOptions::compFeatureHfa = !opts.compUseSoftFP;
++#elif defined(TARGET_RISCV64)
++    // lp64 soft-float ABI: FP scalars and FP struct fields are passed by the
++    // integer calling convention and fa* registers are never used. Set by the
++    // VM / AOT driver for targets without the F extension.
++    opts.compUseSoftFP = jitFlags->IsSet(JitFlags::JIT_FLAG_SOFTFP_ABI);
+ #elif defined(ARM_SOFTFP) && defined(TARGET_ARM)
+     // Armel is unconditionally enabled in the JIT. Verify that the VM side agrees.
+     assert(jitFlags->IsSet(JitFlags::JIT_FLAG_SOFTFP_ABI));
+diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
+index 5265ce80..d03269d7 100644
+--- a/src/coreclr/jit/compiler.h
++++ b/src/coreclr/jit/compiler.h
+@@ -11600,7 +11600,9 @@ public:
+         int compJitSaveFpLrWithCalleeSavedRegisters;
+ #endif // defined(TARGET_ARM64)
+ 
+-#ifdef CONFIGURABLE_ARM_ABI
++#if defined(CONFIGURABLE_ARM_ABI) || defined(TARGET_RISCV64)
++        // On RISCV64 the lp64 soft-float ABI is selected per compilation by
++        // JIT_FLAG_SOFTFP_ABI (no-F targets); see compInitOptions.
+         bool compUseSoftFP = false;
+ #else
+ #ifdef ARM_SOFTFP
+diff --git a/src/coreclr/jit/gentree.cpp b/src/coreclr/jit/gentree.cpp
+index 269dd14c..4f4da9d9 100644
+--- a/src/coreclr/jit/gentree.cpp
++++ b/src/coreclr/jit/gentree.cpp
+@@ -34001,11 +34001,14 @@ void ReturnTypeDesc::InitializeStructReturnType(Compiler*                comp,
+             m_regType[0] = returnType;
+ 
+ #if defined(TARGET_RISCV64) || defined(TARGET_LOONGARCH64)
+-            const CORINFO_FPSTRUCT_LOWERING* lowering = comp->GetFpStructLowering(retClsHnd);
+-            if (!lowering->byIntegerCallConv)
++            if (!comp->opts.compUseSoftFP)
+             {
+-                assert(lowering->numLoweredElements == 1);
+-                m_fieldOffset[0] = lowering->offsets[0];
++                const CORINFO_FPSTRUCT_LOWERING* lowering = comp->GetFpStructLowering(retClsHnd);
++                if (!lowering->byIntegerCallConv)
++                {
++                    assert(lowering->numLoweredElements == 1);
++                    m_fieldOffset[0] = lowering->offsets[0];
++                }
+             }
+ #endif // defined(TARGET_RISCV64) || defined(TARGET_LOONGARCH64)
+             break;
+@@ -34077,8 +34080,9 @@ void ReturnTypeDesc::InitializeStructReturnType(Compiler*                comp,
+             assert(structSize <= (2 * TARGET_POINTER_SIZE));
+             BYTE gcPtrs[2] = {TYPE_GC_NONE, TYPE_GC_NONE};
+             comp->info.compCompHnd->getClassGClayout(retClsHnd, &gcPtrs[0]);
+-            const CORINFO_FPSTRUCT_LOWERING* lowering = comp->GetFpStructLowering(retClsHnd);
+-            if (!lowering->byIntegerCallConv)
++            const CORINFO_FPSTRUCT_LOWERING* lowering =
++                comp->opts.compUseSoftFP ? nullptr : comp->GetFpStructLowering(retClsHnd);
++            if ((lowering != nullptr) && !lowering->byIntegerCallConv)
+             {
+                 comp->compFloatingPointUsed = true;
+                 assert(lowering->numLoweredElements == MAX_RET_REG_COUNT);
+diff --git a/src/coreclr/jit/jitee.h b/src/coreclr/jit/jitee.h
+index bc18ee6f..d50a3114 100644
+--- a/src/coreclr/jit/jitee.h
++++ b/src/coreclr/jit/jitee.h
+@@ -41,7 +41,9 @@ public:
+ 
+ #if defined(TARGET_ARM)
+         JIT_FLAG_RELATIVE_CODE_RELOCS    = 29, // JIT should generate PC-relative address computations instead of EE relocation records
+-        JIT_FLAG_SOFTFP_ABI              = 30, // Enable armel calling convention
++#endif
++#if defined(TARGET_ARM) || defined(TARGET_RISCV64)
++        JIT_FLAG_SOFTFP_ABI              = 30, // Enable the soft-float calling convention (armel; lp64 on RISC-V)
+ #endif
+ 
+         JIT_FLAG_USE_DISPATCH_HELPERS    = 31, // The JIT should use helpers for interface dispatch instead of virtual stub dispatch
+@@ -142,8 +144,10 @@ public:
+ 
+ #if defined(TARGET_ARM)
+         FLAGS_EQUAL(CORJIT_FLAGS::CORJIT_FLAG_RELATIVE_CODE_RELOCS, JIT_FLAG_RELATIVE_CODE_RELOCS);
+-        FLAGS_EQUAL(CORJIT_FLAGS::CORJIT_FLAG_SOFTFP_ABI, JIT_FLAG_SOFTFP_ABI);
+ #endif // TARGET_ARM
++#if defined(TARGET_ARM) || defined(TARGET_RISCV64)
++        FLAGS_EQUAL(CORJIT_FLAGS::CORJIT_FLAG_SOFTFP_ABI, JIT_FLAG_SOFTFP_ABI);
++#endif // TARGET_ARM || TARGET_RISCV64
+         FLAGS_EQUAL(CORJIT_FLAGS::CORJIT_FLAG_ASYNC, JIT_FLAG_ASYNC);
+         FLAGS_EQUAL(CORJIT_FLAGS::CORJIT_FLAG_USE_DISPATCH_HELPERS, JIT_FLAG_USE_DISPATCH_HELPERS);
+ 
+diff --git a/src/coreclr/jit/targetriscv64.cpp b/src/coreclr/jit/targetriscv64.cpp
+index 5ba2a310..b6080749 100644
+--- a/src/coreclr/jit/targetriscv64.cpp
++++ b/src/coreclr/jit/targetriscv64.cpp
+@@ -78,7 +78,7 @@ ABIPassingInformation RiscV64Classifier::Classify(Compiler*    comp,
+             passedByRef = true;
+             passedSize  = TARGET_POINTER_SIZE;
+         }
+-        else if (!structLayout->IsBlockLayout())
++        else if (!structLayout->IsBlockLayout() && !comp->opts.compUseSoftFP)
+         {
+             lowering = comp->GetFpStructLowering(structLayout->GetClassHandle());
+             if (!lowering->byIntegerCallConv)
+@@ -100,7 +100,7 @@ ABIPassingInformation RiscV64Classifier::Classify(Compiler*    comp,
+     {
+         passedSize = genTypeSize(type);
+         assert(passedSize <= TARGET_POINTER_SIZE);
+-        floatFields = varTypeIsFloating(type) ? 1 : 0;
++        floatFields = (varTypeIsFloating(type) && !comp->opts.compUseSoftFP) ? 1 : 0;
+     }
+ 
+     assert((floatFields > 0) || (intFields == 0));

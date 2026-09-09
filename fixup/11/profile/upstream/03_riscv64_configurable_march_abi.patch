@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Maxim Menshikov <maximmenshchikov@gmail.com>
 Date: Tue, 8 Sep 2026 23:19:24 +0100
-Subject: [PATCH] [RISC-V] Make the native build's ISA string and ABI
+Subject: [PATCH 03/11] [RISC-V] Make the native build's ISA string and ABI
  configurable
 
 The native runtime is compiled -march=rv64gc -mabi=lp64d unconditionally, so a
