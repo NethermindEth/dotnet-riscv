@@ -1,8 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Maxim Menshikov <maximmenshchikov@gmail.com>
 Date: Tue, 8 Sep 2026 23:39:42 +0100
-Subject: [PATCH] [RISC-V] Apply the ISA string and ABI to the cross toolchain
- probes
+Subject: [PATCH 04/11] [RISC-V] Apply the ISA string and ABI to the cross
+ toolchain probes
 
 configurecompiler.cmake settles the RISC-V ISA and ABI for the project, but
 cmake compiles and links its own probes at project() time, before any of the

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Maxim Menshikov <maximmenshchikov@gmail.com>
 Date: Wed, 9 Sep 2026 00:01:40 +0100
-Subject: [PATCH] [RISC-V] Build libunwind for targets without the F/D
+Subject: [PATCH 05/11] [RISC-V] Build libunwind for targets without the F/D
  extensions
 
 The riscv64 port refuses to compile when __riscv_flen is not 32 or 64, so a

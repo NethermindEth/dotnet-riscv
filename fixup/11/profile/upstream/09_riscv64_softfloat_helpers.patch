@@ -1,0 +1,833 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Maxim Menshikov <maximmenshchikov@gmail.com>
+Date: Wed, 9 Sep 2026 11:27:23 +0100
+Subject: [PATCH 09/11] [RISC-V] Add the soft-float helpers and the
+ riscv64-lp64 target
+
+Fourteen helpers - {FLT,DBL}{ADD,SUB,MUL,DIV}, {FLT,DBL}CMP_{LE,GE}, FLT2DBL and
+DBL2FLT - bound by ilc to the toolchain's compiler-rt builtins (__adddf3,
+__ledf2, ...), the same way CORINFO_HELP_DBLREM is already bound to fmod. No
+floating-point arithmetic is implemented in the runtime or the libraries.
+
+The target is selected explicitly as TargetAbi.NativeAotRiscV64SoftFloat,
+spelled riscv64-lp64 on the ilc command line, following the armel precedent. It
+drives the JIT flag, the RISC-V ELF float-ABI field in e_flags (which is what
+lets the linker reject a mix of lp64 and lp64d objects), the instruction-set
+defaults and a two-way validation: lp64d requires F and D, lp64 must not have
+them. crossgen2 rejects the target - the helpers have no ReadyToRun encoding.
+
+Value numbering models the helpers as the operations they implement, as
+CORINFO_HELP_LMUL is modelled on 32-bit targets; only the two three-way
+compares need VNFuncs of their own.
+---
+ src/coreclr/inc/corinfo.h                     | 22 +++++++++
+ src/coreclr/inc/jiteeversionguid.h            | 31 ++-----------
+ src/coreclr/inc/jithelpers.h                  | 18 ++++++++
+ src/coreclr/jit/utils.cpp                     | 15 ++++++
+ src/coreclr/jit/valuenum.cpp                  | 46 +++++++++++++++++++
+ src/coreclr/jit/valuenumfuncs.h               |  6 +++
+ .../tools/Common/CommandLineHelpers.cs        |  5 +-
+ .../Compiler/ObjectWriter/ElfObjectWriter.cs  | 23 +++++++++-
+ .../ObjectWriter/ObjectWritingOptions.cs      |  4 ++
+ .../tools/Common/InstructionSetHelpers.cs     | 10 ++--
+ .../Internal/Runtime/ReadyToRunConstants.cs   | 16 +++++++
+ .../Common/JitInterface/CorInfoHelpFunc.cs    | 16 +++++++
+ .../tools/Common/JitInterface/CorInfoImpl.cs  |  7 +++
+ .../Common/TypeSystem/Common/TargetDetails.cs |  5 ++
+ .../ILCompiler.Compiler.Tests.csproj          |  1 +
+ .../RiscV64ObjectWriterTests.cs               | 26 +++++++++++
+ .../ILCompiler.Compiler/Compiler/JitHelper.cs | 44 ++++++++++++++++++
+ .../ILCompiler.Compiler.csproj                |  3 ++
+ .../ILCompiler.Diagnostics/PerfMapWriter.cs   |  1 +
+ .../TestCases/R2RTestSuites.cs                | 28 +++++++++++
+ .../TestCasesRunner/R2RTestRunner.cs          | 11 +++++
+ .../Compiler/RyuJitCompilation.cs             | 24 ++++++++++
+ .../JitInterface/CorInfoImpl.RyuJit.cs        | 42 +++++++++++++++++
+ .../aot/ILCompiler/ILCompilerRootCommand.cs   |  4 +-
+ src/coreclr/tools/aot/ILCompiler/Program.cs   |  3 +-
+ src/coreclr/tools/aot/crossgen2/Program.cs    |  8 +++-
+ 26 files changed, 384 insertions(+), 35 deletions(-)
+ create mode 100644 src/coreclr/tools/aot/ILCompiler.Compiler.Tests/RiscV64ObjectWriterTests.cs
+
+diff --git a/src/coreclr/inc/corinfo.h b/src/coreclr/inc/corinfo.h
+index 2b2802f9..3005dfde 100644
+--- a/src/coreclr/inc/corinfo.h
++++ b/src/coreclr/inc/corinfo.h
+@@ -342,6 +342,28 @@ enum CorInfoHelpFunc
+     CORINFO_HELP_FLTREM,
+     CORINFO_HELP_DBLREM,
+ 
++    /* Soft-float helpers, for targets without a floating-point unit (RISC-V
++       without the F/D extensions). The arithmetic helpers have the same
++       semantics as the corresponding IL instructions. The compare helpers
++       return a three-way result (< 0, 0, > 0 for less, equal, greater) and
++       differ only for unordered operands: CMP_LE returns 1 and CMP_GE returns
++       -1 (the libgcc __le*f2/__ge*f2 conventions), so that every ordered and
++       unordered IL comparison maps onto a single call. */
++    CORINFO_HELP_FLTADD,
++    CORINFO_HELP_FLTSUB,
++    CORINFO_HELP_FLTMUL,
++    CORINFO_HELP_FLTDIV,
++    CORINFO_HELP_DBLADD,
++    CORINFO_HELP_DBLSUB,
++    CORINFO_HELP_DBLMUL,
++    CORINFO_HELP_DBLDIV,
++    CORINFO_HELP_FLTCMP_LE,
++    CORINFO_HELP_FLTCMP_GE,
++    CORINFO_HELP_DBLCMP_LE,
++    CORINFO_HELP_DBLCMP_GE,
++    CORINFO_HELP_FLT2DBL,
++    CORINFO_HELP_DBL2FLT,
++
+     /* Allocating a new object. Always use ICorClassInfo::getNewHelper() to decide
+        which is the right helper to use to allocate an object of a given type. */
+ 
+diff --git a/src/coreclr/inc/jiteeversionguid.h b/src/coreclr/inc/jiteeversionguid.h
+index ddead8be..1a31f072 100644
+--- a/src/coreclr/inc/jiteeversionguid.h
++++ b/src/coreclr/inc/jiteeversionguid.h
+@@ -16,32 +16,11 @@
+ // Note that this file is parsed by some tools, namely superpmi.py, so make sure the first line is exactly
+ // of the form:
+ //
+-//   constexpr GUID JITEEVersionIdentifier = { /* 1776ab48-edfa-49be-a11f-ec216b28174c */
+-//
+-// (without the leading slashes or spaces).
+-//
+-// See docs/project/updating-jitinterface.md for details
+-//
+-// **** NOTE TO INTEGRATORS:
+-//
+-// If there is a merge conflict here, because the version changed in two different places, you must
+-// create a **NEW** GUID, not simply choose one or the other!
+-//
+-// NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE
+-//
+-//////////////////////////////////////////////////////////////////////////////////////////////////////////
+-//
+-
+-#ifndef JIT_EE_VERSIONING_GUID_H
+-#define JIT_EE_VERSIONING_GUID_H
+-
+-#include <minipal/guid.h>
+-
+-constexpr GUID JITEEVersionIdentifier = { /* 4b0313ae-d4d4-4c79-a83d-e748c5ea09ab */
+-    0x4b0313ae,
+-    0xd4d4,
+-    0x4c79,
+-    {0xa8, 0x3d, 0xe7, 0x48, 0xc5, 0xea, 0x09, 0xab}
++//   constexpr GUID JITEEVersionIdentifier = { /* ad6f1601-8ca2-48b7-804e-2cbd0cd36a5f */
++    0xad6f1601,
++    0x8ca2,
++    0x48b7,
++    {0x80, 0x4e, 0x2c, 0xbd, 0x0c, 0xd3, 0x6a, 0x5f}
+   };
+ 
+ #endif // JIT_EE_VERSIONING_GUID_H
+diff --git a/src/coreclr/inc/jithelpers.h b/src/coreclr/inc/jithelpers.h
+index 2d6eb1bb..14678850 100644
+--- a/src/coreclr/inc/jithelpers.h
++++ b/src/coreclr/inc/jithelpers.h
+@@ -96,6 +96,24 @@
+     JITHELPER(CORINFO_HELP_FLTREM,              JIT_FltRem,         METHOD__NIL)
+     JITHELPER(CORINFO_HELP_DBLREM,              JIT_DblRem,         METHOD__NIL)
+ 
++    // Soft-float helpers. The JIT only requests them under CORJIT_FLAG_SOFTFP_ABI on
++    // targets without an FPU (NativeAOT for RISC-V without F/D, where the AOT
++    // compiler binds them to the compiler-rt builtins); the VM never sets that flag.
++    JITHELPER(CORINFO_HELP_FLTADD,                 NULL,               METHOD__NIL)
++    JITHELPER(CORINFO_HELP_FLTSUB,                 NULL,               METHOD__NIL)
++    JITHELPER(CORINFO_HELP_FLTMUL,                 NULL,               METHOD__NIL)
++    JITHELPER(CORINFO_HELP_FLTDIV,                 NULL,               METHOD__NIL)
++    JITHELPER(CORINFO_HELP_DBLADD,                 NULL,               METHOD__NIL)
++    JITHELPER(CORINFO_HELP_DBLSUB,                 NULL,               METHOD__NIL)
++    JITHELPER(CORINFO_HELP_DBLMUL,                 NULL,               METHOD__NIL)
++    JITHELPER(CORINFO_HELP_DBLDIV,                 NULL,               METHOD__NIL)
++    JITHELPER(CORINFO_HELP_FLTCMP_LE,              NULL,               METHOD__NIL)
++    JITHELPER(CORINFO_HELP_FLTCMP_GE,              NULL,               METHOD__NIL)
++    JITHELPER(CORINFO_HELP_DBLCMP_LE,              NULL,               METHOD__NIL)
++    JITHELPER(CORINFO_HELP_DBLCMP_GE,              NULL,               METHOD__NIL)
++    JITHELPER(CORINFO_HELP_FLT2DBL,                NULL,               METHOD__NIL)
++    JITHELPER(CORINFO_HELP_DBL2FLT,                NULL,               METHOD__NIL)
++
+     // Allocating a new object
+     JITHELPER(CORINFO_HELP_NEWFAST,                     RhpNew,                   METHOD__NIL)
+     JITHELPER(CORINFO_HELP_NEWFAST_MAYBEFROZEN,         RhpNewMaybeFrozen,        METHOD__NIL)
+diff --git a/src/coreclr/jit/utils.cpp b/src/coreclr/jit/utils.cpp
+index fb09f5d6..6bb6059e 100644
+--- a/src/coreclr/jit/utils.cpp
++++ b/src/coreclr/jit/utils.cpp
+@@ -1458,6 +1458,21 @@ void HelperCallProperties::init()
+             case CORINFO_HELP_LLSH:
+             case CORINFO_HELP_LRSH:
+             case CORINFO_HELP_LRSZ:
++            // Soft-float helpers: leaf compiler-rt routines, no GC interaction.
++            case CORINFO_HELP_FLTADD:
++            case CORINFO_HELP_FLTSUB:
++            case CORINFO_HELP_FLTMUL:
++            case CORINFO_HELP_FLTDIV:
++            case CORINFO_HELP_DBLADD:
++            case CORINFO_HELP_DBLSUB:
++            case CORINFO_HELP_DBLMUL:
++            case CORINFO_HELP_DBLDIV:
++            case CORINFO_HELP_FLTCMP_LE:
++            case CORINFO_HELP_FLTCMP_GE:
++            case CORINFO_HELP_DBLCMP_LE:
++            case CORINFO_HELP_DBLCMP_GE:
++            case CORINFO_HELP_FLT2DBL:
++            case CORINFO_HELP_DBL2FLT:
+                 isNoGC = true;
+                 FALLTHROUGH;
+             case CORINFO_HELP_LMUL:
+diff --git a/src/coreclr/jit/valuenum.cpp b/src/coreclr/jit/valuenum.cpp
+index 6bc1336e..c81733c8 100644
+--- a/src/coreclr/jit/valuenum.cpp
++++ b/src/coreclr/jit/valuenum.cpp
+@@ -15046,6 +15046,14 @@ void Compiler::fgValueNumberCastHelper(GenTreeCall* call)
+             castFromType     = TYP_DOUBLE;
+             hasOverflowCheck = true;
+             break;
++        case CORINFO_HELP_FLT2DBL:
++            castToType   = TYP_DOUBLE;
++            castFromType = TYP_FLOAT;
++            break;
++        case CORINFO_HELP_DBL2FLT:
++            castToType   = TYP_FLOAT;
++            castFromType = TYP_DOUBLE;
++            break;
+ 
+         default:
+             unreached();
+@@ -15113,6 +15121,42 @@ VNFunc Compiler::fgValueNumberJitHelperMethodVNFunc(CorInfoHelpFunc helpFunc)
+         case CORINFO_HELP_DBLREM:
+             vnf = VNF_MOD;
+             break;
++        case CORINFO_HELP_FLTADD:
++            vnf = VNFunc(GT_ADD);
++            break;
++        case CORINFO_HELP_DBLADD:
++            vnf = VNFunc(GT_ADD);
++            break;
++        case CORINFO_HELP_FLTSUB:
++            vnf = VNFunc(GT_SUB);
++            break;
++        case CORINFO_HELP_DBLSUB:
++            vnf = VNFunc(GT_SUB);
++            break;
++        case CORINFO_HELP_FLTMUL:
++            vnf = VNFunc(GT_MUL);
++            break;
++        case CORINFO_HELP_DBLMUL:
++            vnf = VNFunc(GT_MUL);
++            break;
++        case CORINFO_HELP_FLTDIV:
++            vnf = VNFunc(GT_DIV);
++            break;
++        case CORINFO_HELP_DBLDIV:
++            vnf = VNFunc(GT_DIV);
++            break;
++        case CORINFO_HELP_FLTCMP_LE:
++            vnf = VNF_SoftFPCmpLE;
++            break;
++        case CORINFO_HELP_DBLCMP_LE:
++            vnf = VNF_SoftFPCmpLE;
++            break;
++        case CORINFO_HELP_FLTCMP_GE:
++            vnf = VNF_SoftFPCmpGE;
++            break;
++        case CORINFO_HELP_DBLCMP_GE:
++            vnf = VNF_SoftFPCmpGE;
++            break;
+ 
+         // These allocation operations probably require some augmentation -- perhaps allocSiteId,
+         // something about array length...
+@@ -15355,6 +15399,8 @@ bool Compiler::fgValueNumberHelperCall(GenTreeCall* call)
+         case CORINFO_HELP_DBL2LNG:
+         case CORINFO_HELP_DBL2LNG_OVF:
+         case CORINFO_HELP_DBL2UINT_OVF:
++        case CORINFO_HELP_FLT2DBL:
++        case CORINFO_HELP_DBL2FLT:
+         case CORINFO_HELP_DBL2ULNG:
+         case CORINFO_HELP_DBL2ULNG_OVF:
+             fgValueNumberCastHelper(call);
+diff --git a/src/coreclr/jit/valuenumfuncs.h b/src/coreclr/jit/valuenumfuncs.h
+index aed12076..92742269 100644
+--- a/src/coreclr/jit/valuenumfuncs.h
++++ b/src/coreclr/jit/valuenumfuncs.h
+@@ -207,6 +207,12 @@ ValueNumFuncDef(HWI_INTRINSIC_END, -1, false, false)
+ #define VNF_HWI_LAST  (VNF_HWI_INTRINSIC_END - 1)
+ #endif // FEATURE_HW_INTRINSICS
+ 
++    // Three-way floating-point comparisons of the soft-float compare helpers
++    // (CORINFO_HELP_FLTCMP_LE & co). Not commutative: swapping the operands
++    // negates the result, and the two forms differ for unordered operands.
++    ValueNumFuncDef(SoftFPCmpLE, 2, false, false)
++    ValueNumFuncDef(SoftFPCmpGE, 2, false, false)
++
+ #if defined(TARGET_RISCV64)
+     // Signed/Unsigned integer min/max intrinsics
+     ValueNumFuncDef(MinInt, 2, true, false)
+diff --git a/src/coreclr/tools/Common/CommandLineHelpers.cs b/src/coreclr/tools/Common/CommandLineHelpers.cs
+index 58ff170a..0d917dc1 100644
+--- a/src/coreclr/tools/Common/CommandLineHelpers.cs
++++ b/src/coreclr/tools/Common/CommandLineHelpers.cs
+@@ -27,6 +27,8 @@ internal static partial class Helpers
+ 
+         public static string[] ValidOS { get; } = ["windows", "linux", "freebsd", "openbsd", "osx", "maccatalyst", "ios", "iossimulator", "tvos", "tvossimulator", "android", "browser", "wasi"];
+         public static string[] ValidArchitectures { get; } = ["arm", "armel", "arm64", "x86", "x64", "riscv64", "loongarch64", "wasm"];
++        // Targets that only the NativeAOT compiler supports (no ReadyToRun): the RISC-V lp64 soft-float ABI.
++        public static string[] ValidArchitecturesNativeAot { get; } = [.. ValidArchitectures, "riscv64-lp64"];
+ 
+         public static Dictionary<string, string> BuildPathDictionary(IReadOnlyList<Token> tokens, bool strict)
+         {
+@@ -119,7 +121,7 @@ public static TargetArchitecture GetTargetArchitecture(string token)
+                     "arm64" => TargetArchitecture.ARM64,
+                     "wasm" => TargetArchitecture.Wasm32,
+                     "loongarch64" => TargetArchitecture.LoongArch64,
+-                    "riscv64" => TargetArchitecture.RiscV64,
++                    "riscv64" or "riscv64-lp64" => TargetArchitecture.RiscV64,
+                     _ => throw new CommandLineException($"Target architecture '{token}' is not supported")
+                 };
+             }
+@@ -136,6 +138,7 @@ public static (TargetArchitecture, TargetOS, TargetAbi) GetTargetSpec(string tar
+             {
+                 (_, "armel") => TargetAbi.NativeAotArmel,
+                 ("android", "arm") => TargetAbi.NativeAotArmel,
++                (_, "riscv64-lp64") => TargetAbi.NativeAotRiscV64SoftFloat,
+                 _ => TargetAbi.NativeAot,
+             };
+ 
+diff --git a/src/coreclr/tools/Common/Compiler/ObjectWriter/ElfObjectWriter.cs b/src/coreclr/tools/Common/Compiler/ObjectWriter/ElfObjectWriter.cs
+index 3e252c36..ad48f024 100644
+--- a/src/coreclr/tools/Common/Compiler/ObjectWriter/ElfObjectWriter.cs
++++ b/src/coreclr/tools/Common/Compiler/ObjectWriter/ElfObjectWriter.cs
+@@ -41,6 +41,7 @@ internal sealed partial class ElfObjectWriter : UnixObjectWriter
+         private readonly bool _useInlineRelocationAddends;
+         private readonly ushort _machine;
+         private readonly bool _useSoftFPAbi;
++        private readonly uint _riscV64ElfFlags;
+         private readonly List<ElfSectionDefinition> _sections = new();
+         private readonly List<ElfSymbol> _symbols = new();
+         private uint _localSymbolCount;
+@@ -53,6 +54,25 @@ internal sealed partial class ElfObjectWriter : UnixObjectWriter
+         private static readonly ObjectNodeSection ArmTextThunkSection = new ObjectNodeSection(".text.thunks", SectionType.Executable);
+         private static readonly ObjectNodeSection CommentSection = new ObjectNodeSection(".comment", SectionType.ReadOnly);
+ 
++        /// <summary>
++        /// RISC-V ELF header flags: the floating-point ABI comes from the target ABI
++        /// (EF_RISCV_FLOAT_ABI_DOUBLE for lp64d, EF_RISCV_FLOAT_ABI_SOFT for lp64 - the
++        /// linker rejects objects with mixed floating-point ABIs), EF_RISCV_RVC is set
++        /// when the target has the C extension.
++        /// </summary>
++        internal static uint GetRiscV64ElfFlags(TargetAbi abi, ObjectWritingOptions options)
++        {
++            const uint EF_RISCV_RVC = 0x0001;
++            const uint EF_RISCV_FLOAT_ABI_DOUBLE = 0x0004;
++
++            uint flags = abi == TargetAbi.NativeAotRiscV64SoftFloat ? 0u : EF_RISCV_FLOAT_ABI_DOUBLE;
++            if (options.HasFlag(ObjectWritingOptions.RiscV64Compressed))
++            {
++                flags |= EF_RISCV_RVC;
++            }
++            return flags;
++        }
++
+         public ElfObjectWriter(NodeFactory factory, ObjectWritingOptions options)
+             : base(factory, options)
+         {
+@@ -68,6 +88,7 @@ public ElfObjectWriter(NodeFactory factory, ObjectWritingOptions options)
+             };
+             _useInlineRelocationAddends = _machine is EM_386 or EM_ARM;
+             _useSoftFPAbi = _machine is EM_ARM && factory.Target.Abi == TargetAbi.NativeAotArmel;
++            _riscV64ElfFlags = GetRiscV64ElfFlags(factory.Target.Abi, options);
+ 
+             // By convention the symbol table starts with empty symbol
+             _symbols.Add(new ElfSymbol {});
+@@ -765,7 +786,7 @@ private void EmitObjectFile<TSize>(Stream outputFileStream)
+                 {
+                     EM_ARM => 0x05000000u, // For ARM32 claim conformance with the EABI specification
+                     EM_LOONGARCH => 0x43u, // For LoongArch ELF psABI specify the ABI version (1) and modifiers (64-bit GPRs, 64-bit FPRs)
+-                    EM_RISCV => 0x0005u, // EF_RISCV_RVC (RVC ABI) | EF_RISCV_FLOAT_ABI_DOUBLE (double precision floating-point ABI).
++                    EM_RISCV => _riscV64ElfFlags,
+                     _ => 0u
+                 },
+             };
+diff --git a/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWritingOptions.cs b/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWritingOptions.cs
+index 61276810..7e9f4e61 100644
+--- a/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWritingOptions.cs
++++ b/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWritingOptions.cs
+@@ -13,5 +13,9 @@ public enum ObjectWritingOptions
+         ControlFlowGuard = 0x02,
+         UseDwarf5 = 0x4,
+         GenerateUnwindInfo = 0x8,
++        /// <summary>
++        /// RISC-V: the target supports the C (compressed instructions) extension
++        /// </summary>
++        RiscV64Compressed = 0x10,
+     }
+ }
+diff --git a/src/coreclr/tools/Common/InstructionSetHelpers.cs b/src/coreclr/tools/Common/InstructionSetHelpers.cs
+index cc484a89..2b4eb89e 100644
+--- a/src/coreclr/tools/Common/InstructionSetHelpers.cs
++++ b/src/coreclr/tools/Common/InstructionSetHelpers.cs
+@@ -18,7 +18,7 @@ namespace System.CommandLine
+     internal static partial class Helpers
+     {
+         public static InstructionSetSupport ConfigureInstructionSetSupport(string instructionSet, int maxVectorTBitWidth, bool isVectorTOptimistic, TargetArchitecture targetArchitecture, TargetOS targetOS,
+-            string mustNotBeMessage, string invalidImplicationMessage, Logger logger, bool allowOptimistic, bool isReadyToRun)
++            string mustNotBeMessage, string invalidImplicationMessage, Logger logger, bool allowOptimistic, bool isReadyToRun, TargetAbi targetAbi)
+         {
+             InstructionSetSupportBuilder instructionSetSupportBuilder = new(targetArchitecture);
+ 
+@@ -98,9 +98,13 @@ public static InstructionSetSupport ConfigureInstructionSetSupport(string instru
+             {
+                 // The rv64gc baseline: D implies F, so "d", "c" and "a" cover
+                 // the G+C extensions. Reduced-ISA targets (e.g. zkVM guests)
+-                // opt out with --instruction-set=-a,-c,-d,-f.
++                // opt out with --instruction-set=-a,-c,-d,-f. The lp64 (soft-float)
++                // ABI target has no F/D by definition.
+                 instructionSetSupportBuilder.AddSupportedInstructionSet("base");
+-                instructionSetSupportBuilder.AddSupportedInstructionSet("d");
++                if (targetAbi != TargetAbi.NativeAotRiscV64SoftFloat)
++                {
++                    instructionSetSupportBuilder.AddSupportedInstructionSet("d");
++                }
+                 instructionSetSupportBuilder.AddSupportedInstructionSet("c");
+                 instructionSetSupportBuilder.AddSupportedInstructionSet("a");
+             }
+diff --git a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs
+index dac7b8fe..b66b269d 100644
+--- a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs
++++ b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs
+@@ -406,6 +406,22 @@ public enum ReadyToRunHelper
+         TypeHandleToRuntimeType,
+         GetRefAny,
+         TypeHandleToRuntimeTypeHandle,
++
++        // Soft-float arithmetic (targets without an FPU). NativeAOT only.
++        FltAdd,
++        FltSub,
++        FltMul,
++        FltDiv,
++        DblAdd,
++        DblSub,
++        DblMul,
++        DblDiv,
++        FltCmpLe,
++        FltCmpGe,
++        DblCmpLe,
++        DblCmpGe,
++        Flt2Dbl,
++        Dbl2Flt,
+     }
+ 
+     // Enum used for HFA type recognition.
+diff --git a/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs b/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs
+index bcae9776..bf167ed8 100644
+--- a/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs
++++ b/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs
+@@ -41,6 +41,22 @@ public enum CorInfoHelpFunc
+         CORINFO_HELP_FLTREM,
+         CORINFO_HELP_DBLREM,
+ 
++        // Soft-float helpers (targets without an FPU); see corinfo.h
++        CORINFO_HELP_FLTADD,
++        CORINFO_HELP_FLTSUB,
++        CORINFO_HELP_FLTMUL,
++        CORINFO_HELP_FLTDIV,
++        CORINFO_HELP_DBLADD,
++        CORINFO_HELP_DBLSUB,
++        CORINFO_HELP_DBLMUL,
++        CORINFO_HELP_DBLDIV,
++        CORINFO_HELP_FLTCMP_LE,
++        CORINFO_HELP_FLTCMP_GE,
++        CORINFO_HELP_DBLCMP_LE,
++        CORINFO_HELP_DBLCMP_GE,
++        CORINFO_HELP_FLT2DBL,
++        CORINFO_HELP_DBL2FLT,
++
+         /* Allocating a new object. Always use ICorClassInfo::getNewHelper() to decide
+            which is the right helper to use to allocate an object of a given type. */
+ 
+diff --git a/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs b/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
+index 6463dc16..33e59471 100644
+--- a/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
++++ b/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
+@@ -4879,6 +4879,13 @@ private uint getJitFlags(ref CORJIT_FLAGS flags, uint sizeInBytes)
+                 flags.Set(CorJitFlag.CORJIT_FLAG_SOFTFP_ABI);
+             }
+ 
++            if (this.MethodBeingCompiled.Context.Target.Abi == TargetAbi.NativeAotRiscV64SoftFloat)
++            {
++                // RISC-V lp64: FP values are passed in integer registers and the FP
++                // arithmetic goes through the soft-float helpers.
++                flags.Set(CorJitFlag.CORJIT_FLAG_SOFTFP_ABI);
++            }
++
+             if (this.MethodBeingCompiled.IsAsyncCall()
+ #if !READYTORUN
+                 || (_compilation.TypeSystemContext.IsSpecialUnboxingThunk(this.MethodBeingCompiled) && _compilation.TypeSystemContext.GetTargetOfSpecialUnboxingThunk(this.MethodBeingCompiled).IsAsyncCall())
+diff --git a/src/coreclr/tools/Common/TypeSystem/Common/TargetDetails.cs b/src/coreclr/tools/Common/TypeSystem/Common/TargetDetails.cs
+index 4c9862cd..2ceac0f2 100644
+--- a/src/coreclr/tools/Common/TypeSystem/Common/TargetDetails.cs
++++ b/src/coreclr/tools/Common/TypeSystem/Common/TargetDetails.cs
+@@ -39,6 +39,11 @@ public enum TargetAbi
+         /// model for armel execution model
+         /// </summary>
+         NativeAotArmel,
++        /// <summary>
++        /// RISC-V lp64 (soft-float) execution model: no F/D extensions, floating-point
++        /// values are passed in integer registers and computed by the soft-float helpers
++        /// </summary>
++        NativeAotRiscV64SoftFloat,
+     }
+ 
+     /// <summary>
+diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler.Tests/ILCompiler.Compiler.Tests.csproj b/src/coreclr/tools/aot/ILCompiler.Compiler.Tests/ILCompiler.Compiler.Tests.csproj
+index 69e9d876..3f6add4a 100644
+--- a/src/coreclr/tools/aot/ILCompiler.Compiler.Tests/ILCompiler.Compiler.Tests.csproj
++++ b/src/coreclr/tools/aot/ILCompiler.Compiler.Tests/ILCompiler.Compiler.Tests.csproj
+@@ -42,6 +42,7 @@
+   <ItemGroup>
+     <Compile Include="DependencyGraphTests.cs" />
+     <Compile Include="DevirtualizationTests.cs" />
++    <Compile Include="RiscV64ObjectWriterTests.cs" />
+     <Compile Include="SwiftLoweringTests.cs" />
+   </ItemGroup>
+ </Project>
+diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler.Tests/RiscV64ObjectWriterTests.cs b/src/coreclr/tools/aot/ILCompiler.Compiler.Tests/RiscV64ObjectWriterTests.cs
+new file mode 100644
+index 00000000..0fbe5742
+--- /dev/null
++++ b/src/coreclr/tools/aot/ILCompiler.Compiler.Tests/RiscV64ObjectWriterTests.cs
+@@ -0,0 +1,26 @@
++// Licensed to the .NET Foundation under one or more agreements.
++// The .NET Foundation licenses this file to you under the MIT license.
++
++using ILCompiler.ObjectWriter;
++using Internal.TypeSystem;
++using Xunit;
++
++namespace ILCompiler.Compiler.Tests
++{
++    public class RiscV64ObjectWriterTests
++    {
++        // e_flags of a RISC-V object: EF_RISCV_RVC (0x1) only when the target has the C
++        // extension, EF_RISCV_FLOAT_ABI_DOUBLE (0x4) for lp64d and EF_RISCV_FLOAT_ABI_SOFT (0)
++        // for the lp64 (soft-float) ABI.
++        [Theory]
++        [InlineData(TargetAbi.NativeAot, false, 0x4u)]
++        [InlineData(TargetAbi.NativeAot, true, 0x5u)]
++        [InlineData(TargetAbi.NativeAotRiscV64SoftFloat, false, 0x0u)]
++        [InlineData(TargetAbi.NativeAotRiscV64SoftFloat, true, 0x1u)]
++        public void ElfFlagsFollowTheTarget(TargetAbi abi, bool compressed, uint expectedFlags)
++        {
++            ObjectWritingOptions options = compressed ? ObjectWritingOptions.RiscV64Compressed : ObjectWritingOptions.None;
++            Assert.Equal(expectedFlags, ElfObjectWriter.GetRiscV64ElfFlags(abi, options));
++        }
++    }
++}
+diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs
+index 8c614010..b454c35b 100644
+--- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs
++++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs
+@@ -216,6 +216,50 @@ public static void GetEntryPoint(TypeSystemContext context, ReadyToRunHelper id,
+                     mangledName = "fmodf";
+                     break;
+ 
++                // Soft-float arithmetic: the compiler-rt/libgcc builtins of the target toolchain
++                case ReadyToRunHelper.FltAdd:
++                    mangledName = "__addsf3";
++                    break;
++                case ReadyToRunHelper.FltSub:
++                    mangledName = "__subsf3";
++                    break;
++                case ReadyToRunHelper.FltMul:
++                    mangledName = "__mulsf3";
++                    break;
++                case ReadyToRunHelper.FltDiv:
++                    mangledName = "__divsf3";
++                    break;
++                case ReadyToRunHelper.DblAdd:
++                    mangledName = "__adddf3";
++                    break;
++                case ReadyToRunHelper.DblSub:
++                    mangledName = "__subdf3";
++                    break;
++                case ReadyToRunHelper.DblMul:
++                    mangledName = "__muldf3";
++                    break;
++                case ReadyToRunHelper.DblDiv:
++                    mangledName = "__divdf3";
++                    break;
++                case ReadyToRunHelper.FltCmpLe:
++                    mangledName = "__lesf2";
++                    break;
++                case ReadyToRunHelper.FltCmpGe:
++                    mangledName = "__gesf2";
++                    break;
++                case ReadyToRunHelper.DblCmpLe:
++                    mangledName = "__ledf2";
++                    break;
++                case ReadyToRunHelper.DblCmpGe:
++                    mangledName = "__gedf2";
++                    break;
++                case ReadyToRunHelper.Flt2Dbl:
++                    mangledName = "__extendsfdf2";
++                    break;
++                case ReadyToRunHelper.Dbl2Flt:
++                    mangledName = "__truncdfsf2";
++                    break;
++
+                 case ReadyToRunHelper.LMul:
+                     mangledName = "RhpLMul";
+                     break;
+diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/ILCompiler.Compiler.csproj b/src/coreclr/tools/aot/ILCompiler.Compiler/ILCompiler.Compiler.csproj
+index d4270adf..afde3d5e 100644
+--- a/src/coreclr/tools/aot/ILCompiler.Compiler/ILCompiler.Compiler.csproj
++++ b/src/coreclr/tools/aot/ILCompiler.Compiler/ILCompiler.Compiler.csproj
+@@ -824,4 +824,7 @@
+   <Import Project="..\..\..\..\tools\illink\src\ILLink.Shared\ILLink.Shared.projitems" Label="Shared" />
+   <Import Project="..\..\Common\Compiler\GenericCycleDetection\GenericCycleDetection.projitems" />
+ 
++  <ItemGroup>
++    <InternalsVisibleTo Include="ILCompiler.Compiler.Tests" />
++  </ItemGroup>
+ </Project>
+diff --git a/src/coreclr/tools/aot/ILCompiler.Diagnostics/PerfMapWriter.cs b/src/coreclr/tools/aot/ILCompiler.Diagnostics/PerfMapWriter.cs
+index 86fdf190..eb0d7b92 100644
+--- a/src/coreclr/tools/aot/ILCompiler.Diagnostics/PerfMapWriter.cs
++++ b/src/coreclr/tools/aot/ILCompiler.Diagnostics/PerfMapWriter.cs
+@@ -128,6 +128,7 @@ private static PerfmapTokensForTarget TranslateTargetDetailsToPerfmapConstants(T
+                 TargetAbi.Unknown => PerfMapAbiToken.Unknown,
+                 TargetAbi.NativeAot => PerfMapAbiToken.Default,
+                 TargetAbi.NativeAotArmel => PerfMapAbiToken.Armel,
++                TargetAbi.NativeAotRiscV64SoftFloat => PerfMapAbiToken.Default,
+                 _ => throw new NotImplementedException(details.Abi.ToString())
+             };
+ 
+diff --git a/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCases/R2RTestSuites.cs b/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCases/R2RTestSuites.cs
+index 156a90e1..6116b40a 100644
+--- a/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCases/R2RTestSuites.cs
++++ b/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCases/R2RTestSuites.cs
+@@ -62,6 +62,34 @@ static void Validate(ReadyToRunReader reader)
+         }
+     }
+ 
++    [Fact]
++    public void RiscV64SoftFloatTargetIsRejected()
++    {
++        // The riscv64-lp64 (soft-float) ABI is NativeAOT-only: crossgen2 rejects it on the
++        // command line instead of compiling with helpers that have no ReadyToRun encoding.
++        var module = new CompiledAssembly
++        {
++            AssemblyName = nameof(RiscV64SoftFloatTargetIsRejected),
++            SourceResourceNames = ["ThumbBit/HotColdSplitting.cs"],
++        };
++
++        new R2RTestRunner(_output).Run(new R2RTestCase(
++            nameof(RiscV64SoftFloatTargetIsRejected),
++            [
++                new(nameof(RiscV64SoftFloatTargetIsRejected), [new CrossgenAssembly(module)])
++                {
++                    AdditionalArgs =
++                    {
++                        "--targetarch",
++                        "riscv64-lp64",
++                        "--targetos",
++                        "linux",
++                    },
++                    ExpectedFailure = "is not supported by ReadyToRun",
++                },
++            ]));
++    }
++
+     [Fact]
+     public void GenericTypeConstraintsAllowVariantParameters()
+     {
+diff --git a/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCasesRunner/R2RTestRunner.cs b/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCasesRunner/R2RTestRunner.cs
+index 4fdb38bc..14ba3d15 100644
+--- a/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCasesRunner/R2RTestRunner.cs
++++ b/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCasesRunner/R2RTestRunner.cs
+@@ -94,6 +94,11 @@ internal sealed class CrossgenCompilation(string name, List<CrossgenAssembly> as
+     /// </summary>
+     public Action<ReadyToRunReader>? Validate { get; init; }
+ 
++    /// <summary>
++    /// When set, crossgen2 is expected to fail and its standard error must contain this text.
++    /// </summary>
++    public string? ExpectedFailure { get; init; }
++
+     public string Name => name;
+ 
+     public bool IsComposite => Options.Contains(Crossgen2Option.Composite);
+@@ -324,6 +329,12 @@ private static string RunCrossgenCompilation(
+         args.Add($"--out");
+         args.Add($"{outputFile}");
+         var result = driver.Compile(args);
++        if (compilation.ExpectedFailure is string expectedFailure)
++        {
++            Assert.False(result.Success, $"crossgen2 unexpectedly succeeded for '{testName}'");
++            Assert.Contains(expectedFailure, result.StandardError);
++            return outputFile;
++        }
+         Assert.True(result.Success,
+             $"crossgen2 failed for '{testName}':\n{result.StandardError}\n{result.StandardOutput}");
+ 
+diff --git a/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs b/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs
+index 5c635bf6..543bc1d9 100644
+--- a/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs
++++ b/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs
+@@ -54,6 +54,26 @@ internal RyuJitCompilation(
+             _compilationOptions = options;
+             InstructionSetSupport = instructionSetSupport;
+ 
++            if (nodeFactory.Target.Architecture == TargetArchitecture.RiscV64)
++            {
++                // The ABI is a property of the target, not of the instruction set: opting out of
++                // F/D does not make the runtime and the native libraries lp64, and the lp64
++                // target has no F/D by definition. The lp64f ABI (F without D) is not supported.
++                bool hasF = instructionSetSupport.IsInstructionSetSupported(InstructionSet.RiscV64_F);
++                bool hasD = instructionSetSupport.IsInstructionSetSupported(InstructionSet.RiscV64_D);
++                if (nodeFactory.Target.Abi == TargetAbi.NativeAotRiscV64SoftFloat)
++                {
++                    if (hasF || hasD)
++                        throw new NotSupportedException(
++                            "The riscv64-lp64 (soft-float) ABI target has no F and D extensions; remove them from the instruction set.");
++                }
++                else if (!hasF || !hasD)
++                {
++                    throw new NotSupportedException(
++                        "The riscv64 lp64d ABI requires the F and D extensions; targets without them must use the riscv64-lp64 (soft-float) ABI.");
++                }
++            }
++
+             _profileDataManager = profileDataManager;
+ 
+             _methodImportationErrorProvider = errorProvider;
+@@ -116,6 +136,10 @@ protected override void CompileInternal(string outputFile, ObjectDumper dumper)
+             if ((_compilationOptions & RyuJitCompilationOptions.ControlFlowGuardAnnotations) != 0)
+                 options |= ObjectWritingOptions.ControlFlowGuard;
+ 
++            if ((NodeFactory.Target.Architecture == TargetArchitecture.RiscV64)
++                && InstructionSetSupport.IsInstructionSetSupported(InstructionSet.RiscV64_C))
++                options |= ObjectWritingOptions.RiscV64Compressed;
++
+             ObjectWriter.ObjectWriter.EmitObject(outputFile, nodes, NodeFactory, options, dumper, _logger);
+         }
+ 
+diff --git a/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs b/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs
+index 23d0fd50..c3e2a2a8 100644
+--- a/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs
++++ b/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs
+@@ -734,6 +734,48 @@ private ISymbolNode GetHelperFtnUncached(CorInfoHelpFunc ftnNum)
+                 case CorInfoHelpFunc.CORINFO_HELP_DBLREM:
+                     id = ReadyToRunHelper.DblRem;
+                     break;
++                case CorInfoHelpFunc.CORINFO_HELP_FLTADD:
++                    id = ReadyToRunHelper.FltAdd;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_FLTSUB:
++                    id = ReadyToRunHelper.FltSub;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_FLTMUL:
++                    id = ReadyToRunHelper.FltMul;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_FLTDIV:
++                    id = ReadyToRunHelper.FltDiv;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_DBLADD:
++                    id = ReadyToRunHelper.DblAdd;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_DBLSUB:
++                    id = ReadyToRunHelper.DblSub;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_DBLMUL:
++                    id = ReadyToRunHelper.DblMul;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_DBLDIV:
++                    id = ReadyToRunHelper.DblDiv;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_FLTCMP_LE:
++                    id = ReadyToRunHelper.FltCmpLe;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_FLTCMP_GE:
++                    id = ReadyToRunHelper.FltCmpGe;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_DBLCMP_LE:
++                    id = ReadyToRunHelper.DblCmpLe;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_DBLCMP_GE:
++                    id = ReadyToRunHelper.DblCmpGe;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_FLT2DBL:
++                    id = ReadyToRunHelper.Flt2Dbl;
++                    break;
++                case CorInfoHelpFunc.CORINFO_HELP_DBL2FLT:
++                    id = ReadyToRunHelper.Dbl2Flt;
++                    break;
+ 
+                 case CorInfoHelpFunc.CORINFO_HELP_JIT_PINVOKE_BEGIN:
+                     id = ReadyToRunHelper.PInvokeBegin;
+diff --git a/src/coreclr/tools/aot/ILCompiler/ILCompilerRootCommand.cs b/src/coreclr/tools/aot/ILCompiler/ILCompilerRootCommand.cs
+index 875bbeaf..9bed4be8 100644
+--- a/src/coreclr/tools/aot/ILCompiler/ILCompilerRootCommand.cs
++++ b/src/coreclr/tools/aot/ILCompiler/ILCompilerRootCommand.cs
+@@ -352,7 +352,7 @@ public static void PrintExtendedHelp(ParseResult _)
+ 
+             Console.WriteLine("Valid switches for {0} are: '{1}'. The default value is '{2}'\n", "--targetos", string.Join("', '", Helpers.ValidOS), Helpers.GetTargetOS(null).ToString().ToLowerInvariant());
+ 
+-            Console.WriteLine(string.Format("Valid switches for {0} are: '{1}'. The default value is '{2}'\n", "--targetarch", string.Join("', '", Helpers.ValidArchitectures), Helpers.GetTargetArchitecture(null).ToString().ToLowerInvariant()));
++            Console.WriteLine(string.Format("Valid switches for {0} are: '{1}'. The default value is '{2}'\n", "--targetarch", string.Join("', '", Helpers.ValidArchitecturesNativeAot), Helpers.GetTargetArchitecture(null).ToString().ToLowerInvariant()));
+ 
+             Console.WriteLine("The allowable values for the --instruction-set option are described in the table below. Each architecture has a different set of valid " +
+                 "instruction sets, and multiple instruction sets may be specified by separating the instructions sets by a ','. By default other instruction sets not " +
+@@ -360,7 +360,7 @@ public static void PrintExtendedHelp(ParseResult _)
+                 "All such light-up can be disallowed by specifying '-optimistic'. The instruction sets supported by the machine invoking the tool can be targeted by " +
+                 "specifying 'native'. For example 'native', 'avx,aes', 'avx,aes,-avx2', or 'avx,aes,-optimistic'");
+ 
+-            foreach (string arch in Helpers.ValidArchitectures)
++            foreach (string arch in Helpers.ValidArchitecturesNativeAot)
+             {
+                 TargetArchitecture targetArch = Helpers.GetTargetArchitecture(arch);
+                 bool first = true;
+diff --git a/src/coreclr/tools/aot/ILCompiler/Program.cs b/src/coreclr/tools/aot/ILCompiler/Program.cs
+index 34305bc9..86aac8ce 100644
+--- a/src/coreclr/tools/aot/ILCompiler/Program.cs
++++ b/src/coreclr/tools/aot/ILCompiler/Program.cs
+@@ -109,7 +109,8 @@ public int Run()
+             InstructionSetSupport instructionSetSupport = Helpers.ConfigureInstructionSetSupport(Get(_command.InstructionSet), Get(_command.MaxVectorTBitWidth), isVectorTOptimistic, targetArchitecture, targetOS,
+                 "Unrecognized instruction set {0}", "Unsupported combination of instruction sets: {0}/{1}", logger,
+                 allowOptimistic: _command.OptimizationMode != OptimizationMode.PreferSize,
+-                isReadyToRun: false);
++                isReadyToRun: false,
++                targetAbi: targetAbi);
+ 
+             string systemModuleName = Get(_command.SystemModuleName);
+             string reflectionData = Get(_command.ReflectionData);
+diff --git a/src/coreclr/tools/aot/crossgen2/Program.cs b/src/coreclr/tools/aot/crossgen2/Program.cs
+index 7224f933..5b136292 100644
+--- a/src/coreclr/tools/aot/crossgen2/Program.cs
++++ b/src/coreclr/tools/aot/crossgen2/Program.cs
+@@ -78,6 +78,11 @@ public int Run()
+ 
+             (TargetArchitecture targetArchitecture, TargetOS targetOS, TargetAbi targetAbi) =
+                 Helpers.GetTargetSpec(Get(_command.TargetArchitecture), Get(_command.TargetOS));
++            if (targetAbi == TargetAbi.NativeAotRiscV64SoftFloat)
++            {
++                // The soft-float helpers have no ReadyToRun encoding; the target is NativeAOT only.
++                throw new CommandLineException($"Target architecture '{Get(_command.TargetArchitecture)}' is not supported by ReadyToRun");
++            }
+             bool targetAllowsRuntimeCodeGeneration = Get(_command.TargetAllowsRuntimeCodeGeneration)
+                 ?? GetTargetAllowsRuntimeCodeGeneration(targetOS, targetArchitecture);
+ 
+@@ -99,7 +104,8 @@ public int Run()
+             InstructionSetSupport instructionSetSupport = Helpers.ConfigureInstructionSetSupport(Get(_command.InstructionSet), Get(_command.MaxVectorTBitWidth), isVectorTOptimistic, targetArchitecture, targetOS,
+                 SR.InstructionSetMustNotBe, SR.InstructionSetInvalidImplication, logger,
+                 allowOptimistic: allowOptimistic,
+-                isReadyToRun: true);
++                isReadyToRun: true,
++                targetAbi: targetAbi);
+             if (!targetAllowsRuntimeCodeGeneration)
+             {
+                 instructionSetSupport = Helpers.GetFixedInstructionSetSupport(instructionSetSupport);
