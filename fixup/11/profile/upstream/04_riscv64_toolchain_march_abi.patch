@@ -22,10 +22,10 @@ This follows what the arm/armel branch above already does for -mfpu and
  1 file changed, 17 insertions(+)
 
 diff --git a/eng/common/cross/toolchain.cmake b/eng/common/cross/toolchain.cmake
-index 70b7139..0452ba8 100644
+index 70b7139..4a4ef49 100644
 --- a/eng/common/cross/toolchain.cmake
 +++ b/eng/common/cross/toolchain.cmake
-@@ -333,6 +333,44 @@ if(TARGET_ARCH_NAME MATCHES "^(arm|armel)$")
+@@ -333,6 +333,51 @@ if(TARGET_ARCH_NAME MATCHES "^(arm|armel)$")
    if(TARGET_ARCH_NAME STREQUAL "armel")
      add_compile_options(-mfloat-abi=softfp)
    endif()
@@ -63,6 +63,13 @@ index 70b7139..0452ba8 100644
 +    string(APPEND CMAKE_ASM_FLAGS_INIT "${_riscv64_isa_flags}")
 +    string(APPEND CMAKE_EXE_LINKER_FLAGS_INIT "${_riscv64_isa_flags}")
 +    string(APPEND CMAKE_SHARED_LINKER_FLAGS_INIT "${_riscv64_isa_flags}")
++  endif()
++
++  # Without the A extension the compiler lowers C/C++ atomics to __atomic_*
++  # calls instead of emitting lr/sc, and those live in libatomic. Not every link
++  # in the tree passes -latomic on its own.
++  if(DEFINED CLR_CMAKE_RISCV64_MARCH AND NOT CLR_CMAKE_RISCV64_MARCH MATCHES "a")
++    add_toolchain_linker_flag("-latomic")
 +  endif()
 +
 +  # persist variables across multiple try_compile passes
