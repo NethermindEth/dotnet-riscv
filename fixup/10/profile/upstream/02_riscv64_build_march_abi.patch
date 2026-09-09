@@ -3,10 +3,10 @@
 Backported from the .NET 11 upstream profile; see fixup/11/profile/upstream.
 
 diff --git a/eng/common/cross/toolchain.cmake b/eng/common/cross/toolchain.cmake
-index f65c689..511ce78 100644
+index f65c689..d8a189d 100644
 --- a/eng/common/cross/toolchain.cmake
 +++ b/eng/common/cross/toolchain.cmake
-@@ -330,6 +330,29 @@ if(TARGET_ARCH_NAME MATCHES "^(arm|armel)$")
+@@ -330,6 +330,36 @@ if(TARGET_ARCH_NAME MATCHES "^(arm|armel)$")
    if(TARGET_ARCH_NAME STREQUAL "armel")
      add_compile_options(-mfloat-abi=softfp)
    endif()
@@ -29,6 +29,13 @@ index f65c689..511ce78 100644
 +  if(DEFINED CLR_CMAKE_RISCV64_MABI)
 +    add_compile_options(-mabi=${CLR_CMAKE_RISCV64_MABI})
 +    add_toolchain_linker_flag(-mabi=${CLR_CMAKE_RISCV64_MABI})
++  endif()
++
++  # Without the A extension the compiler lowers C/C++ atomics to __atomic_*
++  # calls instead of emitting lr/sc, and those live in libatomic. Not every link
++  # in the tree passes -latomic on its own.
++  if(DEFINED CLR_CMAKE_RISCV64_MARCH AND NOT CLR_CMAKE_RISCV64_MARCH MATCHES "a")
++    add_toolchain_linker_flag("-latomic")
 +  endif()
 +
 +  # persist variables across multiple try_compile passes
