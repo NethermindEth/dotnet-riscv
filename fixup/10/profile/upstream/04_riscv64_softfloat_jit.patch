@@ -1037,7 +1037,7 @@ index 4290ad0..04bd025 100644
  
      assert((floatFields > 0) || (intFields == 0));
 diff --git a/src/coreclr/jit/utils.cpp b/src/coreclr/jit/utils.cpp
-index c28ba5b..b074561 100644
+index c28ba5b..f763d61 100644
 --- a/src/coreclr/jit/utils.cpp
 +++ b/src/coreclr/jit/utils.cpp
 @@ -86,7 +86,11 @@ const BYTE varTypeClassification[] = {
@@ -1052,25 +1052,10 @@ index c28ba5b..b074561 100644
  #define DEF_TP(tn, nm, jitType, sz, sze, asze, st, al, regTyp, regFld, csr, ctr, tf) regTyp,
  #include "typelist.h"
  #undef DEF_TP
-@@ -1527,6 +1531,36 @@ void HelperCallProperties::init()
+@@ -1527,6 +1531,21 @@ void HelperCallProperties::init()
              case CORINFO_HELP_LLSH:
              case CORINFO_HELP_LRSH:
              case CORINFO_HELP_LRSZ:
-+            // Soft-float helpers: leaf compiler-rt routines, no GC interaction.
-+            case CORINFO_HELP_FLTADD:
-+            case CORINFO_HELP_FLTSUB:
-+            case CORINFO_HELP_FLTMUL:
-+            case CORINFO_HELP_FLTDIV:
-+            case CORINFO_HELP_DBLADD:
-+            case CORINFO_HELP_DBLSUB:
-+            case CORINFO_HELP_DBLMUL:
-+            case CORINFO_HELP_DBLDIV:
-+            case CORINFO_HELP_FLTCMP_LE:
-+            case CORINFO_HELP_FLTCMP_GE:
-+            case CORINFO_HELP_DBLCMP_LE:
-+            case CORINFO_HELP_DBLCMP_GE:
-+            case CORINFO_HELP_FLT2DBL:
-+            case CORINFO_HELP_DBL2FLT:
 +            // Soft-float helpers: leaf compiler-rt routines, no GC interaction.
 +            case CORINFO_HELP_FLTADD:
 +            case CORINFO_HELP_FLTSUB:
@@ -1090,7 +1075,7 @@ index c28ba5b..b074561 100644
                  FALLTHROUGH;
              case CORINFO_HELP_LMUL:
 diff --git a/src/coreclr/jit/valuenum.cpp b/src/coreclr/jit/valuenum.cpp
-index 01f0d4f..bd69cd6 100644
+index 01f0d4f..6be1974 100644
 --- a/src/coreclr/jit/valuenum.cpp
 +++ b/src/coreclr/jit/valuenum.cpp
 @@ -14075,6 +14075,14 @@ void Compiler::fgValueNumberCastHelper(GenTreeCall* call)
@@ -1151,58 +1136,15 @@ index 01f0d4f..bd69cd6 100644
  
          // These allocation operations probably require some augmentation -- perhaps allocSiteId,
          // something about array length...
-@@ -14358,6 +14402,50 @@ VNFunc Compiler::fgValueNumberJitHelperMethodVNFunc(CorInfoHelpFunc helpFunc)
-         case CORINFO_HELP_BOX_NULLABLE:
+@@ -14359,6 +14403,7 @@ VNFunc Compiler::fgValueNumberJitHelperMethodVNFunc(CorInfoHelpFunc helpFunc)
              vnf = VNF_BoxNullable;
              break;
-+        case CORINFO_HELP_FLT2DBL:
-+            castToType   = TYP_DOUBLE;
-+            castFromType = TYP_FLOAT;
-+            break;
-+        case CORINFO_HELP_DBL2FLT:
-+            castToType   = TYP_FLOAT;
-+            castFromType = TYP_DOUBLE;
-+            break;
-+        case CORINFO_HELP_FLTADD:
-+            vnf = VNFunc(GT_ADD);
-+            break;
-+        case CORINFO_HELP_DBLADD:
-+            vnf = VNFunc(GT_ADD);
-+            break;
-+        case CORINFO_HELP_FLTSUB:
-+            vnf = VNFunc(GT_SUB);
-+            break;
-+        case CORINFO_HELP_DBLSUB:
-+            vnf = VNFunc(GT_SUB);
-+            break;
-+        case CORINFO_HELP_FLTMUL:
-+            vnf = VNFunc(GT_MUL);
-+            break;
-+        case CORINFO_HELP_DBLMUL:
-+            vnf = VNFunc(GT_MUL);
-+            break;
-+        case CORINFO_HELP_FLTDIV:
-+            vnf = VNFunc(GT_DIV);
-+            break;
-+        case CORINFO_HELP_DBLDIV:
-+            vnf = VNFunc(GT_DIV);
-+            break;
-+        case CORINFO_HELP_FLTCMP_LE:
-+            vnf = VNF_SoftFPCmpLE;
-+            break;
-+        case CORINFO_HELP_DBLCMP_LE:
-+            vnf = VNF_SoftFPCmpLE;
-+            break;
-+        case CORINFO_HELP_FLTCMP_GE:
-+            vnf = VNF_SoftFPCmpGE;
-+            break;
-+        case CORINFO_HELP_DBLCMP_GE:
-+            vnf = VNF_SoftFPCmpGE;
-+            break;
  
++
          default:
              unreached();
-@@ -14381,6 +14469,8 @@ bool Compiler::fgValueNumberHelperCall(GenTreeCall* call)
+     }
+@@ -14381,6 +14426,8 @@ bool Compiler::fgValueNumberHelperCall(GenTreeCall* call)
          case CORINFO_HELP_DBL2LNG:
          case CORINFO_HELP_DBL2LNG_OVF:
          case CORINFO_HELP_DBL2UINT_OVF:
