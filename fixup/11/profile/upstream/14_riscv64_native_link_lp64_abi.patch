@@ -1,0 +1,29 @@
+[RISC-V] Pass -mabi=lp64 to the native linker and the shim compiler for riscv64-lp64
+
+The aggregate-executable shim is compiled from C and linked by clang straight from
+MSBuild; nothing there knows the target ABI, so on a soft-float sysroot the shim
+object comes out lp64d and lld refuses to link it against Scrt1.o:
+
+    ld.lld: error: /tmp/dotnet-dev-certs-b44bf8.o: cannot link object files
+    with different floating-point ABI from /crossrootfs/riscv64/usr/lib/Scrt1.o
+
+Derive the flag from _targetArchitectureWithAbi, the same property that already
+selects --targetarch for ilc, and mark it Shim="true" so both the shim and the
+main link get it.
+
+diff --git a/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets b/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets
+--- a/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets	2026-09-09 17:18:29
++++ b/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets	2026-09-09 17:18:29
+@@ -261,6 +261,12 @@
+       <LinkerArg Include="--sysroot=&quot;$(SysRoot)&quot;" Condition="'$(SysRoot)' != '' and '$(_IsApplePlatform)' != 'true'" Shim="true" />
+       <LinkerArg Include="-isysroot &quot;$(SysRoot)&quot;" Condition="'$(SysRoot)' != '' and '$(_IsApplePlatform)' == 'true'" Shim="true" />
+       <LinkerArg Include="--target=$(TargetTriple)" Condition="'$(TargetTriple)' != ''" Shim="true" />
++      <!-- The RISC-V lp64 (soft-float) target: the object writer already stamps the
++           soft-float ABI on what ilc emits (see _targetArchitectureWithAbi), but the
++           aggregate-executable shim is compiled from C by the native compiler, and
++           the final link picks the CRT by ABI. Both have to be told explicitly, or
++           the shim comes out lp64d and the linker refuses to mix it with the rest. -->
++      <LinkerArg Include="-mabi=lp64" Condition="'$(_targetArchitectureWithAbi)' == 'riscv64-lp64'" Shim="true" />
+       <LinkerArg Include="-g" Condition="$(NativeDebugSymbols) == 'true'" Shim="true" />
+       <LinkerArg Include="-Wl,--strip-debug" Condition="$(NativeDebugSymbols) != 'true' and '$(_IsApplePlatform)' != 'true'" />
+       <LinkerArg Include="-Wl,-install_name,&quot;$(SharedLibraryInstallName)&quot;" Condition="'$(_IsApplePlatform)' == 'true' and '$(NativeLib)' == 'Shared'" />
