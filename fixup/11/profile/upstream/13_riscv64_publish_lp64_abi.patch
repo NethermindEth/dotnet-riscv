@@ -1,0 +1,32 @@
+[RISC-V] Let a build select the lp64 ABI for NativeAOT publishing
+
+The ILCompiler is published as a NativeAOT application for the target, and it
+gets --targetarch from _targetArchitectureWithAbi. On a riscv64 target that
+value is plain "riscv64", so the object writer stamps
+EF_RISCV_FLOAT_ABI_DOUBLE; against a soft-float sysroot the link then fails:
+
+    ld.lld: error: ilc.o: cannot link object files with different
+    floating-point ABI from Scrt1.o
+
+Add the riscv64 case next to the armel one that is already there. It is
+conditional on a property rather than derived from the RID, because
+linux-musl-riscv64 covers both lp64d and lp64 userspaces - unlike linux-bionic
+on ARM, where armel follows from the RID alone.
+
+diff --git a/src/coreclr/nativeaot/BuildIntegration/Microsoft.DotNet.ILCompiler.SingleEntry.targets b/src/coreclr/nativeaot/BuildIntegration/Microsoft.DotNet.ILCompiler.SingleEntry.targets
+index 368ab3b..be8043b 100644
+--- a/src/coreclr/nativeaot/BuildIntegration/Microsoft.DotNet.ILCompiler.SingleEntry.targets
++++ b/src/coreclr/nativeaot/BuildIntegration/Microsoft.DotNet.ILCompiler.SingleEntry.targets
+@@ -44,6 +44,12 @@
+     <!-- linux-bionic on ARM uses armel (softfp) ABI -->
+     <_targetArchitectureWithAbi>$(_targetArchitecture)</_targetArchitectureWithAbi>
+     <_targetArchitectureWithAbi Condition="'$(_linuxLibcFlavor)' == 'bionic' and '$(_targetArchitecture)' == 'arm'">armel</_targetArchitectureWithAbi>
++
++    <!-- RISC-V without the F/D extensions uses the lp64 (soft-float) ABI. Unlike
++         linux-bionic on ARM this is not implied by the RID: the same
++         linux-musl-riscv64 RID covers both lp64d and lp64 userspaces, so the
++         build has to say which one it is targeting. -->
++    <_targetArchitectureWithAbi Condition="'$(IlcRiscV64SoftFloat)' == 'true' and '$(_targetArchitecture)' == 'riscv64'">riscv64-lp64</_targetArchitectureWithAbi>
+   </PropertyGroup>
+ 
+   <PropertyGroup>

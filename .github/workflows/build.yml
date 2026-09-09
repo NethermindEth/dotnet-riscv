@@ -129,7 +129,10 @@ jobs:
         # ROOTFS_DIR, TOOLCHAIN and CLR_CC already are read.
         abi_env=""
         if [ "${{ inputs.soft_float_abi }}" = "true" ] ; then
-          abi_env="-e CLR_CMAKE_RISCV64_MABI=lp64 -e CLR_CMAKE_RISCV64_MARCH=rv64im"
+          # IlcRiscV64SoftFloat reaches MSBuild as a property (it imports the
+          # environment), and tells the NativeAOT publish to pass
+          # --targetarch riscv64-lp64 so the objects it emits claim lp64 too.
+          abi_env="-e CLR_CMAKE_RISCV64_MABI=lp64 -e CLR_CMAKE_RISCV64_MARCH=rv64im -e IlcRiscV64SoftFloat=true"
         fi
         docker run --platform linux/amd64 --rm \
           $abi_env \
