@@ -23,8 +23,19 @@ function build_compiler()
     local runtime_dir="$1"
 
     pushd "${runtime_dir}"
-        export ROOTFS_DIR="$(pwd)/.tools/rootfs/riscv64-musl"
-        ./eng/common/cross/build-rootfs.sh riscv64 alpineedge --skipemulation --skipunmount --rootfsdir ${ROOTFS_DIR}
+        # Prefer the cross rootfs the main build used (the CI's "Build own
+        # rootfs" step leaves it in crossrootfs/riscv64): it is the same
+        # Alpine rootfs and already carries what the soft-float target needs
+        # on top of the trimmed package set, e.g. the GSSAPI stub from
+        # provision_gss_stub.sh. Build a private one only when running
+        # standalone.
+        if [ -d "${TOP_DIR}/crossrootfs/riscv64/usr/include" ]; then
+            export ROOTFS_DIR="${TOP_DIR}/crossrootfs/riscv64"
+            echo "Using the existing cross rootfs at ${ROOTFS_DIR}"
+        else
+            export ROOTFS_DIR="$(pwd)/.tools/rootfs/riscv64-musl"
+            ./eng/common/cross/build-rootfs.sh riscv64 alpineedge --skipemulation --skipunmount --rootfsdir ${ROOTFS_DIR}
+        fi
 
         # The stage-one toolset restore (Arcade.Sdk & friends, stamped with our
         # OfficialBuildId) is not on any public feed for preview bands, and it
