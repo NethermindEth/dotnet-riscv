@@ -15,6 +15,13 @@ mkdir -p "${tmp_dir}"
 pushd "${tmp_dir}"
     git clone https://github.com/dotnet/runtime
     pushd runtime
+        # Custom rv64ima Alpine rootfs: package trimming + the bflat-hosted
+        # mirror (see patch_alpine.sh). Kept downstream only, and only needed
+        # for the soft-float target - a stock lp64d build wants the stock
+        # userspace. SOFT_FLOAT_ROOTFS=false selects that.
+        if [ "${SOFT_FLOAT_ROOTFS:-true}" = "true" ] ; then
+            patch -p1 < "${TOP_DIR}/patches/bflat-runtime/12_alpine_custom.patch"
+        fi
         echo Preparing GNU rootfs
         ./eng/common/cross/build-rootfs.sh riscv64 noble --skipemulation --skipunmount --rootfsdir $(pwd)/.tools/rootfs/riscv64-gnu
         echo Preparing musl rootfs
