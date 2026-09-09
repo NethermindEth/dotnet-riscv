@@ -17,10 +17,15 @@ on:
         description: 'publish release'
         type: boolean
         default: true
-      performance:
-        description: 'apply the perf fixup profile'
+      profile:
+        description: 'fixup profile to apply'
+        type: choice
+        options: [minimal, perf, upstream]
+        default: minimal
+      soft_float_abi:
+        description: 'build the native runtime for the lp64/rv64im soft-float target (needs the custom Alpine rootfs)'
         type: boolean
-        default: false
+        default: true
       tag:
         description: 'release tag name (default: SDK version, plus -perf for perf builds)'
         required: false
@@ -55,7 +60,7 @@ jobs:
     - name: Build own rootfs
       run: |
         cd ${{ github.workspace }}
-        sudo ./00_build_rootfs.sh
+        sudo SOFT_FLOAT_ROOTFS=${{ inputs.soft_float_abi }} ./00_build_rootfs.sh
 
     - name: Clone repository
       run: |
@@ -64,7 +69,10 @@ jobs:
     - name: Patch repository
       run: |
         cd ${{ github.workspace }}
-        ./patch_runtime.sh ${{ inputs.performance && 'perf' || 'minimal' }}
+        if [ "${{ inputs.soft_float_abi }}" = "true" ] ; then
+          ./patch_alpine.sh
+        fi
+        ./patch_runtime.sh ${{ inputs.profile }}
 
     - name: Pack whole source early
       if: ${{ inputs.whole_source_early }}
@@ -93,16 +101,31 @@ jobs:
                                                --skipunmount \
                                                --rootfsdir /crossrootfs/riscv64
 
+    - name: Provision GSSAPI stub into rootfs
+      run: |
+        docker run --platform linux/amd64 --rm \
+          -v${{ github.workspace }}:/work \
+          -v${{ github.workspace }}/crossrootfs:/crossrootfs \
+          -w /work \
+          -e ROOTFS_DIR=/crossrootfs/riscv64 \
+          mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-riscv64-musl \
+            ./provision_gss_stub.sh
+
     - name: Build
       run: |
+        # No quoting needed: none of these values contains a space (the list
+        # separators are %3B, see fixup/11/profile/upstream/README.md).
+        abi_args=""
+        if [ "${{ inputs.soft_float_abi }}" = "true" ] ; then
+          abi_args="-cmakeargs -DCLR_CMAKE_RISCV64_MABI=lp64"
+          abi_args="$abi_args -cmakeargs -DCLR_CMAKE_RISCV64_MARCH=rv64im"
+          abi_args="$abi_args -cmakeargs -DCLR_ADDITIONAL_COMPILER_OPTIONS=-mno-relax%3B-gdwarf-4%3B-fno-jump-tables%3B-Wno-atomic-alignment%3B-fno-use-cxa-atexit"
+        fi
         docker run --platform linux/amd64 --rm \
           -v${{ github.workspace }}/dotnet:/dotnet \
           -v${{ github.workspace }}/crossrootfs:/crossrootfs \
-          -v${{ github.workspace }}/tools:/tools:ro \
           -w /dotnet \
           -e ROOTFS_DIR=/crossrootfs/riscv64 \
-          -e CLR_CC=/tools/clang \
-          -e CLR_CXX=/tools/clang++ \
           -e FeatureXplatEventSource=false \
           mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-riscv64-musl \
             ./build.sh --clean-while-building --prep -sb \
@@ -110,7 +133,14 @@ jobs:
                        --rid linux-musl-riscv64 \
                        --verbosity normal \
                        --arch riscv64 \
+                       $abi_args \
                        -p:OfficialBuildId=$(date +%Y%m%d).99
+
+    - name: Check everything is lp64 after the linker
+      if: ${{ inputs.soft_float_abi }}
+      run: |
+        cd ${{ github.workspace }}
+        sudo ./check_lp64.sh dotnet/artifacts dotnet/runtime/artifacts
 
     - name: List assets directory
       run: |
@@ -290,8 +320,8 @@ jobs:
         tag_name="${{ inputs.tag }}"
         if [ -z "$tag_name" ] ; then
           tag_name="$sdk_version"
-          if [ "${{ inputs.performance }}" = "true" ] ; then
-            tag_name="$tag_name-perf"
+          if [ "${{ inputs.profile }}" != "minimal" ] ; then
+            tag_name="$tag_name-${{ inputs.profile }}"
           fi
         fi
 
