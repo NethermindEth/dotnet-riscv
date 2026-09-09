@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Maxim Menshikov <maximmenshchikov@gmail.com>
+Date: Tue, 8 Sep 2026 23:19:24 +0100
+Subject: [PATCH] [RISC-V] Make the native build's ISA string and ABI
+ configurable
+
+The native runtime is compiled -march=rv64gc -mabi=lp64d unconditionally, so a
+riscv64 target whose sysroot is built for another ABI cannot be built at all:
+the objects claim lp64d, the sysroot CRT claims something else, and lld refuses
+to reconcile the two. The only way out today is to append overriding flags after
+these, which works by accident of ordering and hides what the build targets.
+
+Turn the two into cache variables with the current values as defaults, so an
+unconfigured build is byte-identical, and a target that needs a different ABI
+states it once:
+
+    cmake -DCLR_CMAKE_RISCV64_MABI=lp64 -DCLR_CMAKE_RISCV64_MARCH=rv64im ...
+
+The float-ABI field of e_flags follows -mabi rather than -march, so setting the
+ABI here is what makes the whole native build agree with its sysroot. The flags
+are passed at link time as well, so the driver selects the matching CRT and
+builtins.
+
+This mirrors how armel selects -mfloat-abi=softfp a few lines above.
+---
+ eng/native/configurecompiler.cmake | 18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/eng/native/configurecompiler.cmake b/eng/native/configurecompiler.cmake
+index bc5fcb17..847c977a 100644
+--- a/eng/native/configurecompiler.cmake
++++ b/eng/native/configurecompiler.cmake
+@@ -915,8 +915,22 @@ if(CLR_CMAKE_HOST_UNIX_ARMV6)
+ endif(CLR_CMAKE_HOST_UNIX_ARMV6)
+ 
+ if(CLR_CMAKE_HOST_UNIX_RISCV64)
+-  add_compile_options(-march=rv64gc)
+-  add_compile_options(-mabi=lp64d)
++  # The ISA string and the ABI the native runtime is built with. The defaults are
++  # the rv64gc/lp64d baseline, so an unconfigured build is unchanged. A target
++  # whose sysroot is built for a different ABI - a soft-float lp64 userspace, for
++  # instance - selects it here, the way armel selects -mfloat-abi=softfp above,
++  # instead of overriding the flags further down the command line.
++  #
++  # The float-ABI field of e_flags follows -mabi (not -march), so setting the ABI
++  # once here is what makes the whole native build agree with the sysroot; the
++  # linker rejects a mix, and it is also passed at link time so that the driver
++  # selects the matching CRT and builtins.
++  set(CLR_CMAKE_RISCV64_MARCH "rv64gc" CACHE STRING "RISC-V ISA string for the native runtime build")
++  set(CLR_CMAKE_RISCV64_MABI "lp64d" CACHE STRING "RISC-V ABI for the native runtime build")
++  add_compile_options(-march=${CLR_CMAKE_RISCV64_MARCH})
++  add_compile_options(-mabi=${CLR_CMAKE_RISCV64_MABI})
++  add_link_options(-march=${CLR_CMAKE_RISCV64_MARCH})
++  add_link_options(-mabi=${CLR_CMAKE_RISCV64_MABI})
+ endif(CLR_CMAKE_HOST_UNIX_RISCV64)
+ 
+ if(CLR_CMAKE_HOST_UNIX_X86)
