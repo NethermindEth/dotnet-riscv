@@ -763,10 +763,10 @@ index 34305bc9..86aac8ce 100644
              string systemModuleName = Get(_command.SystemModuleName);
              string reflectionData = Get(_command.ReflectionData);
 diff --git a/src/coreclr/tools/aot/crossgen2/Program.cs b/src/coreclr/tools/aot/crossgen2/Program.cs
-index 7224f933..5b136292 100644
+index ebd233e..77fa670 100644
 --- a/src/coreclr/tools/aot/crossgen2/Program.cs
 +++ b/src/coreclr/tools/aot/crossgen2/Program.cs
-@@ -78,6 +78,11 @@ public int Run()
+@@ -78,6 +78,11 @@ namespace ILCompiler
  
              (TargetArchitecture targetArchitecture, TargetOS targetOS, TargetAbi targetAbi) =
                  Helpers.GetTargetSpec(Get(_command.TargetArchitecture), Get(_command.TargetOS));
@@ -775,10 +775,10 @@ index 7224f933..5b136292 100644
 +                // The soft-float helpers have no ReadyToRun encoding; the target is NativeAOT only.
 +                throw new CommandLineException($"Target architecture '{Get(_command.TargetArchitecture)}' is not supported by ReadyToRun");
 +            }
-             bool targetAllowsRuntimeCodeGeneration = Get(_command.TargetAllowsRuntimeCodeGeneration)
-                 ?? GetTargetAllowsRuntimeCodeGeneration(targetOS, targetArchitecture);
+             bool targetAllowsRuntimeCodeGeneration = GetTargetAllowsRuntimeCodeGeneration(targetOS, targetArchitecture);
  
-@@ -99,7 +104,8 @@ public int Run()
+             // Crossgen2 is partial AOT and its pre-compiled methods can be thrown away at runtime if
+@@ -98,7 +103,8 @@ namespace ILCompiler
              InstructionSetSupport instructionSetSupport = Helpers.ConfigureInstructionSetSupport(Get(_command.InstructionSet), Get(_command.MaxVectorTBitWidth), isVectorTOptimistic, targetArchitecture, targetOS,
                  SR.InstructionSetMustNotBe, SR.InstructionSetInvalidImplication, logger,
                  allowOptimistic: allowOptimistic,
