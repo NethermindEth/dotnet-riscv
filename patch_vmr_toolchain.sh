@@ -32,6 +32,19 @@ if [ -z "$patch_file" ] ; then
 fi
 echo "Toolchain patch: $patch_file"
 
+# Only the toolchain.cmake section of that patch: the other copies of eng/common
+# in the VMR do not carry the rest of the files the patch may touch.
+section="$(mktemp)"
+trap 'rm -f "$section"' EXIT
+awk '
+    /^diff --git / { keep = ($0 ~ /eng\/common\/cross\/toolchain\.cmake/) }
+    keep { print }
+' "$patch_file" > "$section"
+if ! grep -q '^diff --git' "$section" ; then
+    echo "No toolchain.cmake section found in $patch_file" >&2
+    exit 1
+fi
+
 applied=0
 skipped=0
 while IFS= read -r f ; do
@@ -40,7 +53,7 @@ while IFS= read -r f ; do
         skipped=$((skipped + 1))
         continue
     fi
-    if (cd "$dir" && patch -p1 --forward --no-backup-if-mismatch --silent < "$patch_file") ; then
+    if (cd "$dir" && patch -p1 --forward --no-backup-if-mismatch --silent < "$section") ; then
         applied=$((applied + 1))
     else
         echo "Failed to apply the toolchain patch in $dir" >&2
