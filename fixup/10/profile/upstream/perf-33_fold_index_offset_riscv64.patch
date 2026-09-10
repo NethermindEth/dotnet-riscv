@@ -1,0 +1,93 @@
+diff --git a/src/coreclr/jit/emit.cpp b/src/coreclr/jit/emit.cpp
+index 416b3e97834..30b0a36b237 100644
+--- a/src/coreclr/jit/emit.cpp
++++ b/src/coreclr/jit/emit.cpp
+@@ -9876,7 +9876,7 @@ void emitter::emitNxtIG(bool extend)
+ // NOTE: It is expected that the GC effect of the removed instruction will be handled by the newly
+ // generated replacement(s).
+ //
+-#ifdef TARGET_ARM64
++#if defined(TARGET_ARM64) || defined(TARGET_RISCV64)
+ void emitter::emitRemoveLastInstruction()
+ {
+     assert(emitLastIns != nullptr);
+@@ -9937,7 +9937,7 @@ void emitter::emitRemoveLastInstruction()
+     emitLastIns   = nullptr;
+     emitLastInsIG = nullptr;
+ }
+-#endif // TARGET_ARM64
++#endif // TARGET_ARM64 || TARGET_RISCV64
+ 
+ /*****************************************************************************
+  *
+diff --git a/src/coreclr/jit/emit.h b/src/coreclr/jit/emit.h
+index ec7fffec071..09731b17fb2 100644
+--- a/src/coreclr/jit/emit.h
++++ b/src/coreclr/jit/emit.h
+@@ -308,7 +308,7 @@ struct insGroup
+     0x0400                           // IG was marked as having an alignment instruction(s), but was later unmarked
+                                      // without updating the IG's size/offsets.
+ #define IGF_HAS_REMOVABLE_JMP 0x0800 // this group ends with an unconditional jump which is a candidate for removal
+-#ifdef TARGET_ARM64
++#if defined(TARGET_ARM64) || defined(TARGET_RISCV64)
+ #define IGF_HAS_REMOVED_INSTR 0x1000 // this group has an instruction that was removed.
+ #endif
+ 
+@@ -2948,7 +2948,7 @@ private:
+     insGroup* emitSavIG(bool emitAdd = false);
+     void      emitNxtIG(bool extend = false);
+ 
+-#ifdef TARGET_ARM64
++#if defined(TARGET_ARM64) || defined(TARGET_RISCV64)
+     void emitRemoveLastInstruction();
+ #endif
+ 
+diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
+index c0c80413a33..7ed3b324ef1 100644
+--- a/src/coreclr/jit/emitriscv64.cpp
++++ b/src/coreclr/jit/emitriscv64.cpp
+@@ -723,6 +749,28 @@ void emitter::emitIns_R_R(
+ void emitter::emitIns_R_R_I(
+     instruction ins, emitAttr attr, regNumber reg1, regNumber reg2, ssize_t imm, insOpts opt /* = INS_OPTS_NONE */)
+ {
++    // zkVM/RISCV64 CQ: fold a .NET array-element header offset into this load.
++    // genCodeForIndexAddr emits `<rD = base+index*scale>; addi rD,rD,elemOffset`,
++    // and the consuming GT_IND then loads `lX rT,0(rD)`. When the load reuses the
++    // address register (rT == rD == reg2), the post-addi element address is dead
++    // right after the load, so the addi is removable: drop it and fold its imm
++    // into this load -> `lX rD,elemOffset(rD)`. Restricted to rT==rD (guarantees
++    // no later consumer of the element address) and to integer loads with imm==0.
++    // The previous addi must be the immediately-preceding in-place `addi rD,rD,K`
++    // in the same group; its sign-extended imm12 must still be a valid simm12.
++    if (JitConfig.JitRiscV64FoldIndexOffset() && (imm == 0) && (reg1 == reg2) && emitInsIsLoad(ins) &&
++        (emitLastIns != nullptr) && (emitLastInsIG == emitCurIG) && (emitLastIns->idIns() == INS_addi) &&
++        (emitLastIns->idReg1() == reg2) && (emitLastIns->idReg2() == reg2))
++    {
++        const code_t  prevCode = emitLastIns->idAddr()->iiaGetInstrEncode();
++        const ssize_t foldImm  = ((ssize_t)((int32_t)prevCode)) >> 20; // addi imm[31:20], sign-extended
++        if ((foldImm != 0) && isValidSimm12(foldImm))
++        {
++            emitRemoveLastInstruction();
++            imm = foldImm; // emit `<load> reg1, foldImm(reg2)` in place of the dropped addi + 0-offset load
++        }
++    }
++
+     code_t     code = emitInsCode(ins);
+     instrDesc* id   = emitNewInstr(attr);
+ 
+--- a/src/coreclr/jit/jitconfigvalues.h
++++ b/src/coreclr/jit/jitconfigvalues.h
+@@ -438,6 +438,13 @@
+ // the scalar unroll / managed call). OFF by default; enable only for ZisK targets
+ // whose transpiler folds the idiom (a plain riscv64 CPU would mis-execute it).
+ RELEASE_CONFIG_INTEGER(JitRiscV64DmaCompare,        "JitRiscV64DmaCompare",      0)
++// zkVM/RISCV64 CQ: fold a .NET array-element header offset (the trailing
++// `addi rD,rD,elemOffset` that genCodeForIndexAddr appends after base+index*scale)
++// into the consuming load's imm12 displacement, when the load reuses the address
++// register (rT==rD) so the post-addi element address is provably dead. Removes one
++// addi per bounds-checked array element load -- a cost reth/Rust slices never pay.
++// Prototype: default ON to measure; flip to 0 before shipping if the win is small.
++RELEASE_CONFIG_INTEGER(JitRiscV64FoldIndexOffset,   "JitRiscV64FoldIndexOffset", 1)
+ #endif
+ 
+ RELEASE_CONFIG_INTEGER(EnableEmbeddedBroadcast,     "EnableEmbeddedBroadcast",   1) // Allows embedded broadcasts to be disabled

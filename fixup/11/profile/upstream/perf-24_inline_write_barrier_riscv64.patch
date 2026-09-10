@@ -1,0 +1,41 @@
+Port of fixup/10/profile/perf/24_inline_write_barrier_riscv64 to .NET 11.
+Only the store-side part applies: .NET 11 lowers GC struct copies to
+independent indirections (TryDecomposeBlockStoreAsIndirs) or the bulk
+copy helper, so there is no per-slot CORINFO_HELP_ASSIGN_BYREF call in
+the riscv64 codegen to inline.
+
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -2730,6 +2730,12 @@
+     GenTree* addr = tree->Addr();
+ 
+     GCInfo::WriteBarrierForm writeBarrierForm = gcInfo.gcIsWriteBarrierCandidate(tree);
++
++    // zkVM: uGC never relocates or collects and the RhpAssignRef* helpers are
++    // already reduced to a bare store, so a GC ref store is just a plain store.
++    // Force the inline-store path below (no t3/t4 marshalling, no call/ret).
++    writeBarrierForm = GCInfo::WBF_NoBarrier;
++
+     if (writeBarrierForm != GCInfo::WBF_NoBarrier)
+     {
+         // data and addr must be in registers.
+diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
+--- a/src/coreclr/jit/lsrariscv64.cpp
++++ b/src/coreclr/jit/lsrariscv64.cpp
+@@ -740,12 +740,9 @@
+         {
+             assert(dstCount == 0);
+ 
+-            if (m_compiler->codeGen->gcInfo.gcIsWriteBarrierStoreIndNode(tree->AsStoreInd()))
+-            {
+-                srcCount = BuildGCWriteBarrier(tree);
+-                break;
+-            }
+-
++            // zkVM: ref stores are inlined (see genCodeForStoreInd), so never
++            // take the write-barrier path - always build an ordinary indir so
++            // the operands are not pinned to t3/t4.
+             srcCount = BuildIndir(tree->AsIndir());
+             if (!tree->gtGetOp2()->isContained())
+             {

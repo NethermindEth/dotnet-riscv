@@ -1,0 +1,552 @@
+Port of fixup/10/profile/perf/23_frameless_riscv64 to .NET 11.
+.NET 11 differences: CodeGen/LSRA hold the compiler as m_compiler; the
+prolog/epilog asserts are the emitter's emitGeneratingProlog/Epilog*;
+genRestoreCalleeSavedRegistersHelp takes a base register and a
+reportUnwindData flag; RBM_CALL_GC_REGS(_ORDER) no longer exist (the
+across-call GC register set is derived from RBM_INT_CALLEE_SAVED).
+
+diff --git a/src/coreclr/jit/codegen.h b/src/coreclr/jit/codegen.h
+--- a/src/coreclr/jit/codegen.h
++++ b/src/coreclr/jit/codegen.h
+@@ -835,6 +835,19 @@
+     void        genCodeForAddUw(GenTreeOp* tree);
+     void        genCodeForSlliUw(GenTreeOp* tree);
+     instruction getShxaddVariant(int scale, bool useUnsignedVariant);
++
++    // When true, this method is a leaf (makes no calls) and the return-address
++    // register RA does not need to be spilled/reloaded. Computed once in
++    // genFinalizeFrame; see genComputeLeafRaElision. The RA stack slot itself is
++    // still reserved, so frame layout and unwind offsets are unaffected.
++    bool genRiscV64ElideRaSave = false;
++    void genComputeLeafRaElision();
++
++    // Prolog/epilog callee-saved handling for methods compiled without a frame
++    // pointer (!isFramePointerUsed()). All saves/restores are SP-relative and no
++    // frame pointer is established.
++    void genPushCalleeSavedRegistersFrameless(regMaskTP rsPushRegs);
++    void genPopCalleeSavedRegistersFrameless();
+ #endif
+ 
+ #if defined(TARGET_ARMARCH)
+diff --git a/src/coreclr/jit/codegencommon.cpp b/src/coreclr/jit/codegencommon.cpp
+--- a/src/coreclr/jit/codegencommon.cpp
++++ b/src/coreclr/jit/codegencommon.cpp
+@@ -2397,6 +2397,13 @@
+     // memory from the VM.
+ 
+     genFinalizeFrame();
++
++#ifdef TARGET_RISCV64
++    // Decide leaf return-address elision now: the frame is final and the LIR is
++    // final, but the function body (which contains the epilogs) has not been
++    // emitted yet, so the decision must be available before genCodeForBBlist.
++    genComputeLeafRaElision();
++#endif
+ 
+     GetEmitter()->emitBegFN(isFramePointerUsed()
+ #if defined(DEBUG)
+@@ -5158,7 +5165,7 @@
+     maskCalleeRegsPushed &= ~RBM_FLT_CALLEE_SAVED;
+ #endif // defined(TARGET_XARCH)
+ 
+-#if defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
++#if defined(TARGET_LOONGARCH64)
+     // This assert check that we are not using REG_FP
+     assert(!regSet.rsRegsModified(RBM_FPBASE));
+ 
+@@ -5166,8 +5173,22 @@
+     // we always push FP/RA.  See genPushCalleeSavedRegisters
+     maskCalleeRegsPushed |= (RBM_FPBASE | RBM_RA);
+ 
+-#endif // TARGET_LOONGARCH64 || TARGET_RISCV64
++#endif // TARGET_LOONGARCH64
+ 
++#if defined(TARGET_RISCV64)
++    // RA is always pushed (its frame slot is always reserved). FP is pushed and
++    // established as the frame pointer only for framed methods; for a frameless
++    // method FP - if used as an ordinary callee-saved register - is already part
++    // of maskCalleeRegsPushed via the modified-callee-saved set computed above.
++    maskCalleeRegsPushed |= RBM_RA;
++    if (isFramePointerUsed())
++    {
++        // When FP is the frame pointer it must not have been allocated as a register.
++        assert(!regSet.rsRegsModified(RBM_FPBASE));
++        maskCalleeRegsPushed |= RBM_FPBASE;
++    }
++#endif // TARGET_RISCV64
++
+     m_compiler->compCalleeRegsPushed = genCountBits(maskCalleeRegsPushed);
+ 
+ #ifdef DEBUG
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -278,7 +278,9 @@
+     }
+     int highestCalleeSavedOffset = (genCountBits(regsToRestoreMask) << 3) + lowestCalleeSavedOffset;
+     assert((highestCalleeSavedOffset & 7) == 0);
+-    assert(highestCalleeSavedOffset >= 16);
++    // The callee-saved regs are always above the saved RA (+ saved FP, when the
++    // method has a frame pointer). A frameless method only reserves RA below them.
++    assert(highestCalleeSavedOffset >= (isFramePointerUsed() ? 16 : 8));
+ 
+     emitter*  emit         = GetEmitter();
+     regMaskTP regsMask     = regsToRestoreMask & RBM_FLT_CALLEE_SAVED;
+@@ -319,7 +321,9 @@
+         regNum -= 1;
+     } while (maskSaveRegs != 0);
+ 
+-    assert(highestCalleeSavedOffset >= 16); // the callee-saved regs always above ra/fp.
++    // The callee-saved regs are always above the saved RA (+ saved FP, when the
++    // method has a frame pointer). A frameless method only reserves RA below them.
++    assert(highestCalleeSavedOffset >= (isFramePointerUsed() ? 16 : 8));
+ }
+ 
+ //-----------------------------------------------------------------------------
+@@ -6359,6 +6363,201 @@
+  *              V
+  *
+  */
++//------------------------------------------------------------------------
++// genComputeLeafRaElision: Decide whether the return-address register (RA)
++//   spill/reload can be skipped for this method, storing the result in
++//   genRiscV64ElideRaSave.
++//
++// Rationale:
++//   genPushCalleeSavedRegisters always spills RA because GC thread suspension
++//   relies on return-address hijacking, which needs RA on the stack. On a
++//   single-threaded deterministic target (e.g. the ZisK zkVM guest) there is no
++//   thread suspension and therefore no hijacking, so a leaf method - one that
++//   makes no calls and hence never clobbers RA - gains nothing from the spill.
++//
++//   Opt-in via the RiscV64ElideLeafRaSave config knob; must not be enabled on a
++//   target with concurrent GC.
++//
++// Notes:
++//   The RA stack slot is still reserved (it remains part of compCalleeRegsPushed),
++//   so frame layout and offsets are unchanged; only the `sd ra` / `ld ra`
++//   instructions and their unwind records are dropped. A leaf frame is always
++//   the topmost frame when walked, so the unwinder recovers RA from the live
++//   register context. Classification is deliberately conservative.
++//
++void CodeGen::genComputeLeafRaElision()
++{
++    genRiscV64ElideRaSave = false;
++
++    if (JitConfig.RiscV64ElideLeafRaSave() == 0)
++    {
++        return;
++    }
++
++    if (m_compiler->compUsesThrowHelper || m_compiler->ehAnyFunclets() || m_compiler->compLocallocUsed ||
++        m_compiler->info.compIsVarArgs || m_compiler->opts.IsOSR() || m_compiler->opts.MinOpts() ||
++        m_compiler->fgHasLoops || m_compiler->compIsProfilerHookNeeded() || (genTotalFrameSize() > 2040))
++    {
++        return;
++    }
++
++    for (BasicBlock* const block : m_compiler->Blocks())
++    {
++        for (GenTree* const node : LIR::AsRange(block))
++        {
++            if (node->OperIs(GT_CALL, GT_JMP, GT_INTRINSIC))
++            {
++                return;
++            }
++
++            if (node->OperIs(GT_STORE_BLK))
++            {
++                GenTreeBlk* blk = node->AsBlk();
++                if (((blk->gtBlkOpKind != GenTreeBlk::BlkOpKindUnroll) &&
++                     (blk->gtBlkOpKind != GenTreeBlk::BlkOpKindUnrollMemmove) &&
++                     (blk->gtBlkOpKind != GenTreeBlk::BlkOpKindLoop)) ||
++                    ((blk->GetLayout() != nullptr) && blk->GetLayout()->HasGCPtr()))
++                {
++                    return;
++                }
++            }
++
++            if (node->OperIs(GT_STOREIND) && varTypeIsGC(node->TypeGet()))
++            {
++                return;
++            }
++        }
++    }
++
++    genRiscV64ElideRaSave = true;
++    JITDUMP("RISCV64: leaf method qualifies for return-address (RA) save elision\n");
++}
++
++//------------------------------------------------------------------------
++// genPushCalleeSavedRegistersFrameless: Callee-saved-register prolog for a
++//   method compiled without a frame pointer. Mirrors genPushCalleeSavedRegisters
++//   but omits the dedicated FP slot and genEstablishFramePointer; the save area
++//   sits just below the caller's SP ([RA][other callee-saved...]) and is
++//   addressed off SP. Large frames are split as in the framed path.
++//
++void CodeGen::genPushCalleeSavedRegistersFrameless(regMaskTP rsPushRegs)
++{
++    assert(GetEmitter()->emitGeneratingPrologOrFuncletProlog());
++    assert(!isFramePointerUsed());
++
++    // FP, if allocated as an ordinary register, is part of rsPushRegs already.
++    regSet.rsMaskCalleeSaved = rsPushRegs | RBM_RA;
++    assert(m_compiler->compCalleeRegsPushed == genCountBits(rsPushRegs | RBM_RA));
++
++    int totalFrameSize = genTotalFrameSize();
++    int localFrameSize = m_compiler->compLclFrameSize;
++    if ((m_compiler->lvaMonAcquired != BAD_VAR_NUM) && !m_compiler->opts.IsOSR())
++    {
++        localFrameSize -= TARGET_POINTER_SIZE;
++    }
++
++    JITDUMP("Frameless prolog. #outsz=%d; #framesz=%d; lcl=%d\n",
++            unsigned(m_compiler->lvaOutgoingArgSpaceSize), totalFrameSize, localFrameSize);
++
++    int raOffset      = localFrameSize;
++    int leftFrameSize = 0;
++
++    if (totalFrameSize <= 2040)
++    {
++        GetEmitter()->emitIns_R_R_I(INS_addi, EA_PTRSIZE, REG_SPBASE, REG_SPBASE, -totalFrameSize);
++        m_compiler->unwindAllocStack(totalFrameSize);
++    }
++    else
++    {
++        if ((localFrameSize + (m_compiler->compCalleeRegsPushed << 3)) > 2040)
++        {
++            leftFrameSize  = localFrameSize & -16;
++            totalFrameSize = totalFrameSize - (localFrameSize & -16);
++            raOffset       = localFrameSize & 0xf;
++        }
++        genStackPointerAdjustment(-totalFrameSize, REG_SCRATCH, nullptr, /* reportUnwindData */ true);
++    }
++
++    if (!genRiscV64ElideRaSave)
++    {
++        GetEmitter()->emitIns_R_R_I(INS_sd, EA_PTRSIZE, REG_RA, REG_SPBASE, raOffset);
++        m_compiler->unwindSaveReg(REG_RA, raOffset);
++    }
++
++    genSaveCalleeSavedRegistersHelp(rsPushRegs, raOffset + 8);
++
++    if (m_compiler->info.compIsVarArgs)
++    {
++        NYI_RISCV64("genPushCalleeSavedRegistersFrameless does not support compIsVarArgs");
++    }
++
++    if (leftFrameSize != 0)
++    {
++        genStackPointerAdjustment(-leftFrameSize, REG_SCRATCH, nullptr, /* reportUnwindData */ false);
++    }
++}
++
++//------------------------------------------------------------------------
++// genPopCalleeSavedRegistersFrameless: Callee-saved-register epilog for a
++//   method compiled without a frame pointer. Mirror of
++//   genPushCalleeSavedRegistersFrameless.
++//
++void CodeGen::genPopCalleeSavedRegistersFrameless()
++{
++    assert(GetEmitter()->emitGeneratingEpilogOrFuncletEpilog());
++    assert(!isFramePointerUsed());
++    assert(!m_compiler->compLocallocUsed); // localloc forces a frame pointer
++
++    regMaskTP regsToRestoreMask = regSet.rsGetModifiedCalleeSavedRegsMask();
++
++    emitter* emit           = GetEmitter();
++    int      totalFrameSize = genTotalFrameSize();
++    int      localFrameSize = m_compiler->compLclFrameSize;
++    if ((m_compiler->lvaMonAcquired != BAD_VAR_NUM) && !m_compiler->opts.IsOSR())
++    {
++        localFrameSize -= TARGET_POINTER_SIZE;
++    }
++
++    int raOffset        = localFrameSize;
++    int remainingSPSize = totalFrameSize;
++
++    if (totalFrameSize > 2040)
++    {
++        if ((localFrameSize + (m_compiler->compCalleeRegsPushed << 3)) > 2040)
++        {
++            remainingSPSize = localFrameSize & -16;
++            // REG_SCRATCH (not RA, which the framed path reuses here) - RA may be
++            // live when its save was elided.
++            genStackPointerAdjustment(remainingSPSize, REG_SCRATCH, nullptr, /* reportUnwindData */ true);
++
++            remainingSPSize = totalFrameSize - remainingSPSize;
++            raOffset        = localFrameSize & 0xf;
++        }
++    }
++
++    genRestoreCalleeSavedRegistersHelp(regsToRestoreMask, REG_SPBASE, raOffset + 8, /* reportUnwindData */ true);
++
++    if (!genRiscV64ElideRaSave)
++    {
++        emit->emitIns_R_R_I(INS_ld, EA_PTRSIZE, REG_RA, REG_SPBASE, raOffset);
++        m_compiler->unwindSaveReg(REG_RA, raOffset);
++    }
++
++    if (emitter::isValidUimm11(remainingSPSize))
++    {
++        emit->emitIns_R_R_I(INS_addi, EA_PTRSIZE, REG_SPBASE, REG_SPBASE, remainingSPSize);
++    }
++    else
++    {
++        regNumber tempReg = rsGetRsvdReg();
++        emit->emitLoadImmediate<true>(EA_PTRSIZE, tempReg, remainingSPSize);
++        emit->emitIns_R_R_R(INS_add, EA_PTRSIZE, REG_SPBASE, REG_SPBASE, tempReg);
++    }
++    m_compiler->unwindAllocStack(remainingSPSize);
++
++    assert(!m_compiler->opts.IsOSR()); // OSR forces a frame pointer
++}
++
+ void CodeGen::genPushCalleeSavedRegisters(regNumber initReg, bool* pInitRegZeroed)
+ {
+     assert(GetEmitter()->emitGeneratingPrologOrFuncletProlog());
+@@ -6372,7 +6571,15 @@
+     }
+ #endif
+ 
+-    // We always use the FP (frame-pointer).
++    // A method that does not need a frame pointer uses a dedicated, simpler
++    // prolog that addresses everything off SP.
++    if (!isFramePointerUsed())
++    {
++        genPushCalleeSavedRegistersFrameless(rsPushRegs);
++        return;
++    }
++
++    // From here on the method has a frame pointer.
+     assert(isFramePointerUsed());
+ 
+     //
+@@ -6463,8 +6670,14 @@
+     GetEmitter()->emitIns_R_R_I(INS_sd, EA_PTRSIZE, REG_FP, REG_SPBASE, FP_offset);
+     m_compiler->unwindSaveReg(REG_FP, FP_offset);
+ 
+-    GetEmitter()->emitIns_R_R_I(INS_sd, EA_PTRSIZE, REG_RA, REG_SPBASE, FP_offset + 8);
+-    m_compiler->unwindSaveReg(REG_RA, FP_offset + 8);
++    // For a qualifying leaf method RA is never clobbered, so its spill is pure
++    // overhead. The slot at FP_offset + 8 stays reserved; only the store and its
++    // unwind record are skipped (the unwinder then knows RA lives in the register).
++    if (!genRiscV64ElideRaSave)
++    {
++        GetEmitter()->emitIns_R_R_I(INS_sd, EA_PTRSIZE, REG_RA, REG_SPBASE, FP_offset + 8);
++        m_compiler->unwindSaveReg(REG_RA, FP_offset + 8);
++    }
+ 
+     genSaveCalleeSavedRegistersHelp(rsPushRegs, FP_offset + 16);
+ 
+@@ -6489,6 +6702,13 @@
+ void CodeGen::genPopCalleeSavedRegisters(bool jmpEpilog)
+ {
+     assert(GetEmitter()->emitGeneratingEpilogOrFuncletEpilog());
++
++    // A method without a frame pointer uses a dedicated, simpler epilog.
++    if (!isFramePointerUsed())
++    {
++        genPopCalleeSavedRegistersFrameless();
++        return;
++    }
+ 
+     regMaskTP regsToRestoreMask = regSet.rsGetModifiedCalleeSavedRegsMask();
+ 
+@@ -6549,8 +6769,12 @@
+     JITDUMP("    calleeSaveSPOffset=%d\n", FP_offset + 16);
+     genRestoreCalleeSavedRegistersHelp(regsToRestoreMask, REG_SPBASE, FP_offset + 16, /* reportUnwindData */ true);
+ 
+-    emit->emitIns_R_R_I(INS_ld, EA_PTRSIZE, REG_RA, REG_SPBASE, FP_offset + 8);
+-    m_compiler->unwindSaveReg(REG_RA, FP_offset + 8);
++    // Matches the prolog: a qualifying leaf method never spilled RA.
++    if (!genRiscV64ElideRaSave)
++    {
++        emit->emitIns_R_R_I(INS_ld, EA_PTRSIZE, REG_RA, REG_SPBASE, FP_offset + 8);
++        m_compiler->unwindSaveReg(REG_RA, FP_offset + 8);
++    }
+ 
+     emit->emitIns_R_R_I(INS_ld, EA_PTRSIZE, REG_FP, REG_SPBASE, FP_offset);
+     m_compiler->unwindSaveReg(REG_FP, FP_offset);
+diff --git a/src/coreclr/jit/compiler.cpp b/src/coreclr/jit/compiler.cpp
+--- a/src/coreclr/jit/compiler.cpp
++++ b/src/coreclr/jit/compiler.cpp
+@@ -3861,8 +3861,18 @@
+         // noinline to ensure the show up on in a stack walk. But for AMD64, we don't need a frame
+         // pointer for the frame to show up in stack walk.
+         if (opts.jitFlags->IsSet(JitFlags::JIT_FLAG_FRAMED))
+-            codeGen->setFrameRequired(true);
++        {
++#ifdef TARGET_RISCV64
++            // Like AMD64: a frameless method still shows up / unwinds correctly
++            // without a frame pointer. Don't let JIT_FLAG_FRAMED (set for noinline
++            // methods, e.g. by NativeAOT) force a frame when frameless frames are on.
++            if (JitConfig.RiscV64FramelessFrames() == 0)
+ #endif
++            {
++                codeGen->setFrameRequired(true);
++            }
++        }
++#endif
+ 
+         if (opts.OptimizationDisabled() || IsReadyToRun())
+         {
+diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
+--- a/src/coreclr/jit/jitconfigvalues.h
++++ b/src/coreclr/jit/jitconfigvalues.h
+@@ -462,6 +462,14 @@
+ RELEASE_CONFIG_INTEGER(EnableRiscV64D,              "EnableRiscV64D",            1) // Allows the RiscV64 D (double-precision FP) instruction set to be disabled
+ RELEASE_CONFIG_INTEGER(EnableRiscV64Compressed,     "EnableRiscV64Compressed",   1) // Allows RiscV64 compressed (C) instruction emission to be disabled (0 for no-C zkVM targets)
+ RELEASE_CONFIG_INTEGER(EnableRiscV64Atomic,         "EnableRiscV64Atomic",       1) // Allows RiscV64 atomic (A: lr/sc, amo*) emission to be disabled; 0 lowers interlocked ops to plain load/modify/store (single-hart zkVM)
++// Skip the return-address (RA) spill/reload in leaf methods. Sound only on
++// single-threaded deterministic targets with no GC thread suspension / return
++// address hijacking (e.g. a zkVM guest such as ZisK). Off by default.
++RELEASE_CONFIG_INTEGER(RiscV64ElideLeafRaSave,      "RiscV64ElideLeafRaSave",    0)
++// Allow methods that do not need a frame pointer to be compiled frameless: no
++// FP save/establish/restore, locals addressed off SP. FP (s0) then becomes an
++// ordinary allocatable callee-saved register. When 0, FP is forced as before.
++RELEASE_CONFIG_INTEGER(RiscV64FramelessFrames,      "RiscV64FramelessFrames",    1)
+ #endif
+ 
+ RELEASE_CONFIG_INTEGER(EnableEmbeddedBroadcast,     "EnableEmbeddedBroadcast",   1) // Allows embedded broadcasts to be disabled
+diff --git a/src/coreclr/jit/lclvars.cpp b/src/coreclr/jit/lclvars.cpp
+--- a/src/coreclr/jit/lclvars.cpp
++++ b/src/coreclr/jit/lclvars.cpp
+@@ -4593,8 +4593,10 @@
+     // them. It turns out we always store these at +0 and +8 of the FP,
+     // so instead of dealing with skipping adjustment just for them we just set
+     // them here always.
+-    // For LoongArch64 and RISCV64, the RA is always at fp+8.
+-    assert(codeGen->isFramePointerUsed());
++    // For LoongArch64 and RISCV64, the RA is always at fp+8 (for a framed method).
++    // A frameless RISCV64 method has no frame pointer; it is only reachable here
++    // when it has no explicit return-address local (lvaRetAddrVar).
++    assert(codeGen->isFramePointerUsed() || (lvaRetAddrVar == BAD_VAR_NUM));
+     if (lvaRetAddrVar != BAD_VAR_NUM)
+     {
+         lvaTable[lvaRetAddrVar].SetStackOffset(REGSIZE_BYTES);
+@@ -4902,7 +4904,12 @@
+ 
+ #elif defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
+ 
++#if defined(TARGET_RISCV64)
++    // RA is always pushed; FP is pushed only for methods with a frame pointer.
++    assert(compCalleeRegsPushed >= (codeGen->isFramePointerUsed() ? 2 : 1));
++#else
+     assert(compCalleeRegsPushed >= 2); // always FP/RA.
++#endif
+     stkOffs -= (compCalleeRegsPushed << 3);
+ 
+ #elif HAS_FIXED_REGISTER_SET
+diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
+--- a/src/coreclr/jit/lower.cpp
++++ b/src/coreclr/jit/lower.cpp
+@@ -13405,6 +13405,14 @@
+ 
+     if (stackLevel >= 4)
+     {
+-        m_compiler->codeGen->setFramePointerRequired(true);
++#ifdef TARGET_RISCV64
++        // Legacy quirk (StackLevelSetter): a large outgoing-arg area does not
++        // actually need a frame pointer on a fixed-out-args target - it is
++        // addressed off SP. Skip the force when frameless frames are enabled.
++        if (JitConfig.RiscV64FramelessFrames() == 0)
++#endif
++        {
++            m_compiler->codeGen->setFramePointerRequired(true);
++        }
+     }
+ }
+diff --git a/src/coreclr/jit/lsra.cpp b/src/coreclr/jit/lsra.cpp
+--- a/src/coreclr/jit/lsra.cpp
++++ b/src/coreclr/jit/lsra.cpp
+@@ -943,8 +943,12 @@
+     //       Once that is addressed, we may consider allowing LR in availableIntRegs.
+     availableIntRegs =
+         (RBM_ALLINT & ~(RBM_PR | RBM_FP | RBM_LR) & ~m_compiler->codeGen->regSet.rsMaskResvd).GetIntRegSet();
+-#elif defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
++#elif defined(TARGET_LOONGARCH64)
+     availableIntRegs = (RBM_ALLINT & ~(RBM_FP | RBM_RA) & ~m_compiler->codeGen->regSet.rsMaskResvd).GetIntRegSet();
++#elif defined(TARGET_RISCV64)
++    // RA is never allocatable. FP is allocatable for frameless methods; for
++    // methods with a frame pointer LSRA removes it below (FT_EBP_FRAME).
++    availableIntRegs = (RBM_ALLINT & ~RBM_RA & ~m_compiler->codeGen->regSet.rsMaskResvd).GetIntRegSet();
+ #else
+     availableIntRegs = (RBM_ALLINT & ~m_compiler->codeGen->regSet.rsMaskResvd).GetIntRegSet();
+ #endif
+diff --git a/src/coreclr/jit/regalloc.cpp b/src/coreclr/jit/regalloc.cpp
+--- a/src/coreclr/jit/regalloc.cpp
++++ b/src/coreclr/jit/regalloc.cpp
+@@ -178,12 +178,19 @@
+ #endif // TARGET_LOONGARCH64
+ 
+ #ifdef TARGET_RISCV64
+-    // TODO-RISCV64-NYI: This is temporary: force a frame pointer-based frame until genFnProlog
+-    // can handle non-frame pointer frames.
++    // genFnProlog/genFnEpilog can emit frameless frames (no FP save/establish,
++    // locals addressed off SP). A frame pointer is still required for localloc
++    // (SP moves at runtime), for methods with EH (funclets locate the parent
++    // frame via FP), and for varargs/OSR. When frameless frames are disabled we
++    // keep forcing FP for every method, preserving the previous behavior.
+     if (!result)
+     {
+-        INDEBUG(reason = "Temporary RISCV64 force frame pointer");
+-        result = true;
++        if ((JitConfig.RiscV64FramelessFrames() == 0) || compLocallocUsed || (compHndBBtabCount != 0) ||
++            info.compIsVarArgs || opts.IsOSR())
++        {
++            INDEBUG(reason = "RISCV64 frame pointer required");
++            result = true;
++        }
+     }
+ #endif // TARGET_RISCV64
+ 
+diff --git a/src/coreclr/jit/targetriscv64.h b/src/coreclr/jit/targetriscv64.h
+--- a/src/coreclr/jit/targetriscv64.h
++++ b/src/coreclr/jit/targetriscv64.h
+@@ -39,7 +39,7 @@
+ #define NOGC_WRITE_BARRIERS      1       // We have specialized WriteBarrier JIT Helpers that DO-NOT trash the RBM_CALLEE_TRASH registers
+ #define USER_ARGS_COME_LAST      1
+ #define TARGET_POINTER_SIZE      8       // equal to sizeof(void*) and the managed pointer size in bytes for this target
+-#define ETW_EBP_FRAMED           1       // if 1 we cannot use REG_FP as a scratch register and must setup the frame pointer for most methods
++#define ETW_EBP_FRAMED           0       // FP (s0) may be an ordinary register; frameless methods allowed (gated by RiscV64FramelessFrames)
+ 
+ #define CSE_CONSTS               1       // Enable if we want to CSE constants
+ #define EMIT_TRACK_STACK_DEPTH   1       // This is something of a workaround.  For both ARM and AMD64, the frame size is fixed, so we don't really
+@@ -62,9 +62,12 @@
+ #define CODE_ALIGN               2       // code alignment requirement
+ #define STACK_ALIGN              16      // stack alignment requirement
+ 
+-#define FIRST_INT_CALLEE_SAVED  REG_S1
++// REG_FP (s0, reg 8) is contiguous just below REG_S1 and is included in the
++// callee-saved range so it can be allocated as an ordinary register in
++// frameless methods. In framed methods LSRA removes it (FT_EBP_FRAME).
++#define FIRST_INT_CALLEE_SAVED  REG_FP
+ #define LAST_INT_CALLEE_SAVED   REG_S11
+-#define RBM_INT_CALLEE_SAVED    (RBM_S1|RBM_S2|RBM_S3|RBM_S4|RBM_S5|RBM_S6|RBM_S7|RBM_S8|RBM_S9|RBM_S10|RBM_S11)
++#define RBM_INT_CALLEE_SAVED    (RBM_FP|RBM_S1|RBM_S2|RBM_S3|RBM_S4|RBM_S5|RBM_S6|RBM_S7|RBM_S8|RBM_S9|RBM_S10|RBM_S11)
+ #define RBM_INT_CALLEE_TRASH    (RBM_A0|RBM_A1|RBM_A2|RBM_A3|RBM_A4|RBM_A5|RBM_A6|RBM_A7|RBM_T0|RBM_T1|RBM_T2|RBM_T3|RBM_T4|RBM_T5|RBM_T6)
+ #define FIRST_FLT_CALLEE_SAVED  REG_FS0
+ #define LAST_FLT_CALLEE_SAVED   REG_FS11
+@@ -82,9 +85,11 @@
+ #define RBM_ALLDOUBLE            RBM_ALLFLOAT
+ 
+ // REG_VAR_ORDER is: (CALLEE_TRASH & ~CALLEE_TRASH_NOGC), CALLEE_TRASH_NOGC, CALLEE_SAVED
++// REG_FP is placed last: only picked under register pressure, and only in
++// frameless methods (in framed methods LSRA removes it).
+ #define REG_VAR_ORDER            REG_A0,REG_A1,REG_A2,REG_A3,REG_A4,REG_A5,REG_A6,REG_A7, \
+                                    REG_T0,REG_T1,REG_T2,REG_T3,REG_T4,REG_T5,REG_T6, \
+-                                   REG_S1,REG_S2,REG_S3,REG_S4,REG_S5,REG_S6,REG_S7,REG_S8,REG_S9,REG_S10,REG_S11
++                                   REG_S1,REG_S2,REG_S3,REG_S4,REG_S5,REG_S6,REG_S7,REG_S8,REG_S9,REG_S10,REG_S11,REG_FP
+ 
+ #define REG_VAR_ORDER_FLT        REG_FT4, REG_FT5, REG_FT6, REG_FT7, REG_FT8, REG_FT9, REG_FT10, REG_FT11, \
+                                    REG_FA2, REG_FA3, REG_FA4, REG_FA5, REG_FA6, REG_FA7, \
+@@ -92,7 +97,7 @@
+                                    REG_FS6, REG_FS7, REG_FS8, REG_FS9, REG_FS10, REG_FS11, REG_FS2, REG_FS3, REG_FS4, REG_FS5, REG_FS0, REG_FS1, \
+                                    REG_FA1, REG_FA0
+ 
+-#define CNT_CALLEE_SAVED        (11)
++#define CNT_CALLEE_SAVED        (12)    // s0(fp), s1-s11
+ #define CNT_CALLEE_TRASH        (15)
+ #define CNT_CALLEE_ENREG        (CNT_CALLEE_SAVED-1)
+ 

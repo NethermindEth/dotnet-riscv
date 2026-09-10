@@ -5,22 +5,28 @@ export TOP_DIR="$(cd "$(dirname "$(which "$0")")" ; pwd -P)"
 # Fixup profile: "minimal" (default) applies only the correctness fixups;
 # "perf" additionally applies the riscv64 code-quality fixups on top.
 # "upstream" is standalone: only the patches staged for submission to
-# dotnet/runtime, so that the subset is proven to apply and build on its own.
-# See fixup/<major>/profile/upstream/README.md for the bar for inclusion.
+# dotnet/runtime (the numbered NN_*.patch files), so that the subset is
+# proven to apply and build on its own. "upstream-perf" adds the downstream
+# riscv64 code-quality patches kept next to them as perf-*.patch; those are
+# zkVM-specific and never meant for submission.
 profile="${1:-minimal}"
 
+# Each entry is <dir>:<glob>; globs are applied in order within a dir.
 case "$profile" in
     minimal)
-        profile_dirs="minimal"
+        profile_sets="minimal:*.patch"
         ;;
     perf|performance)
-        profile_dirs="minimal perf"
+        profile_sets="minimal:*.patch perf:*.patch"
         ;;
     upstream)
-        profile_dirs="upstream"
+        profile_sets="upstream:[0-9]*.patch"
+        ;;
+    upstream-perf)
+        profile_sets="upstream:[0-9]*.patch upstream:perf-*.patch"
         ;;
     *)
-        echo "Unknown fixup profile: $profile (expected minimal, perf or upstream)" >&2
+        echo "Unknown fixup profile: $profile (expected minimal, perf, upstream or upstream-perf)" >&2
         exit 1
         ;;
 esac
@@ -40,7 +46,8 @@ if [ -z "$major" ] ; then
 fi
 echo "Detected .NET major version: $major"
 
-for dir in $profile_dirs ; do
+for set in $profile_sets ; do
+    dir="${set%%:*}"
     if [ ! -d "${TOP_DIR}/fixup/$major/profile/$dir" ] ; then
         echo "No '$dir' fixups for .NET $major (fixup/$major/profile/$dir does not exist)." >&2
         exit 1
@@ -48,8 +55,10 @@ for dir in $profile_dirs ; do
 done
 
 pushd dotnet/src/runtime
-    for dir in $profile_dirs ; do
-        for file in $(ls ${TOP_DIR}/fixup/$major/profile/$dir/*.patch | xargs) ; do
+    for set in $profile_sets ; do
+        dir="${set%%:*}"
+        glob="${set#*:}"
+        for file in $(ls ${TOP_DIR}/fixup/$major/profile/$dir/$glob | xargs) ; do
             echo Applying $file
             patch -p1 < $file
             res="$?"
