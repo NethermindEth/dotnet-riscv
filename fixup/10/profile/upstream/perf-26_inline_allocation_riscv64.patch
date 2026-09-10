@@ -1,0 +1,84 @@
+diff --git a/src/coreclr/jit/objectalloc.cpp b/src/coreclr/jit/objectalloc.cpp
+index 012248266bf..50358db60ce 100644
+--- a/src/coreclr/jit/objectalloc.cpp
++++ b/src/coreclr/jit/objectalloc.cpp
+@@ -1626,6 +1626,79 @@ GenTree* ObjectAllocator::MorphAllocObjNodeIntoHelperCall(GenTreeAllocObj* alloc
+     }
+ #endif
+ 
++#if defined(TARGET_RISCV64)
++    // ===== zkVM per-site inline allocation (fixed-size reference types) =======
++    // Replace `call CORINFO_HELP_NEWFAST(MT)` with an inline downward bump on a
++    // FIXED-address pointer cell (g_zk_bump_ptr @ 0xbffefff8 - see
++    // modules/zkvm_zisk/script.ld and pal/module.c) using a compile-time
++    // constant object size. Mirrors the C allocator's protocol (mem points 8
++    // bytes below the last object) so inline- and helper-allocated objects
++    // interleave on the same bump pointer. OOM is NOT checked (a valid block
++    // never exhausts the heap; the helper still checks for arrays/strings).
++    // Flip ZKVM_INLINE_ALLOC to 0 to disable.
++    // EXPECTED ITERATION POINTS if it miscompiles/asserts:
++    //   (1) ref vs native-int typing of the result local (TYP_REF read of an
++    //       TYP_I_IMPL local) - may need GT_BITCAST or a TYP_REF temp;
++    //   (2) COMMA-of-stores shape / GTF flags on the bump indirs;
++    //   (3) getHeapClassSize vs the runtime MT.BaseSize the helper uses.
++#define ZKVM_INLINE_ALLOC 1
++#if ZKVM_INLINE_ALLOC
++    // NativeAOT's getNewHelper returns CORINFO_HELP_NEWSFAST for a plain fixed-size
++    // reference class (no finalizer, no align8) - it maps to RhpNewFast, whose bump
++    // protocol this inline mirrors. (CORINFO_HELP_NEWFAST is NOT used for newobj here;
++    // the _FINALIZE / _ALIGN8 / _VC variants map to other helpers and are left alone.)
++    if ((helper == CORINFO_HELP_NEWSFAST) && (allocObj->gtAllocObjClsHnd != NO_CLASS_HANDLE) &&
++        (arg != nullptr))
++    {
++        const ssize_t  ZK_BUMP_ADDR = (ssize_t)0xbffefff8;
++        const unsigned MIN_OBJ_SIZE = 0x18;
++
++        unsigned baseSize = comp->info.compCompHnd->getHeapClassSize(allocObj->gtAllocObjClsHnd);
++        if (baseSize < MIN_OBJ_SIZE)
++            baseSize = MIN_OBJ_SIZE;
++        const ssize_t req = (ssize_t)((baseSize + 7u) & ~(unsigned)7u);
++
++        unsigned curLcl = comp->lvaGrabTemp(true DEBUGARG("zkVM inline-alloc cur"));
++        unsigned newLcl = comp->lvaGrabTemp(true DEBUGARG("zkVM inline-alloc new"));
++        comp->lvaTable[curLcl].lvType = TYP_I_IMPL;
++        comp->lvaTable[newLcl].lvType = TYP_I_IMPL;
++
++        // cur = *(intptr*)BUMP
++        GenTree* storeCur =
++            comp->gtNewStoreLclVarNode(curLcl, comp->gtNewIndir(TYP_I_IMPL,
++                                                                comp->gtNewIconNode(ZK_BUMP_ADDR, TYP_I_IMPL)));
++        // new_tmp = cur - req      (cur and req are 8-aligned, so align_down_8 is a no-op)
++        GenTree* storeNew = comp->gtNewStoreLclVarNode(
++            newLcl, comp->gtNewOperNode(GT_SUB, TYP_I_IMPL, comp->gtNewLclvNode(curLcl, TYP_I_IMPL),
++                                        comp->gtNewIconNode(req, TYP_I_IMPL)));
++        // *(intptr*)BUMP = new_tmp - 8
++        GenTree* storeBump = comp->gtNewStoreIndNode(
++            TYP_I_IMPL, comp->gtNewIconNode(ZK_BUMP_ADDR, TYP_I_IMPL),
++            comp->gtNewOperNode(GT_SUB, TYP_I_IMPL, comp->gtNewLclvNode(newLcl, TYP_I_IMPL),
++                                comp->gtNewIconNode(8, TYP_I_IMPL)));
++        // *(int64*)(new_tmp - 8) = req     (size header, for layout compat with the C allocator)
++        GenTree* storeHdr = comp->gtNewStoreIndNode(
++            TYP_LONG,
++            comp->gtNewOperNode(GT_SUB, TYP_I_IMPL, comp->gtNewLclvNode(newLcl, TYP_I_IMPL),
++                                comp->gtNewIconNode(8, TYP_I_IMPL)),
++            comp->gtNewIconNode(req, TYP_LONG));
++        // *(intptr*)new_tmp = MethodTable
++        GenTree* storeMt =
++            comp->gtNewStoreIndNode(TYP_I_IMPL, comp->gtNewLclvNode(newLcl, TYP_I_IMPL), arg);
++        // result value: new_tmp as an object reference
++        GenTree* result = comp->gtNewLclvNode(newLcl, TYP_REF);
++
++        GenTree* tree = comp->gtNewOperNode(GT_COMMA, TYP_REF, storeMt, result);
++        tree          = comp->gtNewOperNode(GT_COMMA, TYP_REF, storeHdr, tree);
++        tree          = comp->gtNewOperNode(GT_COMMA, TYP_REF, storeBump, tree);
++        tree          = comp->gtNewOperNode(GT_COMMA, TYP_REF, storeNew, tree);
++        tree          = comp->gtNewOperNode(GT_COMMA, TYP_REF, storeCur, tree);
++        return tree;
++    }
++#endif // ZKVM_INLINE_ALLOC
++    // =========================================================================
++#endif // TARGET_RISCV64
++
+     const bool morphArgs  = false;
+     GenTree*   helperCall = comp->fgMorphIntoHelperCall(allocObj, allocObj->gtNewHelper, morphArgs, arg);
+     if (helperHasSideEffects)

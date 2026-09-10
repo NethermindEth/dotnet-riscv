@@ -1,0 +1,54 @@
+diff --git a/src/coreclr/jit/flowgraph.cpp b/src/coreclr/jit/flowgraph.cpp
+index 1bff7f951db..7d6ee632a7d 100644
+--- a/src/coreclr/jit/flowgraph.cpp
++++ b/src/coreclr/jit/flowgraph.cpp
+@@ -77,6 +77,15 @@ PhaseStatus Compiler::fgInsertGCPolls()
+ {
+     PhaseStatus result = PhaseStatus::MODIFIED_NOTHING;
+ 
++#if defined(TARGET_RISCV64)
++    // zkVM: uGC is single-threaded, non-preemptive and never collects, so it
++    // never suspends a thread at a GC safe point. The GC polls the JIT inserts
++    // at loop back-edges / call sites are therefore dead - skip them entirely.
++    // (RhpGcPoll loads a flag and branches on every poll; in a hot interpreter
++    // loop that is a per-iteration tax with no purpose here.)
++    return result;
++#endif
++
+     if ((optMethodFlags & OMF_NEEDS_GCPOLLS) == 0)
+     {
+         return result;
+diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
+index e683b06e4a3..e24e8863c65 100644
+--- a/src/coreclr/jit/lower.cpp
++++ b/src/coreclr/jit/lower.cpp
+@@ -6595,6 +6595,16 @@ void Lowering::InsertPInvokeCallProlog(GenTreeCall* call)
+ {
+     JITDUMP("======= Inserting PInvoke call prolog\n");
+ 
++#if defined(TARGET_RISCV64)
++    // zkVM: the per-call PInvoke transition (CORINFO_HELP_JIT_PINVOKE_BEGIN ->
++    // RhpPInvoke) only exists to coordinate GC suspension / stack-walk of a
++    // thread that has entered native code. uGC never suspends or scans, and
++    // RhpThrowEx fail-fasts (no unwinding), so the transition is dead weight.
++    // Skip it (matches rhp/module.c, which already no-ops RhpPInvoke). The
++    // native call itself is still emitted normally below in the caller.
++    return;
++#endif
++
+     GenTree* insertBefore = call;
+     if (call->gtCallType == CT_INDIRECT)
+     {
+@@ -6761,6 +6771,12 @@ void Lowering::InsertPInvokeCallEpilog(GenTreeCall* call)
+ {
+     JITDUMP("======= Inserting PInvoke call epilog\n");
+ 
++#if defined(TARGET_RISCV64)
++    // zkVM: see InsertPInvokeCallProlog - skip the per-call PInvoke transition
++    // (CORINFO_HELP_JIT_PINVOKE_END -> RhpPInvokeReturn); dead under uGC.
++    return;
++#endif
++
+     if (comp->opts.ShouldUsePInvokeHelpers())
+     {
+         noway_assert(comp->lvaInlinedPInvokeFrameVar != BAD_VAR_NUM);

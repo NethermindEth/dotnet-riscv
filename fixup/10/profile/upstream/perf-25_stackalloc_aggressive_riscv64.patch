@@ -1,0 +1,22 @@
+--- a/src/coreclr/jit/objectalloc.cpp
++++ b/src/coreclr/jit/objectalloc.cpp
+@@ -1361,13 +1361,12 @@
+         return false;
+     }
+ 
+-    // Don't attempt to do stack allocations inside basic blocks that may be in a loop.
+-    //
+-    if (candidate.m_block->HasFlag(BBF_BACKWARD_JUMP))
+-    {
+-        candidate.m_onHeapReason = "[alloc in loop]";
+-        return false;
+-    }
++    // zkVM: allow stack allocation inside loop blocks. A non-escaping object
++    // reuses a single stack slot per iteration (no per-iteration growth),
++    // the escape analysis (conn-graph + conditional-escape + field tracking)
++    // keeps it sound, and the per-site zero-init below already handles the
++    // in-loop case. The original "[alloc in loop]" guard is removed so hot
++    // EVM-loop allocations can stack-allocate.
+ 
+     // Don't stack allocate at sites that were cloned or are clones. These sites now violate
+     // the single assignment assumption used by the escape analysis.

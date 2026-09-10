@@ -20,7 +20,7 @@ on:
       profile:
         description: 'fixup profile to apply'
         type: choice
-        options: [minimal, perf, upstream]
+        options: [minimal, perf, upstream, upstream-perf]
         default: minimal
       soft_float_abi:
         description: 'build the native runtime for the lp64/rv64im soft-float target (needs the custom Alpine rootfs)'

@@ -15,6 +15,8 @@ set -u
 export TOP_DIR="$(cd "$(dirname "$(which "$0")")" ; pwd -P)"
 
 profile="${1:-upstream}"
+# upstream-perf shares the upstream directory (its perf-*.patch files add nothing here).
+profile="${profile%-perf}"
 
 if [ ! -d dotnet/src/runtime ] ; then
     echo "dotnet/src/runtime not found" >&2

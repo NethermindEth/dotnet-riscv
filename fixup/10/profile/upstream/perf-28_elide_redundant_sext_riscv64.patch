@@ -1,0 +1,289 @@
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+index b2fece675..5c1631d55 100644
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -3124,6 +3124,52 @@ void CodeGen::genCkfinite(GenTree* treeNode)
+     genProduceReg(treeNode);
+ }
+ 
++//------------------------------------------------------------------------
++// RiscV64ValueIsSignExtendedInt32: does this node leave its result already
++// sign-extended from bit 31 into bits [63:32], so a following `sext.w` (e.g. the
++// 32-bit compare-operand normalization in genCodeForCompare / genCodeForJumpCompare)
++// would be a no-op and can be skipped?
++//
++// Covers RV64 W-form producers (addw/subw/mulw/divw/sllw/...), 4-byte/byte/half loads
++// (lb/lh/lw sign-extend; lbu/lhu are non-negative), and TYP_INT locals/params (kept
++// sign-extended by the ABI and int-store paths). TYP_UINT loads are excluded (lwu
++// zero-extends; bit 31 may be set). Keep in sync with the matching check in
++// Lowering::TryRemoveCast (lower.cpp, TARGET_RISCV64).
++//
++static bool RiscV64ValueIsSignExtendedInt32(GenTree* node)
++{
++    if (genActualType(node->TypeGet()) != TYP_INT)
++    {
++        return false;
++    }
++    // Producers whose 32-bit result is already sign-extended into bits [63:32]:
++    //  - W-form arithmetic/shifts (addw/subw/mulw/divw/sllw/srlw/sraw/...) always sext;
++    //  - GT_AND/OR/XOR of sign-extended int32 operands stay sign-extended on RV64;
++    //  - a GT_CALL int return is sign-extended by the ABI, like incoming params;
++    //  - a TYP_INT constant is materialized sign-extended; an array length is a
++    //    non-negative, sign-extending load.
++    if (node->OperIs(GT_ADD, GT_SUB, GT_MUL, GT_DIV, GT_MOD, GT_UDIV, GT_UMOD, GT_LSH, GT_RSH, GT_RSZ, GT_NEG,
++                     GT_AND, GT_OR, GT_XOR, GT_CALL, GT_CNS_INT, GT_ARR_LENGTH))
++    {
++        return true;
++    }
++    if (node->OperIs(GT_CAST))
++    {
++        // A signed cast sign-extends its result; an unsigned (zero-extending) cast does not.
++        return !node->IsUnsigned();
++    }
++    if (node->OperIs(GT_IND, GT_LCL_FLD))
++    {
++        const var_types t = node->TypeGet();
++        return (t == TYP_INT) || (t == TYP_BYTE) || (t == TYP_UBYTE) || (t == TYP_SHORT) || (t == TYP_USHORT);
++    }
++    if (node->OperIs(GT_LCL_VAR))
++    {
++        return node->TypeGet() == TYP_INT;
++    }
++    return false;
++}
++
+ //------------------------------------------------------------------------
+ // genCodeForCompare: Produce code for a GT_EQ/GT_NE/GT_LT/GT_LE/GT_GE/GT_GT node.
+ //
+@@ -3210,8 +3256,12 @@ void CodeGen::genCodeForCompare(GenTreeOp* tree)
+                     regNumber tmpRegOp1 = internalRegisters.GetSingle(tree);
+                     assert(regOp1 != tmpRegOp1);
+                     imm = static_cast<int32_t>(imm);
+-                    emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp1, regOp1);
+-                    regOp1 = tmpRegOp1;
++                    // Skip the 32-bit operand sign-extension when op1 is already sign-extended.
++                    if (!RiscV64ValueIsSignExtendedInt32(op1))
++                    {
++                        emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp1, regOp1);
++                        regOp1 = tmpRegOp1;
++                    }
+                 }
+             }
+ 
+@@ -3303,10 +3353,16 @@ void CodeGen::genCodeForCompare(GenTreeOp* tree)
+                     regNumber tmpRegOp2 = internalRegisters.GetSingle(tree);
+                     assert(regOp1 != tmpRegOp2);
+                     assert(regOp2 != tmpRegOp2);
+-                    emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp1, regOp1);
+-                    emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp2, regOp2);
+-                    regOp1 = tmpRegOp1;
+-                    regOp2 = tmpRegOp2;
++                    if (!RiscV64ValueIsSignExtendedInt32(op1))
++                    {
++                        emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp1, regOp1);
++                        regOp1 = tmpRegOp1;
++                    }
++                    if (!RiscV64ValueIsSignExtendedInt32(op2))
++                    {
++                        emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp2, regOp2);
++                        regOp2 = tmpRegOp2;
++                    }
+                 }
+ 
+                 instruction slt = isUnsigned ? INS_sltu : INS_slt;
+@@ -3376,11 +3432,14 @@ void CodeGen::genCodeForJumpCompare(GenTreeOpCC* tree)
+             {
+                 case EA_4BYTE:
+                 {
+-                    regNumber tmpRegOp1 = rsGetRsvdReg();
+-                    assert(regOp1 != tmpRegOp1);
+                     imm = static_cast<int32_t>(imm);
+-                    emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp1, regOp1);
+-                    regOp1 = tmpRegOp1;
++                    if (!RiscV64ValueIsSignExtendedInt32(op1))
++                    {
++                        regNumber tmpRegOp1 = rsGetRsvdReg();
++                        assert(regOp1 != tmpRegOp1);
++                        emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp1, regOp1);
++                        regOp1 = tmpRegOp1;
++                    }
+                     break;
+                 }
+                 case EA_8BYTE:
+@@ -3411,7 +3470,7 @@ void CodeGen::genCodeForJumpCompare(GenTreeOpCC* tree)
+         }
+         else
+         {
+-            if (cmpSize == EA_4BYTE)
++            if ((cmpSize == EA_4BYTE) && !RiscV64ValueIsSignExtendedInt32(op1))
+             {
+                 regNumber tmpRegOp1 = rsGetRsvdReg();
+                 assert(regOp1 != tmpRegOp1);
+@@ -3464,10 +3523,16 @@ void CodeGen::genCodeForJumpCompare(GenTreeOpCC* tree)
+             regNumber tmpRegOp2 = rsGetRsvdReg();
+             assert(regOp1 != tmpRegOp2);
+             assert(regOp2 != tmpRegOp2);
+-            emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp1, regOp1);
+-            emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp2, regOp2);
+-            regOp1 = tmpRegOp1;
+-            regOp2 = tmpRegOp2;
++            if (!RiscV64ValueIsSignExtendedInt32(op1))
++            {
++                emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp1, regOp1);
++                regOp1 = tmpRegOp1;
++            }
++            if (!RiscV64ValueIsSignExtendedInt32(op2))
++            {
++                emit->emitIns_R_R(INS_sext_w, EA_8BYTE, tmpRegOp2, regOp2);
++                regOp2 = tmpRegOp2;
++            }
+         }
+ 
+         switch (cond.GetCode())
+@@ -4876,14 +4941,20 @@ void CodeGen::genRangeCheck(GenTree* oper)
+     if (genActualType(length) == TYP_INT)
+     {
+         regNumber tempReg = internalRegisters.Extract(oper);
+-        GetEmitter()->emitIns_R_R(INS_sext_w, EA_4BYTE, tempReg, lengthReg);
+-        lengthReg = tempReg;
++        if (!RiscV64ValueIsSignExtendedInt32(length))
++        {
++            GetEmitter()->emitIns_R_R(INS_sext_w, EA_4BYTE, tempReg, lengthReg);
++            lengthReg = tempReg;
++        }
+     }
+     if (genActualType(index) == TYP_INT)
+     {
+         regNumber tempReg = internalRegisters.GetSingle(oper);
+-        GetEmitter()->emitIns_R_R(INS_sext_w, EA_4BYTE, tempReg, indexReg);
+-        indexReg = tempReg;
++        if (!RiscV64ValueIsSignExtendedInt32(index))
++        {
++            GetEmitter()->emitIns_R_R(INS_sext_w, EA_4BYTE, tempReg, indexReg);
++            indexReg = tempReg;
++        }
+     }
+ 
+ #ifdef DEBUG
+diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
+index 3608c4217..3bf81adaa 100644
+--- a/src/coreclr/jit/emitriscv64.cpp
++++ b/src/coreclr/jit/emitriscv64.cpp
+@@ -650,6 +650,32 @@ void emitter::emitIns_R_R(
+ {
+     code_t code = emitInsCode(ins);
+ 
++    // zkVM/RISC-V64 codegen peephole: drop an in-place `sext.w rd,rd` whose source was
++    // just produced by a W-form op or a sign-extending/byte/half load. Per the RV64 spec,
++    // all *.W instructions and lb/lh/lw sign-extend their 32-bit result into bits [63:32],
++    // and lbu/lhu yield a non-negative value (bit 31 == 0), so re-extending in place is a
++    // no-op. We deliberately handle ONLY reg1==reg2 here: when the destination differs the
++    // value still has to be moved, so converting to `mv` saves nothing (it just trades a
++    // sext.w for a mv). Those reg1!=reg2 cases are instead removed at their source by the
++    // redundant-cast elision in Lowering::TryRemoveCast (riscv64), which drops the GT_CAST
++    // node entirely so no extra register/move is ever allocated. Conservative: the producer
++    // must be the immediately-preceding instruction in the same group writing reg2.
++    if ((ins == INS_sext_w) && (reg1 == reg2) && (emitLastIns != nullptr) &&
++        (emitLastInsIG == emitCurIG) && (emitLastIns->idReg1() == reg2))
++    {
++        const instruction p = emitLastIns->idIns();
++        const bool        prevSignExtends =
++            (p == INS_lb) || (p == INS_lh) || (p == INS_lw) || (p == INS_lbu) || (p == INS_lhu) ||
++            (p == INS_sext_w) || (p == INS_addiw) || (p == INS_slliw) || (p == INS_srliw) ||
++            (p == INS_sraiw) || (p == INS_addw) || (p == INS_subw) || (p == INS_sllw) || (p == INS_srlw) ||
++            (p == INS_sraw) || (p == INS_mulw) || (p == INS_divw) || (p == INS_divuw) || (p == INS_remw) ||
++            (p == INS_remuw);
++        if (prevSignExtends)
++        {
++            return; // already sign-extended in place: the sext.w is dead
++        }
++    }
++
+     if (INS_mov == ins || INS_sext_w == ins || INS_not == ins || (INS_clz <= ins && ins <= INS_rev8))
+     {
+         assert(isGeneralRegisterOrR0(reg1));
+diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
+index 3ba77e822..5d4053b9c 100644
+--- a/src/coreclr/jit/lower.cpp
++++ b/src/coreclr/jit/lower.cpp
+@@ -9547,6 +9547,80 @@ bool Lowering::TryRemoveCast(GenTreeCast* node)
+         return false;
+     }
+ 
++#ifdef TARGET_RISCV64
++    // zkVM/RISCV64 CQ: elide a redundant sign-extending cast.
++    //
++    // On RV64 every *.W instruction (addw/subw/mulw/divw/sllw/srlw/sraw/...) writes a result
++    // already sign-extended into bits [63:32]. A non-overflow cast that only sign-extends a
++    // 32-bit value -- int->int (same size) or signed int->long widening -- is therefore a pure
++    // no-op when its operand is produced by such a W-form op. RyuJIT still emits it as a
++    // `sext.w`; because the cast gets its own destination register the emit-level peephole can
++    // at best turn it into a `mv`, not delete it. Removing the GT_CAST node here, before LSRA,
++    // drops the operation AND the redundant register/move: the consumer reads the operand's
++    // already-sign-extended 64-bit register directly. The parent selects its W/non-W form from
++    // its own type, so feeding it the TYP_INT operand is value-correct (a spilled TYP_INT temp
++    // reloads with a sign-extending `lw`).
++    {
++        GenTree* const  op1     = node->CastOp();
++        const var_types srcType = genActualType(op1->TypeGet());
++        const var_types dstType = node->CastToType();
++        // Does op1 leave its result already sign-extended from bit 31 into [63:32]?
++        bool op1IsSignExtended = false;
++        if (genActualType(op1->TypeGet()) == TYP_INT)
++        {
++            if (op1->OperIs(GT_ADD, GT_SUB, GT_MUL, GT_DIV, GT_MOD, GT_UDIV, GT_UMOD, GT_LSH, GT_RSH,
++                            GT_RSZ, GT_NEG, GT_AND, GT_OR, GT_XOR, GT_CALL, GT_CNS_INT, GT_ARR_LENGTH))
++            {
++                // W-form ops sign-extend their 32-bit result; AND/OR/XOR of sign-extended int32
++                // operands stay sign-extended; an int GT_CALL return is sign-extended by the ABI;
++                // a TYP_INT constant is materialized sign-extended; an array length is a
++                // non-negative sign-extending load.
++                op1IsSignExtended = true;
++            }
++            else if (op1->OperIs(GT_CAST))
++            {
++                // A signed cast sign-extends its result; an unsigned (zero-extending) cast does not.
++                op1IsSignExtended = !op1->IsUnsigned();
++            }
++            else if (op1->OperIs(GT_IND, GT_LCL_FLD))
++            {
++                // A 4-byte/byte/half load: lb/lh/lw sign-extend, lbu/lhu yield a non-negative
++                // value (bit 31 == 0). Exclude TYP_UINT, whose lwu zero-extends and may have
++                // bit 31 set, so a following sext.w would change the value.
++                const var_types loadType = op1->TypeGet();
++                op1IsSignExtended = (loadType == TYP_INT) || (loadType == TYP_BYTE) ||
++                                    (loadType == TYP_UBYTE) || (loadType == TYP_SHORT) ||
++                                    (loadType == TYP_USHORT);
++            }
++            else if (op1->OperIs(GT_LCL_VAR))
++            {
++                // A TYP_INT local/param holds a valid int32 that the RV64 backend keeps
++                // sign-extended: incoming int args are sign-extended per ABI, and int stores
++                // go through W-form / sign-extending paths. State-root validation backstops
++                // the rare corner cases the cast codegen otherwise sexts defensively for.
++                op1IsSignExtended = (op1->TypeGet() == TYP_INT);
++            }
++        }
++
++        if ((srcType == TYP_INT) && !node->IsUnsigned() &&
++            ((dstType == TYP_INT) || (dstType == TYP_LONG) || (dstType == TYP_I_IMPL)) && op1IsSignExtended)
++        {
++            JITDUMP("Eliding redundant sign-extending cast over a sign-extended producer\n");
++            LIR::Use use;
++            if (BlockRange().TryGetUse(node, &use))
++            {
++                use.ReplaceWith(op1);
++            }
++            else
++            {
++                op1->SetUnusedValue();
++            }
++            BlockRange().Remove(node);
++            return true;
++        }
++    }
++#endif // TARGET_RISCV64
++
+     GenTree* op = node->CastOp();
+     if (!op->OperIsConst())
+     {
