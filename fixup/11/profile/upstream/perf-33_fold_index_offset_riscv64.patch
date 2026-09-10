@@ -1,6 +1,6 @@
 Port of fixup/10/profile/perf/33_fold_index_offset_riscv64 to .NET 11.
-IGF_HAS_REMOVED_INSTR is already unconditional in .NET 11; only the
-emitRemoveLastInstruction guards and the riscv64 emitter part remain.
+Same change as on .NET 10; only the emit.h flag definition moved (it is
+now a shifted bit next to IGF_OUT_OF_ORDER_HEAD).
 
 diff --git a/src/coreclr/jit/emit.cpp b/src/coreclr/jit/emit.cpp
 --- a/src/coreclr/jit/emit.cpp
@@ -26,6 +26,15 @@ diff --git a/src/coreclr/jit/emit.cpp b/src/coreclr/jit/emit.cpp
 diff --git a/src/coreclr/jit/emit.h b/src/coreclr/jit/emit.h
 --- a/src/coreclr/jit/emit.h
 +++ b/src/coreclr/jit/emit.h
+@@ -310,7 +310,7 @@
+ // without updating the IG's size/offsets.
+ #define IGF_REMOVED_ALIGN     (1 << 11)
+ #define IGF_HAS_REMOVABLE_JMP (1 << 12) // this group ends with an unconditional jump which is a candidate for removal
+-#ifdef TARGET_ARM64
++#if defined(TARGET_ARM64) || defined(TARGET_RISCV64)
+ #define IGF_HAS_REMOVED_INSTR (1 << 13) // this group has an instruction that was removed.
+ #endif
+ #define IGF_OUT_OF_ORDER_HEAD (1 << 14) // first group (generated in-order) of a region generated out-of-order
 @@ -3087,7 +3087,7 @@
      insGroup* emitSavIG(bool emitAdd = false);
      void      emitNxtIG(bool extend = false);
