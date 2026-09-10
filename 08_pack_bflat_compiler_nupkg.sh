@@ -129,6 +129,11 @@ PYEOF
         # assemblies and never a full-framework build task, so empty
         # NetFrameworkToolCurrent to drop the net472 target entirely.
         #
+        # NuGetAudit=false: the restore audit turns newly published advisories
+        # into NU19xx errors (r2rdump's Microsoft.DiaSymReader.Native did so
+        # overnight); the main build already tolerates them via
+        # --warnnotaserror, and this stage-one build is throwaway.
+        #
         # FeatureXplatEventSource=false matches the main build: the LTTng
         # XplatEventSource path is off there, and the cross rootfs carries no
         # lttng-ust-dev, which the native configure would otherwise demand.
@@ -142,6 +147,7 @@ PYEOF
                    -p:StageOneBuild=true \
                    -p:NetFrameworkToolCurrent= \
                    -p:FeatureXplatEventSource=false \
+                   -p:NuGetAudit=false \
                    -p:RestoreAdditionalProjectSources="${local_packs}" \
                    "${version_args[@]}"
     popd
