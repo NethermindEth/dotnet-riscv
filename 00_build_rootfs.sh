@@ -29,5 +29,13 @@ pushd "${tmp_dir}"
         ./eng/common/cross/build-rootfs.sh riscv64 noble --skipemulation --skipunmount --rootfsdir $(pwd)/.tools/rootfs/riscv64-gnu
         echo Preparing musl rootfs
         ./eng/common/cross/build-rootfs.sh riscv64 alpineedge --skipemulation --skipunmount --rootfsdir $(pwd)/.tools/rootfs/riscv64-musl
+        if [ "${SOFT_FLOAT_ROOTFS:-true}" = "true" ] ; then
+            # The mirror's musl is built for rv64ima: its locks carry lr/sc.
+            # The zkVM guest decodes only base rv64im, so rebuild musl for
+            # rv64im from the same aport and overwrite the stock libc.a + crt
+            # in the musl rootfs; the pack steps then pick up the clean copy.
+            echo Rebuilding musl for rv64im
+            "${TOP_DIR}/build_musl_rv64im.sh" "$(pwd)/.tools/rootfs/riscv64-musl/usr/lib"
+        fi
     popd
 popd

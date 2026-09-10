@@ -1,0 +1,84 @@
+zkVM RISC-V: JIT data (jump tables, span/string constants) is emitted as
+separate read-only data nodes instead of being folded into the code chunk
+after the method (arm64-style), because the zkVM transpilers decode the
+code section linearly and reject data between instructions. Same as
+fixup/11/profile/minimal/20.
+
+diff --git a/src/coreclr/jit/ee_il_dll.cpp b/src/coreclr/jit/ee_il_dll.cpp
+--- a/src/coreclr/jit/ee_il_dll.cpp
++++ b/src/coreclr/jit/ee_il_dll.cpp
+@@ -1169,7 +1169,10 @@
+ 
+ bool Compiler::eeDataWithCodePointersNeedsRelocs()
+ {
+-#if defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
++// RISCV64 intentionally excluded: JIT data chunks are no longer folded into
++// the code chunk (see eeAllocMem), so data with code pointers always needs
++// relocations, like the other separate-allocation targets.
++#if defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64)
+     // On these platforms, for ELF/MachO, we allocate this data in read-write
+     // data and need to report relocations to the EE. Otherwise we allocate
+     // next to the code chunk and hence do not need to report any relocs.
+@@ -1224,7 +1227,14 @@
+ 
+     int firstDataChunk = chunks.Height();
+ 
+-#if defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
++// RISCV64 intentionally excluded: by NOT folding the JIT data chunks into the
++// hot code allocation here, the AOT pipeline emits them as separate data
++// nodes placed in their own read-only data section. The auipc + addi/ld
++// sequences that reference them use the paired RISCV64_PCREL_I relocation
++// resolved at link time, so code and read-only data no longer have to be laid
++// out adjacently (which the baked-at-emit-time displacement previously
++// required).
++#if defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64)
+ 
+     // For arm64/LoongArch64/RISCV64, we want to allocate JIT data always adjacent to code similar to what native
+     // compiler does.
+@@ -1259,7 +1269,7 @@
+         chunks.Push(dataChunks[i]);
+     }
+ 
+-#endif // defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
++#endif // defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64)
+ 
+     AllocMemArgs args;
+     args.chunks      = chunks.Data();
+@@ -1291,7 +1301,8 @@
+ 
+     int curDataChunk = firstDataChunk;
+ 
+-#if defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
++// RISCV64 intentionally excluded, see the fold loop above.
++#if defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64)
+ 
+     // Fix up data section pointers.
+     for (unsigned i = 0; i < numDataChunks; i++)
+@@ -1319,7 +1330,7 @@
+         curDataChunk++;
+     }
+ 
+-#endif // defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
++#endif // defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64)
+ }
+ 
+ void Compiler::eeReserveUnwindInfo(bool isFunclet, bool isColdCode, ULONG unwindSize)
+diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
+--- a/src/coreclr/jit/emitriscv64.cpp
++++ b/src/coreclr/jit/emitriscv64.cpp
+@@ -1235,9 +1235,12 @@
+     id->idInsOpt(INS_OPTS_RC);
+     id->idCodeSize(2 * sizeof(code_t)); // auipc + load/addi
+ 
+-    // TODO-RISCV64: this maybe deleted.
+-    id->idSetIsBound(); // We won't patch address since we will know the exact distance
+-                        // once JIT code and data are allocated together.
++    // Data chunks are no longer allocated adjacent to the code (see
++    // eeAllocMem), so the exact code->data distance is never known at emit
++    // time. Always take the relocation path: emitOutputInstr_OptsRc emits
++    // auipc + ld/addi with zero immediates and records a RISCV64_PCREL_I
++    // relocation that the VM (JIT) or the linker (AOT) resolves.
++    id->idSetIsDspReloc();
+ 
+     assert(addrReg == REG_NA); // NOTE: for RISV64, not support addrReg != REG_NA.
+ 
