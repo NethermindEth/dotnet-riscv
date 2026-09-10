@@ -26,11 +26,13 @@ trap 'rm -rf "$work"' EXIT
 
 # --- 1. sparse-checkout only main/musl from aports (no full clone) -----------
 # gitlab.alpinelinux.org answers the GitHub runners with HTTP 418, so take the
-# official GitHub mirror of aports first and fall back to GitLab.
+# official GitHub mirror of aports first and fall back to GitLab. The clone
+# keeps the history (blobs are fetched on demand) so the aport revision can be
+# matched to the musl the rootfs was installed with.
 echo "Fetching Alpine musl aport (ref: $aports_ref)"
 aports_cloned=0
 for aports_url in https://github.com/alpinelinux/aports.git https://gitlab.alpinelinux.org/alpine/aports.git; do
-    if git -C "$work" clone --no-checkout --depth 1 --filter=blob:none \
+    if git -C "$work" clone --no-checkout --filter=blob:none \
         -b "$aports_ref" "$aports_url" aports 2>/dev/null; then
         aports_cloned=1
         break
@@ -39,7 +41,37 @@ for aports_url in https://github.com/alpinelinux/aports.git https://gitlab.alpin
 done
 [ "$aports_cloned" = 1 ] || { echo "cannot clone the aports repository" >&2; exit 1; }
 git -C "$work/aports" sparse-checkout set --no-cone main/musl
-git -C "$work/aports" checkout >/dev/null 2>&1
+
+# The rebuilt libc.a has to match the headers and the musl-dev objects already
+# in the rootfs: pick the aport revision whose pkgver-pkgrel is the installed
+# musl package (apk's installed db sits at lib/apk/db/installed), falling
+# back to the branch head when it cannot be found.
+rootfs="$(cd "$target_libdir/../.." 2>/dev/null && pwd || true)"
+installed_ver=""
+if [ -n "$rootfs" ] && [ -f "$rootfs/lib/apk/db/installed" ]; then
+    installed_ver="$(awk '/^P:musl$/{f=1} f&&/^V:/{print substr($0,3); exit}' "$rootfs/lib/apk/db/installed")"
+fi
+aports_rev="$aports_ref"
+if [ -n "$installed_ver" ]; then
+    echo "Rootfs musl package: $installed_ver"
+    want_ver="${installed_ver%-r*}"
+    want_rel="${installed_ver##*-r}"
+    for c in $(git -C "$work/aports" log --format=%H -n 400 "$aports_ref" -- main/musl/APKBUILD); do
+        apkbuild="$(git -C "$work/aports" show "$c:main/musl/APKBUILD" 2>/dev/null)" || continue
+        v="$(sed -n 's/^pkgver=//p' <<<"$apkbuild")"
+        r="$(sed -n 's/^pkgrel=//p' <<<"$apkbuild")"
+        if [ "$v" = "$want_ver" ] && [ "$r" = "$want_rel" ]; then
+            aports_rev="$c"
+            break
+        fi
+    done
+    if [ "$aports_rev" = "$aports_ref" ]; then
+        echo "warning: no aports revision found for musl $installed_ver; using $aports_ref" >&2
+    else
+        echo "Using aports revision $aports_rev (musl $installed_ver)"
+    fi
+fi
+git -C "$work/aports" checkout -q "$aports_rev"
 aport="$work/aports/main/musl"
 
 pkgver="$(sed -n 's/^pkgver=//p' "$aport/APKBUILD")"
