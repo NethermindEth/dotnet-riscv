@@ -347,6 +347,14 @@ jobs:
           fi
         fi
 
+        # The SDK version of a servicing branch does not move between VMR
+        # commits, so a rebuild of the same profile would collide with the
+        # release already cut from it. Keep the tag distinct with the run number.
+        if git ls-remote --exit-code --tags origin "refs/tags/$tag_name" > /dev/null 2>&1 ; then
+          echo "tag $tag_name already exists; suffixing with the run number"
+          tag_name="$tag_name.r${{ github.run_number }}"
+        fi
+
         echo "tag_name: $tag_name"
         echo "artifacts: $artifacts"
 
