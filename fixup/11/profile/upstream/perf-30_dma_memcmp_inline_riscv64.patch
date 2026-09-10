@@ -167,7 +167,7 @@ diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
 +                // op1 = dst addr (addi rs1), op2 = src addr (csrs operand). The node's
 +                // result is the memcmp difference (0 == equal); SequenceEqual returns
 +                // true when equal, so compare the difference against zero.
-+                GenTree* dmaCmp = new (comp, GT_DMA_CMP) GenTreeDmaCmp(TYP_INT, lArg, rArg, (unsigned)cnsSize);
++                GenTree* dmaCmp = new (m_compiler, GT_DMA_CMP) GenTreeDmaCmp(TYP_INT, lArg, rArg, (unsigned)cnsSize);
 +                dmaCmp->gtFlags |= GTF_GLOB_REF; // reads both buffers from memory
 +                GenTree* zeroCns = m_compiler->gtNewIconNode(0, TYP_INT);
 +                GenTree* result  = m_compiler->gtNewOperNode(GT_EQ, TYP_INT, dmaCmp, zeroCns);
