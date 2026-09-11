@@ -1,0 +1,116 @@
+NativeAOT runtime: read the byte-packed unwind/LSDA side tables without
+misaligned wide loads. UnixNativeCodeManager (FDE length, LSDA and method
+start offsets, EH info offset, associated data) and RuntimeInstance (unboxing
+stub target) read int32 fields at arbitrary byte offsets with a plain
+*(int32_t*) cast; on SP1 that is a fatal LW/LD at a misaligned address (the
+first one the guest hits is EHEnumInit). Go through memcpy, which the
+compiler expands into byte loads on a target without unaligned-access
+support.
+
+--- a/src/coreclr/nativeaot/Runtime/RuntimeInstance.cpp	2026-09-11 15:22:30
++++ b/src/coreclr/nativeaot/Runtime/RuntimeInstance.cpp	2026-09-11 15:22:58
+@@ -2,6 +2,7 @@
+ // The .NET Foundation licenses this file to you under the MIT license.
+ 
+ #include "common.h"
++#include <string.h>
+ #include "CommonTypes.h"
+ #include "CommonMacros.h"
+ #include "daccess.h"
+@@ -153,7 +154,14 @@
+             uint8_t flags = *pData++;
+ 
+             if ((flags & (uint8_t)AssociatedDataFlags::HasUnboxingStubTarget) != 0)
+-                return pData + *dac_cast<PTR_int32_t>(pData);
++            {
++                // Byte-packed side table: read through memcpy so the compiler emits
++                // byte loads rather than a wide load that traps on targets that reject
++                // misaligned access (SP1, OpenVM).
++                int32_t offset;
++                memcpy(&offset, pData, sizeof(offset));
++                return pData + offset;
++            }
+         }
+     }
+ 
+--- a/src/coreclr/nativeaot/Runtime/unix/UnixNativeCodeManager.cpp	2026-09-11 15:20:11
++++ b/src/coreclr/nativeaot/Runtime/unix/UnixNativeCodeManager.cpp	2026-09-11 15:22:08
+@@ -1,6 +1,7 @@
+ // Licensed to the .NET Foundation under one or more agreements.
+ // The .NET Foundation licenses this file to you under the MIT license.
+ #include "common.h"
++#include <string.h>
+ 
+ #include "CommonTypes.h"
+ #include "CommonMacros.h"
+@@ -24,6 +25,25 @@
+ 
+ #if defined(TARGET_APPLE)
+ #include <mach-o/compact_unwind_encoding.h>
++
++// The unwind-info/LSDA side tables are byte-packed, so the 32-bit fields below sit
++// at arbitrary byte offsets. Read them through memcpy: the compiler expands that
++// into byte loads on a target without unaligned-access support, whereas a plain
++// wide load traps on executors that reject misaligned access (SP1, OpenVM).
++static inline int32_t ReadInt32Unaligned(const void* p)
++{
++    int32_t v;
++    memcpy(&v, p, sizeof(v));
++    return v;
++}
++
++static inline uint32_t ReadUInt32Unaligned(const void* p)
++{
++    uint32_t v;
++    memcpy(&v, p, sizeof(v));
++    return v;
++}
++
+ #endif // TARGET_APPLE
+ 
+ #if defined(TARGET_ARM64)
+@@ -138,11 +158,11 @@
+ #endif // TARGET_APPLE
+ 
+     const uint8_t* p = (const uint8_t*)pNativeMethodInfo->unwind_info;
+-    uint32_t fdeLength = *dac_cast<PTR_uint32_t>((uint8_t*)p);
++    uint32_t fdeLength = ReadUInt32Unaligned(p);
+     const uint8_t* end = p + fdeLength;
+     p += sizeof(uint32_t); // FDE length
+ 
+-    if (*dac_cast<PTR_uint32_t>((uint8_t*)p) == 0)
++    if (ReadUInt32Unaligned(p) == 0)
+         return false;
+ 
+     p += sizeof(uint32_t); // CIE pointer
+@@ -329,10 +349,10 @@
+     if ((unwindBlockFlags & UBF_FUNC_KIND_MASK) != UBF_FUNC_KIND_ROOT)
+     {
+         // Funclets just refer to the main function's blob
+-        pMethodInfo->pMainLSDA = p + *dac_cast<PTR_int32_t>(p);
++        pMethodInfo->pMainLSDA = p + ReadInt32Unaligned(p);
+         p += sizeof(int32_t);
+ 
+-        pMethodInfo->pMethodStartAddress = dac_cast<PTR_VOID>(procInfo.start_ip - *dac_cast<PTR_int32_t>(p));
++        pMethodInfo->pMethodStartAddress = dac_cast<PTR_VOID>(procInfo.start_ip - ReadInt32Unaligned(p));
+     }
+     else
+     {
+@@ -1596,7 +1616,7 @@
+     *pMethodStartAddress = pNativeMethodInfo->pMethodStartAddress;
+ 
+     pEnumState->pMethodStartAddress = dac_cast<PTR_uint8_t>(pNativeMethodInfo->pMethodStartAddress);
+-    pEnumState->pEHInfo = dac_cast<PTR_uint8_t>(p + *dac_cast<PTR_int32_t>(p));
++    pEnumState->pEHInfo = dac_cast<PTR_uint8_t>(p + ReadInt32Unaligned(p));
+     pEnumState->uClause = 0;
+     pEnumState->nClauses = NativePrimitiveDecoder::ReadUnsigned(pEnumState->pEHInfo);
+ 
+@@ -1698,7 +1718,7 @@
+     if ((unwindBlockFlags & UBF_FUNC_HAS_ASSOCIATED_DATA) == 0)
+         return NULL;
+ 
+-    return dac_cast<PTR_VOID>(p + *dac_cast<PTR_int32_t>(p));
++    return dac_cast<PTR_VOID>(p + ReadInt32Unaligned(p));
+ }
+ 
+ extern "C" void RegisterCodeManager(ICodeManager * pCodeManager, PTR_VOID pvStartRange, uint32_t cbRange);
