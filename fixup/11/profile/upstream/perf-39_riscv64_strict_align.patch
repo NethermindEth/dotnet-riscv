@@ -1,0 +1,385 @@
+Strict alignment for the riscv64 JIT (JitRiscV64StrictAlign, off by default).
+
+SP1 rejects every misaligned load/store and OpenVM's load/store chip only
+proves the aligned shifts, but RyuJIT only knows about the accesses the front
+end flags unaligned (fixup perf-35 expands those byte-wise). Everything else
+it assumes aligned, which holds for object fields, array elements, stack
+locals and statics but not for byrefs into spans, Unsafe.As reinterpretation
+or pointer arithmetic: one mainnet block on SP1 trips ~68k misaligned
+accesses in JIT'd Nethermind code (Hash256 ctor, EVM push/mload, Keccak, RLP,
+Trie) and in the BCL's software Vector128 paths.
+
+With the knob on, Lowering proves alignment structurally (object ref + const
+offset, scaled index with scale a multiple of the width, LEA over those,
+LCL_ADDR offsets, handles) and marks every other scalar IND/STOREIND and every
+unrolled block copy/init with an unknown source or destination as unaligned.
+Codegen then emits an inline alignment test with the single wide instruction
+as the fast path and the perf-35 byte-wise sequence as the slow path, so the
+common aligned case costs andi+bnez. Block copies test both addresses at once
+(or/andi/bnez) and fall back to the byte loop. bflat passes the knob for
+--libc sp1 and openvm. Applies on top of perf-35.
+
+--- a/src/coreclr/jit/codegenriscv64.cpp	2026-09-11 15:20:11
++++ b/src/coreclr/jit/codegenriscv64.cpp	2026-09-11 15:24:20
+@@ -2067,6 +2067,22 @@
+     }
+ }
+ 
++//------------------------------------------------------------------------
++// Alignment-checked accesses (genCodeForIndir / genCodeForStoreInd): an access
++//   flagged unaligned is usually aligned at run time (a byref that happens to land
++//   on a boundary; every span element the JIT could not prove). Test the low bits
++//   and take the single wide instruction when they are zero, the byte-wise
++//   sequence otherwise:
++//
++//       andi  tmp, addr, size-1
++//       bnez  tmp, slow
++//       ld/sd dst, 0(addr)
++//       j     done
++//     slow:
++//       <byte-wise>
++//     done:
++//
++
+ // Generate code for InitBlk by performing a loop unroll
+ // Preconditions:
+ //   a) Both the size and fill byte value are integer constants.
+@@ -2986,7 +3002,17 @@
+             // it holds a (possibly interior) GC pointer keep it reported until the last
+             // byte is stored.
+             gcInfo.gcMarkRegPtrVal(addrReg, addr->TypeGet());
+-            genRiscV64ByteWiseStore(GetEmitter(), type, dataReg, addrReg, intTmp);
++            {
++                BasicBlock* slow = genCreateTempLabel();
++                BasicBlock* done = genCreateTempLabel();
++                GetEmitter()->emitIns_R_R_I(INS_andi, EA_PTRSIZE, intTmp, addrReg, (int)(genTypeSize(type) - 1));
++                GetEmitter()->emitIns_J_cond_la(INS_bne, slow, intTmp, REG_R0);
++                GetEmitter()->emitIns_R_R_I(ins, emitActualTypeSize(type), dataReg, addrReg, 0);
++                GetEmitter()->emitIns_J(INS_j, done);
++                genDefineTempLabel(slow);
++                genRiscV64ByteWiseStore(GetEmitter(), type, dataReg, addrReg, intTmp);
++                genDefineTempLabel(done);
++            }
+             gcInfo.gcMarkRegSetNpt(genRegMask(addrReg));
+         }
+         else
+@@ -5399,7 +5425,17 @@
+         // holds a (possibly interior) GC pointer - e.g. ReadUnaligned off a byref into a
+         // managed array - keep it reported until the last byte is loaded.
+         gcInfo.gcMarkRegPtrVal(addrReg, tree->Addr()->TypeGet());
+-        genRiscV64ByteWiseLoad(GetEmitter(), type, targetReg, addrReg, intTmp, intAcc);
++        {
++            BasicBlock* slow = genCreateTempLabel();
++            BasicBlock* done = genCreateTempLabel();
++            GetEmitter()->emitIns_R_R_I(INS_andi, EA_PTRSIZE, intTmp, addrReg, (int)(genTypeSize(type) - 1));
++            GetEmitter()->emitIns_J_cond_la(INS_bne, slow, intTmp, REG_R0);
++            GetEmitter()->emitIns_R_R_I(ins, emitActualTypeSize(type), targetReg, addrReg, 0);
++            GetEmitter()->emitIns_J(INS_j, done);
++            genDefineTempLabel(slow);
++            genRiscV64ByteWiseLoad(GetEmitter(), type, targetReg, addrReg, intTmp, intAcc);
++            genDefineTempLabel(done);
++        }
+         gcInfo.gcMarkRegSetNpt(genRegMask(addrReg));
+     }
+     else
+@@ -5410,6 +5446,16 @@
+     genProduceReg(tree);
+ }
+ 
++static void genRiscV64CpBlkUnrollWide(emitter*  emit,
++                                      unsigned  size,
++                                      regNumber tempReg,
++                                      unsigned  srcLclNum,
++                                      regNumber srcAddrBaseReg,
++                                      int       srcOffset,
++                                      unsigned  dstLclNum,
++                                      regNumber dstAddrBaseReg,
++                                      int       dstOffset);
++
+ //----------------------------------------------------------------------------------
+ // genCodeForCpBlkUnroll: Generates CpBlk code by performing a loop unroll
+ //
+@@ -5498,10 +5544,48 @@
+ 
+     regNumber tempReg = internalRegisters.Extract(cpBlkNode, RBM_ALLINT);
+ 
+-    if (genRiscV64NoUnalignedAccess() && cpBlkNode->IsUnaligned())
++    // Unaligned access is forbidden here (JitNoUnalignedAccess). When the operands are
++    // in registers and the contained offsets keep the alignment question on the
++    // registers alone, test the low bits of both addresses at run time and take the
++    // wide unrolled copy when they are clear; otherwise, and on the slow path, copy one
++    // byte at a time so every load/store is naturally aligned regardless of the base.
++    BasicBlock* slowLabel = nullptr;
++    BasicBlock* doneLabel = nullptr;
++    bool        byteWise  = genRiscV64NoUnalignedAccess() && cpBlkNode->IsUnaligned();
++    if (byteWise && (size >= 2))
+     {
+-        // Unaligned access is forbidden here: copy one byte at a time so every load/store
+-        // is naturally aligned, regardless of the (unknown) base alignment.
++        const unsigned align  = (size >= 8) ? 8 : (size >= 4) ? 4 : 2;
++        const bool     srcReg = (srcLclNum == BAD_VAR_NUM);
++        const bool     dstReg = (dstLclNum == BAD_VAR_NUM);
++        const bool     offsOk = ((srcOffset % (int)align) == 0) && ((dstOffset % (int)align) == 0);
++        if (offsOk && (srcReg || dstReg))
++        {
++            slowLabel = genCreateTempLabel();
++            doneLabel = genCreateTempLabel();
++            if (srcReg && dstReg)
++            {
++                emit->emitIns_R_R_R(INS_or, EA_PTRSIZE, tempReg, srcAddrBaseReg, dstAddrBaseReg);
++                emit->emitIns_R_R_I(INS_andi, EA_PTRSIZE, tempReg, tempReg, (int)(align - 1));
++            }
++            else
++            {
++                emit->emitIns_R_R_I(INS_andi, EA_PTRSIZE, tempReg, srcReg ? srcAddrBaseReg : dstAddrBaseReg,
++                                    (int)(align - 1));
++            }
++            emit->emitIns_J_cond_la(INS_bne, slowLabel, tempReg, REG_R0);
++        }
++    }
++
++    if (byteWise)
++    {
++        if (slowLabel != nullptr)
++        {
++            // Wide (aligned) path first, then jump over the slow path.
++            genRiscV64CpBlkUnrollWide(emit, size, tempReg, srcLclNum, srcAddrBaseReg, srcOffset, dstLclNum,
++                                      dstAddrBaseReg, dstOffset);
++            emit->emitIns_J(INS_j, doneLabel);
++            genDefineTempLabel(slowLabel);
++        }
+         for (unsigned i = 0; i < size; i++)
+         {
+             if (srcLclNum != BAD_VAR_NUM)
+@@ -5522,6 +5606,10 @@
+                 emit->emitIns_R_R_I(INS_sb, EA_4BYTE, tempReg, dstAddrBaseReg, dstOffset + (int)i);
+             }
+         }
++        if (doneLabel != nullptr)
++        {
++            genDefineTempLabel(doneLabel);
++        }
+ 
+         if (cpBlkNode->IsVolatile())
+         {
+@@ -5530,6 +5618,31 @@
+         return;
+     }
+ 
++    genRiscV64CpBlkUnrollWide(emit, size, tempReg, srcLclNum, srcAddrBaseReg, srcOffset, dstLclNum, dstAddrBaseReg,
++                              dstOffset);
++
++    if (cpBlkNode->IsVolatile())
++    {
++        // issue a load barrier after a volatile CpBlk operation
++        instGen_MemoryBarrier(BARRIER_LOAD_ONLY);
++    }
++}
++
++//------------------------------------------------------------------------
++// genRiscV64CpBlkUnrollWide: the wide (naturally aligned) unrolled copy that
++//   genCodeForCpBlkUnroll always emitted; split out so the alignment-checked
++//   variant can emit it as the fast path.
++//
++static void genRiscV64CpBlkUnrollWide(emitter*  emit,
++                                      unsigned  size,
++                                      regNumber tempReg,
++                                      unsigned  srcLclNum,
++                                      regNumber srcAddrBaseReg,
++                                      int       srcOffset,
++                                      unsigned  dstLclNum,
++                                      regNumber dstAddrBaseReg,
++                                      int       dstOffset)
++{
+     if (size >= 2 * REGSIZE_BYTES)
+     {
+         regNumber tempReg2 = REG_RA;
+@@ -5615,12 +5728,6 @@
+         {
+             emit->emitIns_R_R_I(storeIns, attr, tempReg, dstAddrBaseReg, dstOffset);
+         }
+-    }
+-
+-    if (cpBlkNode->IsVolatile())
+-    {
+-        // issue a load barrier after a volatile CpBlk operation
+-        instGen_MemoryBarrier(BARRIER_LOAD_ONLY);
+     }
+ }
+ 
+Only in jit11/src/coreclr/jit: emitriscv64.cpp
+--- a/src/coreclr/jit/jitconfigvalues.h	2026-09-11 15:20:11
++++ b/src/coreclr/jit/jitconfigvalues.h	2026-09-11 15:20:12
+@@ -493,6 +493,14 @@
+ // sequences instead. On by default; set 0 on targets that tolerate unaligned access
+ // to keep the faster wide accesses.
+ RELEASE_CONFIG_INTEGER(JitNoUnalignedAccess,        "JitNoUnalignedAccess",      1)
++// Strict alignment: on top of JitNoUnalignedAccess, treat every scalar load/store
++// and unrolled block copy whose address cannot be proven naturally aligned (byrefs
++// into spans, Unsafe.As reinterpretation, pointer arithmetic) as potentially
++// unaligned. Such accesses get an inline alignment test with a wide fast path and a
++// byte-wise slow path. Accesses through object references, array elements, stack
++// locals and statics are provably aligned and stay single instructions. For zkVMs
++// that reject any misaligned access (SP1, OpenVM). Off by default.
++RELEASE_CONFIG_INTEGER(JitRiscV64StrictAlign,       "JitRiscV64StrictAlign",     0)
+ #endif
+ 
+ RELEASE_CONFIG_INTEGER(EnableEmbeddedBroadcast,     "EnableEmbeddedBroadcast",   1) // Allows embedded broadcasts to be disabled
+--- a/src/coreclr/jit/lowerriscv64.cpp	2026-09-11 15:20:11
++++ b/src/coreclr/jit/lowerriscv64.cpp	2026-09-11 15:20:12
+@@ -457,11 +457,138 @@
+ //    addr - the address node to try to contain
+ //    addrParent - the parent of addr, in case this is checking containment of the source address.
+ //
++
++//------------------------------------------------------------------------
++// Strict alignment support (JitRiscV64StrictAlign).
++//
++// RiscV64IsAddrKnownAligned: is `addr` provably a multiple of `align`?
++//
++// Object references are 8-byte aligned, so anything reached from one by a
++// constant offset (fields), a scaled index whose scale is a multiple of the
++// access width (array elements) or an address mode built from those is
++// aligned. Stack locals are pointer-aligned, handles (statics, string
++// literals, frozen objects) are at least pointer-aligned. Everything else -
++// byrefs out of spans, Unsafe.As reinterpretation, plain pointer arithmetic -
++// is unknown and reported as not aligned.
++//
++static bool RiscV64IsAddrKnownAligned(GenTree* addr, unsigned align)
++{
++    if (align <= 1)
++    {
++        return true;
++    }
++    if (addr->TypeIs(TYP_REF))
++    {
++        return true; // an object pointer: 8-byte aligned
++    }
++
++    switch (addr->OperGet())
++    {
++        case GT_LEA:
++        {
++            GenTreeAddrMode* lea = addr->AsAddrMode();
++            if (!lea->HasBase() || !RiscV64IsAddrKnownAligned(lea->Base(), 8))
++            {
++                return false;
++            }
++            if (lea->HasIndex() && ((lea->GetScale() % align) != 0))
++            {
++                return false;
++            }
++            return (lea->Offset() % (int)align) == 0;
++        }
++
++        case GT_ADD:
++        {
++            GenTree* op1 = addr->gtGetOp1();
++            GenTree* op2 = addr->gtGetOp2();
++            if (op2->IsCnsIntOrI())
++            {
++                return RiscV64IsAddrKnownAligned(op1, 8) && ((op2->AsIntCon()->IconValue() % (ssize_t)align) == 0);
++            }
++            if (op1->IsCnsIntOrI())
++            {
++                return RiscV64IsAddrKnownAligned(op2, 8) && ((op1->AsIntCon()->IconValue() % (ssize_t)align) == 0);
++            }
++            // base + (index << n) / base + index * n, either order
++            for (int i = 0; i < 2; i++)
++            {
++                GenTree* base = (i == 0) ? op1 : op2;
++                GenTree* idx  = (i == 0) ? op2 : op1;
++                if (!RiscV64IsAddrKnownAligned(base, 8))
++                {
++                    continue;
++                }
++                unsigned scale = 0;
++                if (idx->OperIs(GT_LSH) && idx->gtGetOp2()->IsCnsIntOrI())
++                {
++                    ssize_t sh = idx->gtGetOp2()->AsIntCon()->IconValue();
++                    scale      = ((sh >= 0) && (sh < 32)) ? (1u << sh) : 0;
++                }
++                else if (idx->OperIs(GT_MUL) && idx->gtGetOp2()->IsCnsIntOrI())
++                {
++                    ssize_t m = idx->gtGetOp2()->AsIntCon()->IconValue();
++                    scale     = ((m > 0) && (m < INT32_MAX)) ? (unsigned)m : 0;
++                }
++                if ((scale != 0) && ((scale % align) == 0))
++                {
++                    return true;
++                }
++            }
++            return false;
++        }
++
++        case GT_LCL_ADDR:
++            // Stack locals are pointer-aligned; the field offset decides.
++            return (addr->AsLclFld()->GetLclOffs() % align) == 0;
++
++        case GT_CNS_INT:
++        {
++            GenTreeIntCon* con = addr->AsIntCon();
++            if (con->IsIconHandle())
++            {
++                return true; // statics, string literals, frozen objects: pointer-aligned
++            }
++            return (con->IconValue() % (ssize_t)align) == 0;
++        }
++
++        case GT_ARR_ADDR:
++            return RiscV64IsAddrKnownAligned(addr->AsArrAddr()->Addr(), align);
++
++        default:
++            return false;
++    }
++}
++
++// The alignment an unrolled block copy/init of `size` bytes needs: it moves
++// 8-byte words first and then a 4/2/1-byte tail from offset 0, so an
++// 8-byte aligned base (or the size itself when smaller) keeps every piece
++// naturally aligned.
++static unsigned RiscV64BlockAlignment(unsigned size)
++{
++    return (size >= 8) ? 8 : (size >= 4) ? 4 : (size >= 2) ? 2 : 1;
++}
++
++static bool RiscV64StrictAlign()
++{
++    return (JitConfig.JitRiscV64StrictAlign() != 0) && (JitConfig.JitNoUnalignedAccess() != 0);
++}
++
+ void Lowering::ContainBlockStoreAddress(GenTreeBlk* blkNode, unsigned size, GenTree* addr, GenTree* addrParent)
+ {
+     assert(blkNode->OperIs(GT_STORE_BLK) && (blkNode->gtBlkOpKind == GenTreeBlk::BlkOpKindUnroll));
+     assert(size < INT32_MAX);
+ 
++    // Strict alignment: a source or destination whose alignment is unknown makes the
++    // whole unrolled copy/init "unaligned" (genCodeForCpBlkUnroll then tests it at
++    // run time and falls back to a byte-wise copy; genCodeForInitBlkUnroll stores
++    // byte-wise). Locals not going through here are stack-aligned.
++    if (RiscV64StrictAlign() && !blkNode->IsUnaligned() &&
++        !RiscV64IsAddrKnownAligned(addr, RiscV64BlockAlignment(size)))
++    {
++        blkNode->gtFlags |= GTF_IND_UNALIGNED;
++    }
++
+     if (addr->OperIs(GT_LCL_ADDR) && IsContainableLclAddr(addr->AsLclFld(), size))
+     {
+         addr->SetContained();
+@@ -1014,6 +1141,16 @@
+ #ifdef FEATURE_SIMD
+     NYI_RISCV64("ContainCheckIndir-SIMD");
+ #endif // FEATURE_SIMD
++
++    // Strict alignment: a scalar access whose address cannot be proven naturally
++    // aligned is marked unaligned here, before LSRA and codegen look at the flag,
++    // and then takes the checked wide/byte-wise path below.
++    if (RiscV64StrictAlign() && indirNode->OperIs(GT_IND, GT_STOREIND) && !indirNode->IsUnaligned() &&
++        (genTypeSize(indirNode->TypeGet()) > 1) &&
++        !RiscV64IsAddrKnownAligned(indirNode->Addr(), genTypeSize(indirNode->TypeGet())))
++    {
++        indirNode->gtFlags |= GTF_IND_UNALIGNED;
++    }
+ 
+     // No-unaligned mode: an unaligned scalar access is expanded byte-wise off a base
+     // register (see genCodeForIndir/genCodeForStoreInd), so its address must be left
