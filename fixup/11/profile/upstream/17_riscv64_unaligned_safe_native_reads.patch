@@ -34,20 +34,13 @@ support.
      }
  
 --- a/src/coreclr/nativeaot/Runtime/unix/UnixNativeCodeManager.cpp	2026-09-11 15:20:11
-+++ b/src/coreclr/nativeaot/Runtime/unix/UnixNativeCodeManager.cpp	2026-09-11 15:22:08
-@@ -1,6 +1,7 @@
++++ b/src/coreclr/nativeaot/Runtime/unix/UnixNativeCodeManager.cpp	2026-09-11 15:52:03
+@@ -1,7 +1,26 @@
  // Licensed to the .NET Foundation under one or more agreements.
  // The .NET Foundation licenses this file to you under the MIT license.
  #include "common.h"
 +#include <string.h>
  
- #include "CommonTypes.h"
- #include "CommonMacros.h"
-@@ -24,6 +25,25 @@
- 
- #if defined(TARGET_APPLE)
- #include <mach-o/compact_unwind_encoding.h>
-+
 +// The unwind-info/LSDA side tables are byte-packed, so the 32-bit fields below sit
 +// at arbitrary byte offsets. Read them through memcpy: the compiler expands that
 +// into byte loads on a target without unaligned-access support, whereas a plain
@@ -65,6 +58,14 @@ support.
 +    memcpy(&v, p, sizeof(v));
 +    return v;
 +}
++
+ #include "CommonTypes.h"
+ #include "CommonMacros.h"
+ #include "daccess.h"
+@@ -24,6 +43,7 @@
+ 
+ #if defined(TARGET_APPLE)
+ #include <mach-o/compact_unwind_encoding.h>
 +
  #endif // TARGET_APPLE
  
