@@ -1,0 +1,105 @@
+ILC pads code sections to the node alignment with a single byte: NOP on
+x86/x64, zero elsewhere. On riscv64 that leaves 0x00000000 words between
+methods (about two per method), which is not an instruction. SP1 eagerly
+transpiles every word of every PF_X segment and panics on the first one it
+cannot decode ("Cannot decode instruction: 0x0"), so no bflat guest loads
+there; ZisK/OpenVM only tolerate the zeros because they are never executed.
+Pad riscv64 code with a real NOP (addi x0, x0, 0 = 0x00000013) instead:
+SectionData takes a padding pattern and keeps it in phase with the section
+offset.
+
+--- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/ObjectWriter.cs	2026-09-11 13:10:07
++++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/ObjectWriter.cs	2026-09-11 13:10:07
+@@ -29,7 +29,7 @@
+ 
+         private readonly Dictionary<ISymbolNode, string> _mangledNameMap = new();
+ 
+-        private readonly byte _insPaddingByte;
++        private readonly byte[] _insPadding;
+ 
+         // Standard sections
+         private readonly Dictionary<string, int> _sectionNameToSectionIndex = new(StringComparer.Ordinal);
+@@ -50,11 +50,15 @@
+             _usesSubsectionsViaSymbols = factory.Target.IsApplePlatform;
+ 
+             // Padding byte for code sections (NOP for x86/x64)
+-            _insPaddingByte = factory.Target.Architecture switch
++            _insPadding = factory.Target.Architecture switch
+             {
+-                TargetArchitecture.X86 => 0x90,
+-                TargetArchitecture.X64 => 0x90,
+-                _ => 0
++                TargetArchitecture.X86 => [0x90],
++                TargetArchitecture.X64 => [0x90],
++                // zkVM executors (SP1, ZisK) decode every word of the code
++                // segment up front; a zero word is not an encoding, so pad
++                // with a real NOP (addi x0, x0, 0).
++                TargetArchitecture.RiscV64 => [0x13, 0x00, 0x00, 0x00],
++                _ => [0]
+             };
+         }
+ 
+@@ -83,7 +87,7 @@
+ 
+             if (comdatName is not null || !_sectionNameToSectionIndex.TryGetValue(section.Name, out sectionIndex))
+             {
+-                sectionData = new SectionData(section.Type == SectionType.Executable ? _insPaddingByte : (byte)0);
++                sectionData = new SectionData(section.Type == SectionType.Executable ? _insPadding : null);
+                 sectionIndex = _sectionIndexToData.Count;
+                 CreateSection(section, comdatName, symbolName, sectionData.GetReadStream());
+                 _sectionIndexToData.Add(sectionData);
+--- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/SectionData.cs	2026-09-11 13:10:07
++++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/SectionData.cs	2026-09-11 13:10:07
+@@ -26,10 +26,23 @@
+         private readonly List<ReadOnlyMemory<byte>> _buffers = new();
+         private long _length;
+         private readonly byte[] _padding = new byte[16];
++        private readonly int _paddingPatternLength = 1;
+ 
+-        public SectionData(byte paddingByte = 0)
++        public SectionData(ReadOnlySpan<byte> paddingPattern = default)
+         {
+-            _padding.AsSpan().Fill(paddingByte);
++            if (paddingPattern.Length <= 1)
++            {
++                _padding.AsSpan().Fill(paddingPattern.Length == 0 ? (byte)0 : paddingPattern[0]);
++            }
++            else
++            {
++                Debug.Assert(_padding.Length % paddingPattern.Length == 0);
++                for (int i = 0; i < _padding.Length; i += paddingPattern.Length)
++                {
++                    paddingPattern.CopyTo(_padding.AsSpan(i));
++                }
++                _paddingPatternLength = paddingPattern.Length;
++            }
+         }
+ 
+         private void FlushAppendBuffer()
+@@ -53,9 +66,24 @@
+         {
+             if (paddingLength > 0)
+             {
+-                if (_appendBuffer.WrittenCount > 0 || paddingLength > _padding.Length)
++                // A multi-byte pattern (an instruction) has to stay in phase
++                // with the section offset, so the fast paths are only taken
++                // when the padding starts on a pattern boundary.
++                int phase = (int)(Length % _paddingPatternLength);
++                if (_appendBuffer.WrittenCount > 0 || paddingLength > _padding.Length || phase != 0)
+                 {
+-                    _appendBuffer.GetSpan(paddingLength).Slice(0, paddingLength).Fill(_padding[0]);
++                    Span<byte> span = _appendBuffer.GetSpan(paddingLength).Slice(0, paddingLength);
++                    if (_paddingPatternLength == 1)
++                    {
++                        span.Fill(_padding[0]);
++                    }
++                    else
++                    {
++                        for (int i = 0; i < span.Length; i++)
++                        {
++                            span[i] = _padding[(phase + i) % _paddingPatternLength];
++                        }
++                    }
+                     _appendBuffer.Advance(paddingLength);
+                 }
+                 else
