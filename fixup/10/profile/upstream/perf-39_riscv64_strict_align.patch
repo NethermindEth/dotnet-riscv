@@ -16,54 +16,104 @@ unrolled block copy/init with an unknown source or destination as unaligned.
 Codegen then emits an inline alignment test with the single wide instruction
 as the fast path and the perf-35 byte-wise sequence as the slow path, so the
 common aligned case costs andi+bnez. Block copies test both addresses at once
-(or/andi/bnez) and fall back to the byte loop. Local fields at an offset
-that is not a multiple of their width (GT_LCL_FLD/GT_STORE_LCL_FLD, e.g. a
-stackalloc buffer reinterpreted at an odd offset) are accessed byte-wise.
+(or/andi/bnez) and fall back to the byte loop. Stack locals at an offset
+that is not a multiple of the width (GT_LCL_FLD/GT_STORE_LCL_FLD, e.g. a
+stackalloc buffer reinterpreted at an odd offset, and dependently promoted
+fields of packed structs reached through GT_LCL_VAR) are accessed byte-wise.
 bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
 
 --- a/src/coreclr/jit/codegenriscv64.cpp	2026-09-11 15:20:11
-+++ b/src/coreclr/jit/codegenriscv64.cpp	2026-09-11 18:57:10
-@@ -22,6 +22,10 @@
++++ b/src/coreclr/jit/codegenriscv64.cpp	2026-09-11 19:02:49
+@@ -22,7 +22,62 @@
  #include "gcinfoencoder.h"
  #include "patchpointinfo.h"
  
-+// Strict alignment: see RiscV64LclFldByteWise in lsrariscv64.cpp (shared decision
-+// for GT_LCL_FLD / GT_STORE_LCL_FLD).
-+bool RiscV64LclFldByteWise(GenTreeLclFld* lclFld);
++// Strict alignment: see RiscV64LclByteWise in lsrariscv64.cpp (shared decision for
++// stack accesses through GT_LCL_FLD/GT_STORE_LCL_FLD and GT_LCL_VAR/GT_STORE_LCL_VAR).
++bool RiscV64LclByteWise(Compiler* comp, GenTreeLclVarCommon* lcl);
 +
  //------------------------------------------------------------------------
++// genRiscV64ByteWiseLclLoad / genRiscV64ByteWiseLclStore: byte-wise access to a
++//   stack local (frame-relative), see RiscV64LclByteWise.
++//
++static void genRiscV64ByteWiseLclLoad(
++    emitter* emit, var_types type, regNumber dstReg, unsigned varNum, unsigned offs, regNumber intTmp, regNumber intAcc)
++{
++    const unsigned width      = genTypeSize(type);
++    const bool     isFloat    = varTypeIsFloating(type);
++    const bool     isUnsigned = varTypeIsUnsigned(type);
++
++    emit->emitIns_R_S(INS_lbu, EA_4BYTE, intAcc, varNum, offs);
++    for (unsigned i = 1; i < width; i++)
++    {
++        instruction lbIns = (!isFloat && !isUnsigned && (i == width - 1)) ? INS_lb : INS_lbu;
++        emit->emitIns_R_S(lbIns, EA_4BYTE, intTmp, varNum, offs + i);
++        emit->emitIns_R_R_I(INS_slli, EA_PTRSIZE, intTmp, intTmp, (int)(i * 8));
++        emit->emitIns_R_R_R(INS_or, EA_PTRSIZE, intAcc, intAcc, intTmp);
++    }
++    if (isFloat)
++    {
++        emit->emitIns_R_R((width == 4) ? INS_fmv_w_x : INS_fmv_d_x, EA_ATTR(width), dstReg, intAcc);
++    }
++}
++
++static void genRiscV64ByteWiseLclStore(
++    emitter* emit, var_types type, regNumber dataReg, unsigned varNum, unsigned offs, regNumber intTmp)
++{
++    const unsigned width = genTypeSize(type);
++    regNumber      bits  = dataReg;
++    if (genIsValidFloatReg(dataReg))
++    {
++        emit->emitIns_R_R((width == 4) ? INS_fmv_x_w : INS_fmv_x_d, EA_ATTR(width), intTmp, dataReg);
++        bits = intTmp; // private copy: shifted down in place
++    }
++    emit->emitIns_S_R(INS_sb, EA_4BYTE, bits, varNum, offs);
++    for (unsigned i = 1; i < width; i++)
++    {
++        if (bits == intTmp)
++        {
++            emit->emitIns_R_R_I(INS_srli, EA_PTRSIZE, bits, bits, 8);
++            emit->emitIns_S_R(INS_sb, EA_4BYTE, bits, varNum, offs + i);
++        }
++        else
++        {
++            emit->emitIns_R_R_I(INS_srli, EA_PTRSIZE, intTmp, bits, (int)(i * 8));
++            emit->emitIns_S_R(INS_sb, EA_4BYTE, intTmp, varNum, offs + i);
++        }
++    }
++}
++
++//------------------------------------------------------------------------
  // genInstrWithConstant:   we will typically generate one instruction
  //
-@@ -1266,7 +1270,36 @@
+ //    ins  reg1, reg2, imm
+@@ -1199,6 +1254,17 @@
+         instruction ins  = ins_Load(targetType);
+         emitAttr    attr = emitTypeSize(targetType);
+ 
++        if (RiscV64LclByteWise(m_compiler, tree))
++        {
++            // Strict alignment: a dependently promoted field of a packed struct lives at
++            // an offset that is not a multiple of its width; read it byte-wise.
++            const regNumber intTmp = internalRegisters.Extract(tree);
++            const regNumber intAcc = varTypeIsFloating(targetType) ? internalRegisters.Extract(tree) : tree->GetRegNum();
++            genRiscV64ByteWiseLclLoad(GetEmitter(), targetType, tree->GetRegNum(), varNum, 0, intTmp, intAcc);
++            genProduceReg(tree);
++            return;
++        }
++
+         GetEmitter()->emitIns_R_S(ins, attr, tree->GetRegNum(), varNum, 0);
+         genProduceReg(tree);
+     }
+@@ -1266,7 +1332,15 @@
  
      emitAttr attr = emitTypeSize(targetType);
  
 -    emit->emitIns_S_R(ins, attr, dataReg, varNum, offset);
-+    if (RiscV64LclFldByteWise(tree))
++    if (RiscV64LclByteWise(m_compiler, tree))
 +    {
 +        // Strict alignment: spill the value one byte at a time (see genCodeForLclFld).
-+        const unsigned  width   = genTypeSize(targetType);
-+        const regNumber intTmp  = internalRegisters.GetSingle(tree);
-+        regNumber       bits    = dataReg;
-+        if (genIsValidFloatReg(dataReg))
-+        {
-+            emit->emitIns_R_R((width == 4) ? INS_fmv_x_w : INS_fmv_x_d, EA_ATTR(width), intTmp, dataReg);
-+            bits = intTmp; // private copy: shifted down in place
-+        }
-+        emit->emitIns_S_R(INS_sb, EA_4BYTE, bits, varNum, offset);
-+        for (unsigned i = 1; i < width; i++)
-+        {
-+            if (bits == intTmp)
-+            {
-+                emit->emitIns_R_R_I(INS_srli, EA_PTRSIZE, bits, bits, 8);
-+                emit->emitIns_S_R(INS_sb, EA_4BYTE, bits, varNum, offset + i);
-+            }
-+            else
-+            {
-+                emit->emitIns_R_R_I(INS_srli, EA_PTRSIZE, intTmp, bits, (int)(i * 8));
-+                emit->emitIns_S_R(INS_sb, EA_4BYTE, intTmp, varNum, offset + i);
-+            }
-+        }
++        genRiscV64ByteWiseLclStore(emit, targetType, dataReg, varNum, offset, internalRegisters.GetSingle(tree));
 +    }
 +    else
 +    {
@@ -72,7 +122,24 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
  
      genUpdateLife(tree);
  
-@@ -2067,6 +2100,22 @@
+@@ -1368,7 +1442,15 @@
+             instruction ins  = ins_StoreFromSrc(dataReg, targetType);
+             emitAttr    attr = emitActualTypeSize(targetType);
+ 
+-            emit->emitIns_S_R(ins, attr, dataReg, varNum, /* offset */ 0);
++            if (RiscV64LclByteWise(m_compiler, lclNode))
++            {
++                // Strict alignment: see genCodeForLclVar.
++                genRiscV64ByteWiseLclStore(emit, targetType, dataReg, varNum, 0, internalRegisters.GetSingle(lclNode));
++            }
++            else
++            {
++                emit->emitIns_S_R(ins, attr, dataReg, varNum, /* offset */ 0);
++            }
+ 
+             genUpdateLife(lclNode);
+ 
+@@ -2067,6 +2149,22 @@
      }
  }
  
@@ -95,7 +162,7 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
  // Generate code for InitBlk by performing a loop unroll
  // Preconditions:
  //   a) Both the size and fill byte value are integer constants.
-@@ -2986,7 +3035,17 @@
+@@ -2986,7 +3084,17 @@
              // it holds a (possibly interior) GC pointer keep it reported until the last
              // byte is stored.
              gcInfo.gcMarkRegPtrVal(addrReg, addr->TypeGet());
@@ -114,32 +181,17 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
              gcInfo.gcMarkRegSetNpt(genRegMask(addrReg));
          }
          else
-@@ -5196,6 +5255,32 @@
+@@ -5196,6 +5304,17 @@
      unsigned varNum = tree->GetLclNum();
      assert(varNum < m_compiler->lvaCount);
  
-+    if (RiscV64LclFldByteWise(tree))
++    if (RiscV64LclByteWise(m_compiler, tree))
 +    {
 +        // Strict alignment: the field sits at an offset that is not a multiple of its
 +        // width; assemble it from single bytes (LSRA reserved the scratch registers).
-+        const unsigned  width      = genTypeSize(targetType);
-+        const bool      isFloat    = varTypeIsFloating(targetType);
-+        const bool      isUnsigned = varTypeIsUnsigned(targetType);
-+        const regNumber intTmp     = internalRegisters.Extract(tree);
-+        const regNumber intAcc     = isFloat ? internalRegisters.Extract(tree) : targetReg;
-+
-+        emit->emitIns_R_S(INS_lbu, EA_4BYTE, intAcc, varNum, offs);
-+        for (unsigned i = 1; i < width; i++)
-+        {
-+            instruction lbIns = (!isFloat && !isUnsigned && (i == width - 1)) ? INS_lb : INS_lbu;
-+            emit->emitIns_R_S(lbIns, EA_4BYTE, intTmp, varNum, offs + i);
-+            emit->emitIns_R_R_I(INS_slli, EA_PTRSIZE, intTmp, intTmp, (int)(i * 8));
-+            emit->emitIns_R_R_R(INS_or, EA_PTRSIZE, intAcc, intAcc, intTmp);
-+        }
-+        if (isFloat)
-+        {
-+            emit->emitIns_R_R((width == 4) ? INS_fmv_w_x : INS_fmv_d_x, EA_ATTR(width), targetReg, intAcc);
-+        }
++        const regNumber intTmp = internalRegisters.Extract(tree);
++        const regNumber intAcc = varTypeIsFloating(targetType) ? internalRegisters.Extract(tree) : targetReg;
++        genRiscV64ByteWiseLclLoad(emit, targetType, targetReg, varNum, offs, intTmp, intAcc);
 +        genProduceReg(tree);
 +        return;
 +    }
@@ -147,7 +199,7 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
      emit->emitIns_R_S(ins_Load(targetType), size, targetReg, varNum, offs);
  
      genProduceReg(tree);
-@@ -5399,7 +5484,17 @@
+@@ -5399,7 +5518,17 @@
          // holds a (possibly interior) GC pointer - e.g. ReadUnaligned off a byref into a
          // managed array - keep it reported until the last byte is loaded.
          gcInfo.gcMarkRegPtrVal(addrReg, tree->Addr()->TypeGet());
@@ -166,7 +218,7 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
          gcInfo.gcMarkRegSetNpt(genRegMask(addrReg));
      }
      else
-@@ -5410,6 +5505,16 @@
+@@ -5410,6 +5539,16 @@
      genProduceReg(tree);
  }
  
@@ -183,7 +235,7 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
  //----------------------------------------------------------------------------------
  // genCodeForCpBlkUnroll: Generates CpBlk code by performing a loop unroll
  //
-@@ -5498,10 +5603,48 @@
+@@ -5498,10 +5637,48 @@
  
      regNumber tempReg = internalRegisters.Extract(cpBlkNode, RBM_ALLINT);
  
@@ -235,7 +287,7 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
          for (unsigned i = 0; i < size; i++)
          {
              if (srcLclNum != BAD_VAR_NUM)
-@@ -5522,6 +5665,10 @@
+@@ -5522,6 +5699,10 @@
                  emit->emitIns_R_R_I(INS_sb, EA_4BYTE, tempReg, dstAddrBaseReg, dstOffset + (int)i);
              }
          }
@@ -246,7 +298,7 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
  
          if (cpBlkNode->IsVolatile())
          {
-@@ -5530,6 +5677,31 @@
+@@ -5530,6 +5711,31 @@
          return;
      }
  
@@ -278,7 +330,7 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
      if (size >= 2 * REGSIZE_BYTES)
      {
          regNumber tempReg2 = REG_RA;
-@@ -5615,12 +5787,6 @@
+@@ -5615,12 +5821,6 @@
          {
              emit->emitIns_R_R_I(storeIns, attr, tempReg, dstAddrBaseReg, dstOffset);
          }
@@ -469,12 +521,12 @@ Only in jit11/src/coreclr/jit: emitriscv64.cpp
      // register (see genCodeForIndir/genCodeForStoreInd), so its address must be left
 Only in jit11/src/coreclr/jit: lsrabuild.cpp
 --- a/src/coreclr/jit/lsrariscv64.cpp	2026-09-11 15:20:11
-+++ b/src/coreclr/jit/lsrariscv64.cpp	2026-09-11 18:57:10
++++ b/src/coreclr/jit/lsrariscv64.cpp	2026-09-11 19:02:11
 @@ -26,6 +26,8 @@
  #include "lower.h"
  #include "codegen.h"
  
-+bool RiscV64LclFldByteWise(GenTreeLclFld* lclFld);
++bool RiscV64LclByteWise(Compiler* comp, GenTreeLclVarCommon* lcl);
 +
  //------------------------------------------------------------------------
  // BuildNode: Build the RefPositions for a node
@@ -483,12 +535,12 @@ Only in jit11/src/coreclr/jit: lsrabuild.cpp
          case GT_LCL_FLD:
          {
              srcCount = 0;
-+            if (RiscV64LclFldByteWise(tree->AsLclFld()))
++            if (RiscV64LclByteWise(m_compiler, tree->AsLclVarCommon()))
 +            {
-+                // Strict alignment: a local field at an offset that is not a multiple of
-+                // the access width is read byte-wise (genCodeForLclFld); reserve the
-+                // byte scratch (and an integer accumulator for a floating load), kept
-+                // off the target register.
++                // Strict alignment: a stack local at an offset that is not a multiple of
++                // the access width is read byte-wise (genCodeForLclFld/genCodeForLclVar);
++                // reserve the byte scratch (and an integer accumulator for a floating
++                // load), kept off the target register.
 +                buildInternalIntRegisterDefForNode(tree);
 +                if (varTypeIsFloating(tree->TypeGet()))
 +                {
@@ -500,40 +552,58 @@ Only in jit11/src/coreclr/jit: lsrabuild.cpp
  #ifdef FEATURE_SIMD
              // Need an additional register to read upper 4 bytes of Vector3.
              if (tree->TypeIs(TYP_SIMD12))
-@@ -111,6 +127,12 @@
+@@ -111,6 +127,13 @@
              FALLTHROUGH;
  
          case GT_STORE_LCL_FLD:
-+            if (RiscV64LclFldByteWise(tree->AsLclFld()))
++            if (RiscV64LclByteWise(m_compiler, tree->AsLclVarCommon()))
 +            {
-+                // Strict alignment: stored byte-wise (genCodeForStoreLclFld); the scratch
-+                // holds the byte being spilled. BuildStoreLoc builds the internal uses.
++                // Strict alignment: stored byte-wise (genCodeForStoreLclFld /
++                // genCodeForStoreLclVar); the scratch holds the byte being spilled.
++                // BuildStoreLoc builds the internal uses.
 +                buildInternalIntRegisterDefForNode(tree);
 +            }
              srcCount = BuildStoreLoc(tree->AsLclVarCommon());
              break;
  
-@@ -873,6 +895,25 @@
+@@ -873,6 +896,42 @@
  // Return Value:
  //    The number of sources consumed by this node.
  //
 +//------------------------------------------------------------------------
-+// RiscV64LclFldByteWise: under strict alignment (JitRiscV64StrictAlign), a scalar
-+//   local field whose offset is not a multiple of its width is accessed byte-wise
-+//   (stack locals are pointer-aligned, so the offset decides).
++// RiscV64LclByteWise: under strict alignment (JitRiscV64StrictAlign), a scalar
++//   stack access to a local whose frame offset is not a multiple of the access
++//   width is done byte-wise. Stack locals are pointer-aligned, so the offset within
++//   the local (GT_LCL_FLD) plus, for a dependently promoted struct field, the
++//   field's offset within its parent (packed structs) decides. Register candidates
++//   never reach memory here and are excluded.
 +//
-+bool RiscV64LclFldByteWise(GenTreeLclFld* lclFld)
++bool RiscV64LclByteWise(Compiler* comp, GenTreeLclVarCommon* lcl)
 +{
 +    if ((JitConfig.JitRiscV64StrictAlign() == 0) || (JitConfig.JitNoUnalignedAccess() == 0))
 +    {
 +        return false;
 +    }
-+    if (lclFld->TypeIs(TYP_STRUCT))
++    if (lcl->TypeIs(TYP_STRUCT))
 +    {
 +        return false;
 +    }
-+    unsigned size = genTypeSize(lclFld->TypeGet());
-+    return ((size == 2) || (size == 4) || (size == 8)) && ((lclFld->GetLclOffs() % size) != 0);
++    unsigned size = genTypeSize(lcl->TypeGet());
++    if ((size != 2) && (size != 4) && (size != 8))
++    {
++        return false;
++    }
++    LclVarDsc* varDsc = comp->lvaGetDesc(lcl);
++    if (varDsc->lvIsRegCandidate())
++    {
++        return false;
++    }
++    unsigned offs = lcl->GetLclOffs();
++    if (varDsc->lvIsStructField)
++    {
++        offs += varDsc->lvFldOffset;
++    }
++    return (offs % size) != 0;
 +}
 +
  int LinearScan::BuildIndir(GenTreeIndir* indirTree)
