@@ -281,7 +281,7 @@ diff --git a/src/coreclr/jit/lowerriscv64.cpp b/src/coreclr/jit/lowerriscv64.cpp
 diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
 --- a/src/coreclr/jit/lsrariscv64.cpp
 +++ b/src/coreclr/jit/lsrariscv64.cpp
-@@ -858,6 +858,37 @@
+@@ -858,6 +858,51 @@
      assert(!indirTree->TypeIs(TYP_STRUCT));
  
      GenTree* addr = indirTree->Addr();
@@ -298,7 +298,21 @@ diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
 +        const bool isLoad  = indirTree->OperIs(GT_IND);
 +        const bool isFloat = varTypeIsFloating(indirTree->TypeGet());
 +
-+        setDelayFree(BuildUse(addr));
++        // A load writes its target while the byte sequence still reads the address,
++        // so the address (and the internal scratch) must not share the def's register:
++        // delay-free them against the def at the next location. A store has no def -
++        // its operands stay in use until the node completes, which already keeps the
++        // internal scratch distinct from them - and a delay-free use with no def at the
++        // next location is an LSRA invariant violation (it asserts in checked builds and
++        // corrupts register bookkeeping in release ones).
++        if (isLoad)
++        {
++            setDelayFree(BuildUse(addr));
++        }
++        else
++        {
++            BuildUse(addr);
++        }
 +        int srcCount = 1;
 +
 +        buildInternalIntRegisterDefForNode(indirTree); // scratch for the byte
@@ -306,7 +320,7 @@ diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
 +        {
 +            buildInternalIntRegisterDefForNode(indirTree); // integer accumulator
 +        }
-+        setInternalRegsDelayFree = true;
++        setInternalRegsDelayFree = isLoad;
 +        buildInternalRegisterUses();
 +
 +        if (isLoad)
