@@ -16,12 +16,63 @@ unrolled block copy/init with an unknown source or destination as unaligned.
 Codegen then emits an inline alignment test with the single wide instruction
 as the fast path and the perf-35 byte-wise sequence as the slow path, so the
 common aligned case costs andi+bnez. Block copies test both addresses at once
-(or/andi/bnez) and fall back to the byte loop. bflat passes the knob for
---libc sp1 and openvm. Applies on top of perf-35.
+(or/andi/bnez) and fall back to the byte loop. Local fields at an offset
+that is not a multiple of their width (GT_LCL_FLD/GT_STORE_LCL_FLD, e.g. a
+stackalloc buffer reinterpreted at an odd offset) are accessed byte-wise.
+bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
 
 --- a/src/coreclr/jit/codegenriscv64.cpp	2026-09-11 15:20:11
-+++ b/src/coreclr/jit/codegenriscv64.cpp	2026-09-11 15:24:20
-@@ -2067,6 +2067,22 @@
++++ b/src/coreclr/jit/codegenriscv64.cpp	2026-09-11 18:57:10
+@@ -22,6 +22,10 @@
+ #include "gcinfoencoder.h"
+ #include "patchpointinfo.h"
+ 
++// Strict alignment: see RiscV64LclFldByteWise in lsrariscv64.cpp (shared decision
++// for GT_LCL_FLD / GT_STORE_LCL_FLD).
++bool RiscV64LclFldByteWise(GenTreeLclFld* lclFld);
++
+ //------------------------------------------------------------------------
+ // genInstrWithConstant:   we will typically generate one instruction
+ //
+@@ -1266,7 +1270,36 @@
+ 
+     emitAttr attr = emitTypeSize(targetType);
+ 
+-    emit->emitIns_S_R(ins, attr, dataReg, varNum, offset);
++    if (RiscV64LclFldByteWise(tree))
++    {
++        // Strict alignment: spill the value one byte at a time (see genCodeForLclFld).
++        const unsigned  width   = genTypeSize(targetType);
++        const regNumber intTmp  = internalRegisters.GetSingle(tree);
++        regNumber       bits    = dataReg;
++        if (genIsValidFloatReg(dataReg))
++        {
++            emit->emitIns_R_R((width == 4) ? INS_fmv_x_w : INS_fmv_x_d, EA_ATTR(width), intTmp, dataReg);
++            bits = intTmp; // private copy: shifted down in place
++        }
++        emit->emitIns_S_R(INS_sb, EA_4BYTE, bits, varNum, offset);
++        for (unsigned i = 1; i < width; i++)
++        {
++            if (bits == intTmp)
++            {
++                emit->emitIns_R_R_I(INS_srli, EA_PTRSIZE, bits, bits, 8);
++                emit->emitIns_S_R(INS_sb, EA_4BYTE, bits, varNum, offset + i);
++            }
++            else
++            {
++                emit->emitIns_R_R_I(INS_srli, EA_PTRSIZE, intTmp, bits, (int)(i * 8));
++                emit->emitIns_S_R(INS_sb, EA_4BYTE, intTmp, varNum, offset + i);
++            }
++        }
++    }
++    else
++    {
++        emit->emitIns_S_R(ins, attr, dataReg, varNum, offset);
++    }
+ 
+     genUpdateLife(tree);
+ 
+@@ -2067,6 +2100,22 @@
      }
  }
  
@@ -44,7 +95,7 @@ common aligned case costs andi+bnez. Block copies test both addresses at once
  // Generate code for InitBlk by performing a loop unroll
  // Preconditions:
  //   a) Both the size and fill byte value are integer constants.
-@@ -2986,7 +3002,17 @@
+@@ -2986,7 +3035,17 @@
              // it holds a (possibly interior) GC pointer keep it reported until the last
              // byte is stored.
              gcInfo.gcMarkRegPtrVal(addrReg, addr->TypeGet());
@@ -63,7 +114,40 @@ common aligned case costs andi+bnez. Block copies test both addresses at once
              gcInfo.gcMarkRegSetNpt(genRegMask(addrReg));
          }
          else
-@@ -5399,7 +5425,17 @@
+@@ -5196,6 +5255,32 @@
+     unsigned varNum = tree->GetLclNum();
+     assert(varNum < m_compiler->lvaCount);
+ 
++    if (RiscV64LclFldByteWise(tree))
++    {
++        // Strict alignment: the field sits at an offset that is not a multiple of its
++        // width; assemble it from single bytes (LSRA reserved the scratch registers).
++        const unsigned  width      = genTypeSize(targetType);
++        const bool      isFloat    = varTypeIsFloating(targetType);
++        const bool      isUnsigned = varTypeIsUnsigned(targetType);
++        const regNumber intTmp     = internalRegisters.Extract(tree);
++        const regNumber intAcc     = isFloat ? internalRegisters.Extract(tree) : targetReg;
++
++        emit->emitIns_R_S(INS_lbu, EA_4BYTE, intAcc, varNum, offs);
++        for (unsigned i = 1; i < width; i++)
++        {
++            instruction lbIns = (!isFloat && !isUnsigned && (i == width - 1)) ? INS_lb : INS_lbu;
++            emit->emitIns_R_S(lbIns, EA_4BYTE, intTmp, varNum, offs + i);
++            emit->emitIns_R_R_I(INS_slli, EA_PTRSIZE, intTmp, intTmp, (int)(i * 8));
++            emit->emitIns_R_R_R(INS_or, EA_PTRSIZE, intAcc, intAcc, intTmp);
++        }
++        if (isFloat)
++        {
++            emit->emitIns_R_R((width == 4) ? INS_fmv_w_x : INS_fmv_d_x, EA_ATTR(width), targetReg, intAcc);
++        }
++        genProduceReg(tree);
++        return;
++    }
++
+     emit->emitIns_R_S(ins_Load(targetType), size, targetReg, varNum, offs);
+ 
+     genProduceReg(tree);
+@@ -5399,7 +5484,17 @@
          // holds a (possibly interior) GC pointer - e.g. ReadUnaligned off a byref into a
          // managed array - keep it reported until the last byte is loaded.
          gcInfo.gcMarkRegPtrVal(addrReg, tree->Addr()->TypeGet());
@@ -82,7 +166,7 @@ common aligned case costs andi+bnez. Block copies test both addresses at once
          gcInfo.gcMarkRegSetNpt(genRegMask(addrReg));
      }
      else
-@@ -5410,6 +5446,16 @@
+@@ -5410,6 +5505,16 @@
      genProduceReg(tree);
  }
  
@@ -99,7 +183,7 @@ common aligned case costs andi+bnez. Block copies test both addresses at once
  //----------------------------------------------------------------------------------
  // genCodeForCpBlkUnroll: Generates CpBlk code by performing a loop unroll
  //
-@@ -5498,10 +5544,48 @@
+@@ -5498,10 +5603,48 @@
  
      regNumber tempReg = internalRegisters.Extract(cpBlkNode, RBM_ALLINT);
  
@@ -151,7 +235,7 @@ common aligned case costs andi+bnez. Block copies test both addresses at once
          for (unsigned i = 0; i < size; i++)
          {
              if (srcLclNum != BAD_VAR_NUM)
-@@ -5522,6 +5606,10 @@
+@@ -5522,6 +5665,10 @@
                  emit->emitIns_R_R_I(INS_sb, EA_4BYTE, tempReg, dstAddrBaseReg, dstOffset + (int)i);
              }
          }
@@ -162,7 +246,7 @@ common aligned case costs andi+bnez. Block copies test both addresses at once
  
          if (cpBlkNode->IsVolatile())
          {
-@@ -5530,6 +5618,31 @@
+@@ -5530,6 +5677,31 @@
          return;
      }
  
@@ -194,7 +278,7 @@ common aligned case costs andi+bnez. Block copies test both addresses at once
      if (size >= 2 * REGSIZE_BYTES)
      {
          regNumber tempReg2 = REG_RA;
-@@ -5615,12 +5728,6 @@
+@@ -5615,12 +5787,6 @@
          {
              emit->emitIns_R_R_I(storeIns, attr, tempReg, dstAddrBaseReg, dstOffset);
          }
@@ -383,3 +467,75 @@ Only in jit11/src/coreclr/jit: emitriscv64.cpp
  
      // No-unaligned mode: an unaligned scalar access is expanded byte-wise off a base
      // register (see genCodeForIndir/genCodeForStoreInd), so its address must be left
+Only in jit11/src/coreclr/jit: lsrabuild.cpp
+--- a/src/coreclr/jit/lsrariscv64.cpp	2026-09-11 15:20:11
++++ b/src/coreclr/jit/lsrariscv64.cpp	2026-09-11 18:57:10
+@@ -26,6 +26,8 @@
+ #include "lower.h"
+ #include "codegen.h"
+ 
++bool RiscV64LclFldByteWise(GenTreeLclFld* lclFld);
++
+ //------------------------------------------------------------------------
+ // BuildNode: Build the RefPositions for a node
+ //
+@@ -88,6 +90,20 @@
+         case GT_LCL_FLD:
+         {
+             srcCount = 0;
++            if (RiscV64LclFldByteWise(tree->AsLclFld()))
++            {
++                // Strict alignment: a local field at an offset that is not a multiple of
++                // the access width is read byte-wise (genCodeForLclFld); reserve the
++                // byte scratch (and an integer accumulator for a floating load), kept
++                // off the target register.
++                buildInternalIntRegisterDefForNode(tree);
++                if (varTypeIsFloating(tree->TypeGet()))
++                {
++                    buildInternalIntRegisterDefForNode(tree);
++                }
++                setInternalRegsDelayFree = true;
++                buildInternalRegisterUses();
++            }
+ #ifdef FEATURE_SIMD
+             // Need an additional register to read upper 4 bytes of Vector3.
+             if (tree->TypeIs(TYP_SIMD12))
+@@ -111,6 +127,12 @@
+             FALLTHROUGH;
+ 
+         case GT_STORE_LCL_FLD:
++            if (RiscV64LclFldByteWise(tree->AsLclFld()))
++            {
++                // Strict alignment: stored byte-wise (genCodeForStoreLclFld); the scratch
++                // holds the byte being spilled. BuildStoreLoc builds the internal uses.
++                buildInternalIntRegisterDefForNode(tree);
++            }
+             srcCount = BuildStoreLoc(tree->AsLclVarCommon());
+             break;
+ 
+@@ -873,6 +895,25 @@
+ // Return Value:
+ //    The number of sources consumed by this node.
+ //
++//------------------------------------------------------------------------
++// RiscV64LclFldByteWise: under strict alignment (JitRiscV64StrictAlign), a scalar
++//   local field whose offset is not a multiple of its width is accessed byte-wise
++//   (stack locals are pointer-aligned, so the offset decides).
++//
++bool RiscV64LclFldByteWise(GenTreeLclFld* lclFld)
++{
++    if ((JitConfig.JitRiscV64StrictAlign() == 0) || (JitConfig.JitNoUnalignedAccess() == 0))
++    {
++        return false;
++    }
++    if (lclFld->TypeIs(TYP_STRUCT))
++    {
++        return false;
++    }
++    unsigned size = genTypeSize(lclFld->TypeGet());
++    return ((size == 2) || (size == 4) || (size == 8)) && ((lclFld->GetLclOffs() % size) != 0);
++}
++
+ int LinearScan::BuildIndir(GenTreeIndir* indirTree)
+ {
+     // struct typed indirs are expected only on rhs of a block copy,
