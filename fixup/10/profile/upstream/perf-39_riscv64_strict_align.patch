@@ -22,8 +22,8 @@ stackalloc buffer reinterpreted at an odd offset, and dependently promoted
 fields of packed structs reached through GT_LCL_VAR) are accessed byte-wise.
 bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
 
---- a/src/coreclr/jit/codegenriscv64.cpp	2026-09-12 00:22:09
-+++ b/src/coreclr/jit/codegenriscv64.cpp	2026-09-12 00:22:19
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
 @@ -22,7 +22,62 @@
  #include "gcinfoencoder.h"
  #include "patchpointinfo.h"
@@ -344,8 +344,8 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
  }
  
 Only in base10/src/coreclr/jit: codegenriscv64.cpp.orig
---- a/src/coreclr/jit/jitconfigvalues.h	2026-09-12 00:22:09
-+++ b/src/coreclr/jit/jitconfigvalues.h	2026-09-12 00:22:19
+--- a/src/coreclr/jit/jitconfigvalues.h
++++ b/src/coreclr/jit/jitconfigvalues.h
 @@ -464,6 +464,14 @@
  // sequences instead. On by default; set 0 on targets that tolerate unaligned access
  // to keep the faster wide accesses.
@@ -362,8 +362,8 @@ Only in base10/src/coreclr/jit: codegenriscv64.cpp.orig
  
  RELEASE_CONFIG_INTEGER(EnableEmbeddedBroadcast,     "EnableEmbeddedBroadcast",   1) // Allows embedded broadcasts to be disabled
 Only in base10/src/coreclr/jit: jitconfigvalues.h.orig
---- a/src/coreclr/jit/lowerriscv64.cpp	2026-09-12 00:22:09
-+++ b/src/coreclr/jit/lowerriscv64.cpp	2026-09-12 00:22:19
+--- a/src/coreclr/jit/lowerriscv64.cpp
++++ b/src/coreclr/jit/lowerriscv64.cpp
 @@ -442,11 +442,138 @@
  //    addr - the address node to try to contain
  //    addrParent - the parent of addr, in case this is checking containment of the source address.
@@ -520,8 +520,8 @@ Only in base10/src/coreclr/jit: jitconfigvalues.h.orig
  
      // No-unaligned mode: an unaligned scalar access is expanded byte-wise off a base
      // register (see genCodeForIndir/genCodeForStoreInd), so its address must be left
---- a/src/coreclr/jit/lsrariscv64.cpp	2026-09-12 00:22:09
-+++ b/src/coreclr/jit/lsrariscv64.cpp	2026-09-12 00:22:19
+--- a/src/coreclr/jit/lsrariscv64.cpp
++++ b/src/coreclr/jit/lsrariscv64.cpp
 @@ -26,6 +26,8 @@
  #include "lower.h"
  #include "codegen.h"
