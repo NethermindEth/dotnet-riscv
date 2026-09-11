@@ -22,8 +22,8 @@ stackalloc buffer reinterpreted at an odd offset, and dependently promoted
 fields of packed structs reached through GT_LCL_VAR) are accessed byte-wise.
 bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
 
---- a/src/coreclr/jit/codegenriscv64.cpp	2026-09-11 15:20:11
-+++ b/src/coreclr/jit/codegenriscv64.cpp	2026-09-11 19:02:49
+--- a/src/coreclr/jit/codegenriscv64.cpp	2026-09-12 00:22:09
++++ b/src/coreclr/jit/codegenriscv64.cpp	2026-09-12 00:22:19
 @@ -22,7 +22,62 @@
  #include "gcinfoencoder.h"
  #include "patchpointinfo.h"
@@ -87,11 +87,11 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
  // genInstrWithConstant:   we will typically generate one instruction
  //
  //    ins  reg1, reg2, imm
-@@ -1199,6 +1254,17 @@
+@@ -1139,6 +1194,17 @@
          instruction ins  = ins_Load(targetType);
          emitAttr    attr = emitTypeSize(targetType);
  
-+        if (RiscV64LclByteWise(m_compiler, tree))
++        if (RiscV64LclByteWise(compiler, tree))
 +        {
 +            // Strict alignment: a dependently promoted field of a packed struct lives at
 +            // an offset that is not a multiple of its width; read it byte-wise.
@@ -105,12 +105,12 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
          GetEmitter()->emitIns_R_S(ins, attr, tree->GetRegNum(), varNum, 0);
          genProduceReg(tree);
      }
-@@ -1266,7 +1332,15 @@
+@@ -1206,7 +1272,15 @@
  
      emitAttr attr = emitTypeSize(targetType);
  
 -    emit->emitIns_S_R(ins, attr, dataReg, varNum, offset);
-+    if (RiscV64LclByteWise(m_compiler, tree))
++    if (RiscV64LclByteWise(compiler, tree))
 +    {
 +        // Strict alignment: spill the value one byte at a time (see genCodeForLclFld).
 +        genRiscV64ByteWiseLclStore(emit, targetType, dataReg, varNum, offset, internalRegisters.GetSingle(tree));
@@ -122,12 +122,12 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
  
      genUpdateLife(tree);
  
-@@ -1368,7 +1442,15 @@
+@@ -1297,7 +1371,15 @@
              instruction ins  = ins_StoreFromSrc(dataReg, targetType);
              emitAttr    attr = emitActualTypeSize(targetType);
  
 -            emit->emitIns_S_R(ins, attr, dataReg, varNum, /* offset */ 0);
-+            if (RiscV64LclByteWise(m_compiler, lclNode))
++            if (RiscV64LclByteWise(compiler, lclNode))
 +            {
 +                // Strict alignment: see genCodeForLclVar.
 +                genRiscV64ByteWiseLclStore(emit, targetType, dataReg, varNum, 0, internalRegisters.GetSingle(lclNode));
@@ -139,7 +139,7 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
  
              genUpdateLife(lclNode);
  
-@@ -2067,6 +2149,22 @@
+@@ -1998,6 +2080,22 @@
      }
  }
  
@@ -162,7 +162,7 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
  // Generate code for InitBlk by performing a loop unroll
  // Preconditions:
  //   a) Both the size and fill byte value are integer constants.
-@@ -2986,7 +3084,17 @@
+@@ -3067,7 +3165,17 @@
              // it holds a (possibly interior) GC pointer keep it reported until the last
              // byte is stored.
              gcInfo.gcMarkRegPtrVal(addrReg, addr->TypeGet());
@@ -181,11 +181,11 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
              gcInfo.gcMarkRegSetNpt(genRegMask(addrReg));
          }
          else
-@@ -5196,6 +5304,17 @@
+@@ -5419,6 +5527,17 @@
      unsigned varNum = tree->GetLclNum();
-     assert(varNum < m_compiler->lvaCount);
+     assert(varNum < compiler->lvaCount);
  
-+    if (RiscV64LclByteWise(m_compiler, tree))
++    if (RiscV64LclByteWise(compiler, tree))
 +    {
 +        // Strict alignment: the field sits at an offset that is not a multiple of its
 +        // width; assemble it from single bytes (LSRA reserved the scratch registers).
@@ -199,7 +199,7 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
      emit->emitIns_R_S(ins_Load(targetType), size, targetReg, varNum, offs);
  
      genProduceReg(tree);
-@@ -5399,7 +5518,17 @@
+@@ -5623,7 +5742,17 @@
          // holds a (possibly interior) GC pointer - e.g. ReadUnaligned off a byref into a
          // managed array - keep it reported until the last byte is loaded.
          gcInfo.gcMarkRegPtrVal(addrReg, tree->Addr()->TypeGet());
@@ -218,7 +218,7 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
          gcInfo.gcMarkRegSetNpt(genRegMask(addrReg));
      }
      else
-@@ -5410,6 +5539,16 @@
+@@ -5634,6 +5763,16 @@
      genProduceReg(tree);
  }
  
@@ -235,7 +235,7 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
  //----------------------------------------------------------------------------------
  // genCodeForCpBlkUnroll: Generates CpBlk code by performing a loop unroll
  //
-@@ -5498,10 +5637,48 @@
+@@ -5722,10 +5861,48 @@
  
      regNumber tempReg = internalRegisters.Extract(cpBlkNode, RBM_ALLINT);
  
@@ -287,7 +287,7 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
          for (unsigned i = 0; i < size; i++)
          {
              if (srcLclNum != BAD_VAR_NUM)
-@@ -5522,6 +5699,10 @@
+@@ -5746,6 +5923,10 @@
                  emit->emitIns_R_R_I(INS_sb, EA_4BYTE, tempReg, dstAddrBaseReg, dstOffset + (int)i);
              }
          }
@@ -298,7 +298,7 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
  
          if (cpBlkNode->IsVolatile())
          {
-@@ -5530,6 +5711,31 @@
+@@ -5754,6 +5935,31 @@
          return;
      }
  
@@ -330,7 +330,7 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
      if (size >= 2 * REGSIZE_BYTES)
      {
          regNumber tempReg2 = REG_RA;
-@@ -5615,12 +5821,6 @@
+@@ -5839,12 +6045,6 @@
          {
              emit->emitIns_R_R_I(storeIns, attr, tempReg, dstAddrBaseReg, dstOffset);
          }
@@ -343,10 +343,10 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
      }
  }
  
-Only in jit11/src/coreclr/jit: emitriscv64.cpp
---- a/src/coreclr/jit/jitconfigvalues.h	2026-09-11 15:20:11
-+++ b/src/coreclr/jit/jitconfigvalues.h	2026-09-11 15:20:12
-@@ -493,6 +493,14 @@
+Only in base10/src/coreclr/jit: codegenriscv64.cpp.orig
+--- a/src/coreclr/jit/jitconfigvalues.h	2026-09-12 00:22:09
++++ b/src/coreclr/jit/jitconfigvalues.h	2026-09-12 00:22:19
+@@ -464,6 +464,14 @@
  // sequences instead. On by default; set 0 on targets that tolerate unaligned access
  // to keep the faster wide accesses.
  RELEASE_CONFIG_INTEGER(JitNoUnalignedAccess,        "JitNoUnalignedAccess",      1)
@@ -361,9 +361,10 @@ Only in jit11/src/coreclr/jit: emitriscv64.cpp
  #endif
  
  RELEASE_CONFIG_INTEGER(EnableEmbeddedBroadcast,     "EnableEmbeddedBroadcast",   1) // Allows embedded broadcasts to be disabled
---- a/src/coreclr/jit/lowerriscv64.cpp	2026-09-11 15:20:11
-+++ b/src/coreclr/jit/lowerriscv64.cpp	2026-09-11 15:27:00
-@@ -457,11 +457,138 @@
+Only in base10/src/coreclr/jit: jitconfigvalues.h.orig
+--- a/src/coreclr/jit/lowerriscv64.cpp	2026-09-12 00:22:09
++++ b/src/coreclr/jit/lowerriscv64.cpp	2026-09-12 00:22:19
+@@ -442,11 +442,138 @@
  //    addr - the address node to try to contain
  //    addrParent - the parent of addr, in case this is checking containment of the source address.
  //
@@ -502,7 +503,7 @@ Only in jit11/src/coreclr/jit: emitriscv64.cpp
      if (addr->OperIs(GT_LCL_ADDR) && IsContainableLclAddr(addr->AsLclFld(), size))
      {
          addr->SetContained();
-@@ -1014,6 +1141,16 @@
+@@ -998,6 +1125,16 @@
  #ifdef FEATURE_SIMD
      NYI_RISCV64("ContainCheckIndir-SIMD");
  #endif // FEATURE_SIMD
@@ -519,9 +520,8 @@ Only in jit11/src/coreclr/jit: emitriscv64.cpp
  
      // No-unaligned mode: an unaligned scalar access is expanded byte-wise off a base
      // register (see genCodeForIndir/genCodeForStoreInd), so its address must be left
-Only in jit11/src/coreclr/jit: lsrabuild.cpp
---- a/src/coreclr/jit/lsrariscv64.cpp	2026-09-11 15:20:11
-+++ b/src/coreclr/jit/lsrariscv64.cpp	2026-09-11 19:02:11
+--- a/src/coreclr/jit/lsrariscv64.cpp	2026-09-12 00:22:09
++++ b/src/coreclr/jit/lsrariscv64.cpp	2026-09-12 00:22:19
 @@ -26,6 +26,8 @@
  #include "lower.h"
  #include "codegen.h"
@@ -535,7 +535,7 @@ Only in jit11/src/coreclr/jit: lsrabuild.cpp
          case GT_LCL_FLD:
          {
              srcCount = 0;
-+            if (RiscV64LclByteWise(m_compiler, tree->AsLclVarCommon()))
++            if (RiscV64LclByteWise(compiler, tree->AsLclVarCommon()))
 +            {
 +                // Strict alignment: a stack local at an offset that is not a multiple of
 +                // the access width is read byte-wise (genCodeForLclFld/genCodeForLclVar);
@@ -556,7 +556,7 @@ Only in jit11/src/coreclr/jit: lsrabuild.cpp
              FALLTHROUGH;
  
          case GT_STORE_LCL_FLD:
-+            if (RiscV64LclByteWise(m_compiler, tree->AsLclVarCommon()))
++            if (RiscV64LclByteWise(compiler, tree->AsLclVarCommon()))
 +            {
 +                // Strict alignment: stored byte-wise (genCodeForStoreLclFld /
 +                // genCodeForStoreLclVar); the scratch holds the byte being spilled.
@@ -566,7 +566,7 @@ Only in jit11/src/coreclr/jit: lsrabuild.cpp
              srcCount = BuildStoreLoc(tree->AsLclVarCommon());
              break;
  
-@@ -873,6 +896,42 @@
+@@ -876,6 +899,42 @@
  // Return Value:
  //    The number of sources consumed by this node.
  //
@@ -609,3 +609,4 @@ Only in jit11/src/coreclr/jit: lsrabuild.cpp
  int LinearScan::BuildIndir(GenTreeIndir* indirTree)
  {
      // struct typed indirs are expected only on rhs of a block copy,
+Only in base10/src/coreclr/jit: lsrariscv64.cpp.orig
