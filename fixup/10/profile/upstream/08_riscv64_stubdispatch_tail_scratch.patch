@@ -1,0 +1,23 @@
+RISC-V: RhpInterfaceDispatchSlow passes the dispatch cell in t1 and then
+leaves through the `tail` pseudo-instruction, which the assembler expands
+with t1 as its scratch register (auipc t1 / jalr x0, t1) - the argument is
+clobbered before RhpUniversalTransition reads it (observed as a load from
+the transition's own code address on the ZisK guest). Expand the tail call
+by hand on a register the thunk ABI does not use. .NET 11 no longer has
+this sequence.
+
+diff --git a/src/coreclr/runtime/riscv64/StubDispatch.S b/src/coreclr/runtime/riscv64/StubDispatch.S
+index 4dafc370c95..c855e20f244 100644
+--- a/src/coreclr/runtime/riscv64/StubDispatch.S
++++ b/src/coreclr/runtime/riscv64/StubDispatch.S
+@@ -107,7 +107,9 @@
+         //  t1: parameter of the thunk's target
+         PREPARE_EXTERNAL_VAR RhpCidResolve, t0
+         mv t1, t5
+-        tail       C_FUNC(RhpUniversalTransition_DebugStepTailCall)
++1:
++        auipc t2, %pcrel_hi(C_FUNC(RhpUniversalTransition_DebugStepTailCall))
++        jalr  x0, t2, %pcrel_lo(1b)
+     LEAF_END RhpInterfaceDispatchSlow, _TEXT
+ 
+ #endif // FEATURE_CACHED_INTERFACE_DISPATCH
