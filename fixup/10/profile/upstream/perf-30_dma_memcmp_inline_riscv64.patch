@@ -6,7 +6,7 @@
  
 +// zkVM (RISCV64 only): inline DMA memcmp idiom. op1 = dst addr, op2 = src addr,
 +// gtCount = constant byte count. Lowered from NI_System_SpanHelpers_SequenceEqual
-+// and emitted as the adjacent `csrs 0x814,src; addi rd,dst,count` pair that the
++// and emitted as the adjacent `csrrs rd,0x814,src; addi x0,dst,count` pair that the
 +// ZisK transpiler folds into one dma_xmemcmp step. Produces the memcmp result.
 +GTNODE(DMA_CMP          , GenTreeDmaCmp      ,0,0,GTK_BINOP|GTK_EXOP|DBK_NOTHIR)
 +
@@ -61,7 +61,7 @@
  // ordinary allocatable callee-saved register. When 0, FP is forced as before.
  RELEASE_CONFIG_INTEGER(RiscV64FramelessFrames,      "RiscV64FramelessFrames",    1)
 +// zkVM (ZisK) only: lower constant-size SpanHelpers.SequenceEqual to the inline
-+// `csrs 0x814,src; addi rd,dst,count` DMA-memcmp idiom (1 emulator step instead of
++// `csrrs rd,0x814,src; addi x0,dst,count` DMA-memcmp idiom (1 emulator step instead of
 +// the scalar unroll / managed call). OFF by default; enable only for ZisK targets
 +// whose transpiler folds the idiom (a plain riscv64 CPU would mis-execute it).
 +RELEASE_CONFIG_INTEGER(JitRiscV64DmaCompare,        "JitRiscV64DmaCompare",      0)
@@ -109,7 +109,7 @@
          case GT_MOD:
          case GT_UMOD:
          case GT_DIV:
-@@ -6470,6 +6474,40 @@
+@@ -6470,6 +6474,49 @@
  
      genProduceReg(tree);
  }
@@ -119,8 +119,17 @@
 +//
 +// The ZisK ROM transpiler folds the adjacent instruction pair
 +//
-+//     csrs  0x814, <srcReg>            ; == csrrs x0, 0x814, src
-+//     addi  <resultReg>, <dstReg>, N   ; N = byte count (must fit simm12)
++//     csrrs <resultReg>, 0x814, <srcReg>
++//     addi  x0, <dstReg>, N            ; N = byte count (must fit simm12)
++//
++// The result register rides on the csrrs, and the addi must write x0. The older
++// spelling - csrs (csrrs x0) followed by an addi carrying the result register -
++// still transpiles, but ziskemu reports it as
++//   *** DEPRECATED INSTRUCTION: dma_xmemcmp transpilation pattern on pc ... ***
++// and the transpiler picks the result register out of whichever instruction the
++// pattern says (riscv2zisk_context.rs, transpile_dma_memcpy_memcmp_pattern), so
++// the two spellings are not interchangeable - they name a different rd. The addi
++// is never executed either way: the transpiled op jumps over it.
 +//
 +// into a single dma_xmemcmp emulator step that compares N bytes at dst against src
 +// and writes the memcmp difference (0 iff the buffers are equal) into <resultReg>.
@@ -138,12 +147,12 @@
 +
 +    const regNumber dstReg    = tree->gtOp1->GetRegNum(); // addi rs1
 +    const regNumber srcReg    = tree->gtOp2->GetRegNum(); // csrs operand
-+    const regNumber resultReg = tree->GetRegNum();        // addi rd (== memcmp result)
++    const regNumber resultReg = tree->GetRegNum();        // csrrs rd (== memcmp result)
 +
-+    // csrs 0x814, src   ==   csrrs x0, 0x814, src
-+    GetEmitter()->emitIns_R_R_I(INS_csrrs, EA_PTRSIZE, REG_R0, srcReg, 0x814);
-+    // addi result, dst, count  (transpiled: result = memcmp(dst, src, count))
-+    GetEmitter()->emitIns_R_R_I(INS_addi, EA_PTRSIZE, resultReg, dstReg, (ssize_t)tree->gtCount);
++    // csrrs result, 0x814, src   - the result register rides on the csrrs
++    GetEmitter()->emitIns_R_R_I(INS_csrrs, EA_PTRSIZE, resultReg, srcReg, 0x814);
++    // addi x0, dst, count  (not executed: the transpiler jumps over it)
++    GetEmitter()->emitIns_R_R_I(INS_addi, EA_PTRSIZE, REG_R0, dstReg, (ssize_t)tree->gtCount);
 +
 +    genProduceReg(tree);
 +}
@@ -158,7 +167,7 @@
  
 +#ifdef TARGET_RISCV64
 +            // zkVM: emit the inline DMA memcmp idiom. The ZisK transpiler folds the
-+            // adjacent pair  `csrs 0x814, src ; addi rd, dst, count`  into a single
++            // adjacent pair  `csrrs rd, 0x814, src ; addi x0, dst, count`  into a single
 +            // dma_xmemcmp step (1 emulator step vs. the scalar unroll / managed call).
 +            // `count` is the addi immediate, so it must fit a 12-bit signed field.
 +            // On riscv64 LowerCallMemcmp is only reached behind JitRiscV64DmaCompare,
@@ -222,7 +231,7 @@
 +#if defined(TARGET_RISCV64)
 +    // zkVM (ZisK): lower constant-size SpanHelpers.SequenceEqual to the inline DMA
 +    // memcmp idiom. Gated behind JitRiscV64DmaCompare because only the ZisK transpiler
-+    // folds the `csrs 0x814,src; addi rd,dst,count` pair - a plain riscv64 CPU would
++    // folds the `csrrs rd,0x814,src; addi x0,dst,count` pair - a plain riscv64 CPU would
 +    // mis-execute it. Done before LowerArgsForCall so the address args are still raw.
 +    if ((JitConfig.JitRiscV64DmaCompare() != 0) && call->IsSpecialIntrinsic() &&
 +        (comp->lookupNamedIntrinsic(call->gtCallMethHnd) == NI_System_SpanHelpers_SequenceEqual))
