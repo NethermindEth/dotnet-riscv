@@ -40,7 +40,7 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
 +    emitter* emit, var_types type, regNumber dstReg, unsigned varNum, unsigned offs, regNumber intTmp, regNumber intAcc)
 +{
 +    const unsigned width      = genTypeSize(type);
-+    const bool     isFloat    = varTypeIsFloating(type);
++    const bool     isFloat    = varTypeUsesFloatReg(type);
 +    const bool     isUnsigned = varTypeIsUnsigned(type);
 +
 +    emit->emitIns_R_S(INS_lbu, EA_4BYTE, intAcc, varNum, offs);
@@ -96,7 +96,7 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
 +            // Strict alignment: a dependently promoted field of a packed struct lives at
 +            // an offset that is not a multiple of its width; read it byte-wise.
 +            const regNumber intTmp = internalRegisters.Extract(tree);
-+            const regNumber intAcc = varTypeIsFloating(targetType) ? internalRegisters.Extract(tree) : tree->GetRegNum();
++            const regNumber intAcc = varTypeUsesFloatReg(targetType) ? internalRegisters.Extract(tree) : tree->GetRegNum();
 +            genRiscV64ByteWiseLclLoad(GetEmitter(), targetType, tree->GetRegNum(), varNum, 0, intTmp, intAcc);
 +            genProduceReg(tree);
 +            return;
@@ -190,7 +190,7 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
 +        // Strict alignment: the field sits at an offset that is not a multiple of its
 +        // width; assemble it from single bytes (LSRA reserved the scratch registers).
 +        const regNumber intTmp = internalRegisters.Extract(tree);
-+        const regNumber intAcc = varTypeIsFloating(targetType) ? internalRegisters.Extract(tree) : targetReg;
++        const regNumber intAcc = varTypeUsesFloatReg(targetType) ? internalRegisters.Extract(tree) : targetReg;
 +        genRiscV64ByteWiseLclLoad(emit, targetType, targetReg, varNum, offs, intTmp, intAcc);
 +        genProduceReg(tree);
 +        return;
