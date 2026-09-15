@@ -46,7 +46,7 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
 +    emitter* emit, var_types type, regNumber dstReg, regNumber addrReg, regNumber intTmp, regNumber intAcc)
 +{
 +    const unsigned size       = genTypeSize(type);
-+    const bool     isFloat    = varTypeIsFloating(type);
++    const bool     isFloat    = varTypeUsesFloatReg(type);
 +    const bool     isUnsigned = varTypeIsUnsigned(type);
 +    assert((size == 2) || (size == 4) || (size == 8));
 +    assert(intAcc != REG_NA);
@@ -88,7 +88,7 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
 +    emitter* emit, var_types type, regNumber dataReg, regNumber addrReg, regNumber intTmp)
 +{
 +    const unsigned size    = genTypeSize(type);
-+    const bool     isFloat = varTypeIsFloating(type);
++    const bool     isFloat = varTypeUsesFloatReg(type);
 +    assert((size == 2) || (size == 4) || (size == 8));
 +
 +    regNumber bits; // integer register whose low bytes are spilled one at a time
@@ -185,7 +185,7 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
 +        // scratch register(s) (BuildIndir).
 +        regNumber addrReg = tree->Addr()->GetRegNum();
 +        regNumber intTmp  = internalRegisters.Extract(tree);
-+        regNumber intAcc  = varTypeIsFloating(type) ? internalRegisters.Extract(tree) : targetReg;
++        regNumber intAcc  = varTypeUsesFloatReg(type) ? internalRegisters.Extract(tree) : targetReg;
  
 +        // genConsumeAddress marked addrReg dead, but the byte sequence reuses it; if it
 +        // holds a (possibly interior) GC pointer - e.g. ReadUnaligned off a byref into a
@@ -296,7 +296,7 @@ diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
 +    {
 +        assert(!addr->isContained());
 +        const bool isLoad  = indirTree->OperIs(GT_IND);
-+        const bool isFloat = varTypeIsFloating(indirTree->TypeGet());
++        const bool isFloat = varTypeUsesFloatReg(indirTree->TypeGet());
 +
 +        // A load writes its target while the byte sequence still reads the address,
 +        // so the address (and the internal scratch) must not share the def's register:
