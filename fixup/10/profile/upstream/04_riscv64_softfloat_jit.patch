@@ -986,7 +986,35 @@ index 3a02970..500551b 100644
          case GT_STORE_LCL_VAR:
          case GT_STORE_LCL_FLD:
          {
-@@ -7512,6 +7941,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, MorphAddrContext* mac, bool* optA
+@@ -7115,6 +7544,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, MorphAddrContext* mac, bool* optA
+         case GT_MUL:
+             noway_assert(op2 != nullptr);
+ 
++#ifdef TARGET_RISCV64
++            if (opts.compUseSoftFP && varTypeIsFloating(typ))
++            {
++                return fgMorphSoftFloatArith(tree->AsOp());
++            }
++#endif // TARGET_RISCV64
++
+ #ifndef TARGET_64BIT
+             if (typ == TYP_LONG)
+             {
+@@ -7203,6 +7599,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, MorphAddrContext* mac, bool* optA
+             break;
+ 
+         case GT_DIV:
++#ifdef TARGET_RISCV64
++            if (opts.compUseSoftFP && varTypeIsFloating(typ))
++            {
++                return fgMorphSoftFloatArith(tree->AsOp());
++            }
++#endif // TARGET_RISCV64
++
+             // Replace "val / dcon" with "val * (1.0 / dcon)" if dcon is a power of two.
+             // Powers of two within range are always exactly represented,
+             // so multiplication by the reciprocal is safe in this scenario
+@@ -7512,6 +7955,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, MorphAddrContext* mac, bool* optA
          case GT_EQ:
          case GT_NE:
          {
@@ -1000,7 +1028,7 @@ index 3a02970..500551b 100644
              if (opts.OptimizationEnabled())
              {
                  GenTree* optimizedTree = gtFoldTypeCompare(tree);
-@@ -7557,6 +7993,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, MorphAddrContext* mac, bool* optA
+@@ -7557,6 +8007,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, MorphAddrContext* mac, bool* optA
  
          case GT_GT:
          {
