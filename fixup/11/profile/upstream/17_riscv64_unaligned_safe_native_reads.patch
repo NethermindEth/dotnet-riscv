@@ -1,117 +1,119 @@
-NativeAOT runtime: read the byte-packed unwind/LSDA side tables without
-misaligned wide loads. UnixNativeCodeManager (FDE length, LSDA and method
-start offsets, EH info offset, associated data) and RuntimeInstance (unboxing
-stub target) read int32 fields at arbitrary byte offsets with a plain
-*(int32_t*) cast; on SP1 that is a fatal LW/LD at a misaligned address (the
-first one the guest hits is EHEnumInit). Go through memcpy, which the
-compiler expands into byte loads on a target without unaligned-access
-support.
+[NativeAOT] Read the byte-packed LSDA offsets without a misaligned wide load
 
---- a/src/coreclr/nativeaot/Runtime/RuntimeInstance.cpp	2026-09-11 15:22:30
-+++ b/src/coreclr/nativeaot/Runtime/RuntimeInstance.cpp	2026-09-11 15:22:58
-@@ -2,6 +2,7 @@
- // The .NET Foundation licenses this file to you under the MIT license.
+The unwind blob a method's LSDA points at is byte-packed: EmitLsda in
+UnixObjectWriter.Aot.cs writes a one-byte flags field and then the 32-bit
+main-LSDA, method-start, EH-info and associated-data offsets with no padding.
+UnixNativeCodeManager and RuntimeInstance read those offsets back with
+*dac_cast<PTR_int32_t>(p) - a 32-bit load from an address one byte past
+whatever alignment the section gave the blob. It is misaligned by
+construction, on every target.
+
+x64 and arm64 do not care. RISC-V is not required to implement misaligned
+access: on hardware without Zicclsm the load traps, and Linux then emulates
+it in a kernel trap handler, which is correct but hundreds of cycles for a
+load on what is an unwinding hot path. Where nothing emulates it - a
+bare-metal or zkVM executor, or a runtime built -mstrict-align - it is
+fatal, and the first site hit in practice is EHEnumInit.
+
+Read the offsets a byte at a time instead, through the decoder that already
+reads these very blobs. NativePrimitiveDecoder grows a non-mutating
+PeekInt32, and the existing ReadInt32/ReadUInt32 are expressed in terms of
+it rather than repeating the byte assembly a third time; that also drops the
+signed overflow the old expressions had in the top byte. Decoding
+little-endian byte by byte is what the writer asks for anyway - it emits the
+field with WriteLittleEndian<int>.
+
+Nothing changes for a target that implements misaligned access: the byte
+loads fold back into one wide load. All four call sites still compile to a
+single ldrsw on arm64 and a single movslq on x64, and on riscv64 to a single
+lw unless the build asks for -mstrict-align.
+--- a/src/coreclr/nativeaot/Runtime/NativePrimitiveDecoder.h
++++ b/src/coreclr/nativeaot/Runtime/NativePrimitiveDecoder.h
+@@ -46,17 +46,31 @@ public:
+         return value;
+     }
  
- #include "common.h"
-+#include <string.h>
- #include "CommonTypes.h"
- #include "CommonMacros.h"
- #include "daccess.h"
-@@ -153,7 +154,14 @@
++    // The encodings read here are byte-packed, so a 32-bit field can start at any
++    // address. Assemble it out of byte loads: a wide load at a misaligned address
++    // faults on a target that does not implement misaligned access, and a compiler
++    // for a target that does implement it folds these back into one wide load.
++    static uint32_t PeekUInt32(const uint8_t* p)
++    {
++        return (uint32_t)*p | ((uint32_t)*(p+1) << 8) | ((uint32_t)*(p+2) << 16) | ((uint32_t)*(p+3) << 24);
++    }
++
++    static int32_t PeekInt32(const uint8_t* p)
++    {
++        return (int32_t)PeekUInt32(p);
++    }
++
+     static int32_t ReadInt32(uint8_t* & p)
+     {
+-        int32_t value = *p | (*(p+1) << 8) | (*(p+2) << 16) | (*(p+3) << 24);
+-        p += 4;
++        int32_t value = PeekInt32(p);
++        p += sizeof(int32_t);
+         return value;
+     }
+ 
+     static uint32_t ReadUInt32(uint8_t* & p)
+     {
+-        uint32_t value = *p | (*(p+1) << 8) | (*(p+2) << 16) | (*(p+3) << 24);
+-        p += 4;
++        uint32_t value = PeekUInt32(p);
++        p += sizeof(uint32_t);
+         return value;
+     }
+ };
+--- a/src/coreclr/nativeaot/Runtime/RuntimeInstance.cpp
++++ b/src/coreclr/nativeaot/Runtime/RuntimeInstance.cpp
+@@ -10,6 +10,7 @@
+ #include "rhassert.h"
+ #include "slist.h"
+ #include "holder.h"
++#include "NativePrimitiveDecoder.h"
+ #include "Crst.h"
+ #include "rhbinder.h"
+ #include "RuntimeInstance.h"
+@@ -153,7 +154,7 @@ PTR_uint8_t RuntimeInstance::GetTargetOfUnboxingAndInstantiatingStub(PTR_VOID Co
              uint8_t flags = *pData++;
  
              if ((flags & (uint8_t)AssociatedDataFlags::HasUnboxingStubTarget) != 0)
 -                return pData + *dac_cast<PTR_int32_t>(pData);
-+            {
-+                // Byte-packed side table: read through memcpy so the compiler emits
-+                // byte loads rather than a wide load that traps on targets that reject
-+                // misaligned access (SP1, OpenVM).
-+                int32_t offset;
-+                memcpy(&offset, pData, sizeof(offset));
-+                return pData + offset;
-+            }
++                return pData + NativePrimitiveDecoder::PeekInt32(pData);
          }
      }
  
---- a/src/coreclr/nativeaot/Runtime/unix/UnixNativeCodeManager.cpp	2026-09-11 15:20:11
-+++ b/src/coreclr/nativeaot/Runtime/unix/UnixNativeCodeManager.cpp	2026-09-11 15:52:03
-@@ -1,7 +1,26 @@
- // Licensed to the .NET Foundation under one or more agreements.
- // The .NET Foundation licenses this file to you under the MIT license.
- #include "common.h"
-+#include <string.h>
- 
-+// The unwind-info/LSDA side tables are byte-packed, so the 32-bit fields below sit
-+// at arbitrary byte offsets. Read them through memcpy: the compiler expands that
-+// into byte loads on a target without unaligned-access support, whereas a plain
-+// wide load traps on executors that reject misaligned access (SP1, OpenVM).
-+static inline int32_t ReadInt32Unaligned(const void* p)
-+{
-+    int32_t v;
-+    memcpy(&v, p, sizeof(v));
-+    return v;
-+}
-+
-+static inline uint32_t ReadUInt32Unaligned(const void* p)
-+{
-+    uint32_t v;
-+    memcpy(&v, p, sizeof(v));
-+    return v;
-+}
-+
- #include "CommonTypes.h"
- #include "CommonMacros.h"
- #include "daccess.h"
-@@ -24,6 +43,7 @@
- 
- #if defined(TARGET_APPLE)
- #include <mach-o/compact_unwind_encoding.h>
-+
- #endif // TARGET_APPLE
- 
- #if defined(TARGET_ARM64)
-@@ -138,11 +158,11 @@
- #endif // TARGET_APPLE
- 
-     const uint8_t* p = (const uint8_t*)pNativeMethodInfo->unwind_info;
--    uint32_t fdeLength = *dac_cast<PTR_uint32_t>((uint8_t*)p);
-+    uint32_t fdeLength = ReadUInt32Unaligned(p);
-     const uint8_t* end = p + fdeLength;
-     p += sizeof(uint32_t); // FDE length
- 
--    if (*dac_cast<PTR_uint32_t>((uint8_t*)p) == 0)
-+    if (ReadUInt32Unaligned(p) == 0)
-         return false;
- 
-     p += sizeof(uint32_t); // CIE pointer
-@@ -329,10 +349,10 @@
+--- a/src/coreclr/nativeaot/Runtime/unix/UnixNativeCodeManager.cpp
++++ b/src/coreclr/nativeaot/Runtime/unix/UnixNativeCodeManager.cpp
+@@ -329,10 +329,10 @@ bool UnixNativeCodeManager::FindMethodInfo(PTR_VOID        ControlPC,
      if ((unwindBlockFlags & UBF_FUNC_KIND_MASK) != UBF_FUNC_KIND_ROOT)
      {
          // Funclets just refer to the main function's blob
 -        pMethodInfo->pMainLSDA = p + *dac_cast<PTR_int32_t>(p);
-+        pMethodInfo->pMainLSDA = p + ReadInt32Unaligned(p);
++        pMethodInfo->pMainLSDA = p + NativePrimitiveDecoder::PeekInt32(p);
          p += sizeof(int32_t);
  
 -        pMethodInfo->pMethodStartAddress = dac_cast<PTR_VOID>(procInfo.start_ip - *dac_cast<PTR_int32_t>(p));
-+        pMethodInfo->pMethodStartAddress = dac_cast<PTR_VOID>(procInfo.start_ip - ReadInt32Unaligned(p));
++        pMethodInfo->pMethodStartAddress = dac_cast<PTR_VOID>(procInfo.start_ip - NativePrimitiveDecoder::PeekInt32(p));
      }
      else
      {
-@@ -1596,7 +1616,7 @@
+@@ -1596,7 +1596,7 @@ bool UnixNativeCodeManager::EHEnumInit(MethodInfo * pMethodInfo, PTR_VOID * pMet
      *pMethodStartAddress = pNativeMethodInfo->pMethodStartAddress;
  
      pEnumState->pMethodStartAddress = dac_cast<PTR_uint8_t>(pNativeMethodInfo->pMethodStartAddress);
 -    pEnumState->pEHInfo = dac_cast<PTR_uint8_t>(p + *dac_cast<PTR_int32_t>(p));
-+    pEnumState->pEHInfo = dac_cast<PTR_uint8_t>(p + ReadInt32Unaligned(p));
++    pEnumState->pEHInfo = dac_cast<PTR_uint8_t>(p + NativePrimitiveDecoder::PeekInt32(p));
      pEnumState->uClause = 0;
      pEnumState->nClauses = NativePrimitiveDecoder::ReadUnsigned(pEnumState->pEHInfo);
  
-@@ -1698,7 +1718,7 @@
+@@ -1698,7 +1698,7 @@ PTR_VOID UnixNativeCodeManager::GetAssociatedData(PTR_VOID ControlPC)
      if ((unwindBlockFlags & UBF_FUNC_HAS_ASSOCIATED_DATA) == 0)
          return NULL;
  
 -    return dac_cast<PTR_VOID>(p + *dac_cast<PTR_int32_t>(p));
-+    return dac_cast<PTR_VOID>(p + ReadInt32Unaligned(p));
++    return dac_cast<PTR_VOID>(p + NativePrimitiveDecoder::PeekInt32(p));
  }
  
  extern "C" void RegisterCodeManager(ICodeManager * pCodeManager, PTR_VOID pvStartRange, uint32_t cbRange);
