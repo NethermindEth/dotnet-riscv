@@ -11,6 +11,12 @@
 # directory and no community - so the $version component is dropped and the
 # community repositories are removed rather than repointed.
 #
+# apk-tools-static is the exception: it is the host's x86_64 apk binary, which
+# runtime's build-rootfs.sh now fetches from "$__AlpineRepo/v3.20/main/$arch/"
+# instead of gitlab. The mirror is a flat rv64ima feed and carries no such
+# package, so that one URL stays on the stock CDN; a 404 there leaves an empty
+# rootfs, and the release that follows is missing libgcc.a, libm.a and libdl.a.
+#
 # Arcade has since moved the URL into a variable:
 #     __AlpineRepo="${__AlpineRepoOverride:-https://dl-cdn.alpinelinux.org/alpine}"
 #     -X "$__AlpineRepo/$version/main"
@@ -21,6 +27,7 @@ substitute_alpine_mirror() {
         -e 's#^[[:space:]]*__AlpineRepo=.*#__AlpineRepo="https://opensource.interpretica.io/bflat/alpine/b8"#' \
         -e 's#-X "\$__AlpineRepo/\$version/main"#-X "$__AlpineRepo/main"#g' \
         -e '\#-X "\$__AlpineRepo/\$version/community"#d' \
+        -e 's#__ApkToolsUrl="\$__AlpineRepo/#__ApkToolsUrl="https://dl-cdn.alpinelinux.org/alpine/#' \
         -e 's#-X "https?://dl-cdn\.alpinelinux\.org/alpine/\$version/main"#-X "https://opensource.interpretica.io/bflat/alpine/b8/main"#g' \
         -e '\#-X "https?://dl-cdn\.alpinelinux\.org/alpine/\$version/community"#d' \
         "$1"
