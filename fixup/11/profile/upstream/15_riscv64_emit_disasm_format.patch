@@ -1,0 +1,18 @@
+[RISC-V] Print MajorOpcode as an int in emitDisInsName
+
+GetMajorOpcode returns emitter::MajorOpcode, and passing an enum to a %d
+conversion is -Wformat. The riscv64 cross build runs with -Werror, so the
+file does not compile.
+
+diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
+--- a/src/coreclr/jit/emitriscv64.cpp
++++ b/src/coreclr/jit/emitriscv64.cpp
+@@ -4802,7 +4802,7 @@ void emitter::emitDispInsName(
+         default:
+         {
+             printf("CODE: %#x\n", code);
+-            printf("MajorOpcode: %d\n", GetMajorOpcode(code));
++            printf("MajorOpcode: %d\n", static_cast<int>(GetMajorOpcode(code)));
+             NO_WAY("illegal ins within emitDisInsName!");
+         }
+     }
