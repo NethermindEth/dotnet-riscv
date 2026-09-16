@@ -24,13 +24,15 @@ and `soft_float_abi`. Two runs are worth doing before proposing anything here:
 | `upstream` | **false** | the patches change nothing for an ordinary rv64gc/lp64d target — the claim every one of these commits makes in its message. This is the run that matters here. |
 | `minimal` | **true** | the ISA/ABI machinery actually builds a soft-float runtime, with `check_lp64.sh` gating the result |
 
-`upstream` + `soft_float_abi=true` does **not** work, by construction: the
-runtime's `.S` sources still contain unguarded `fsd`/`fld` and `amo*`, and the
-patches that gate them on `__riscv_flen` / `__riscv_atomic` (`minimal/11` and
-`minimal/14`) are not here — they are still under review on
-dotnet/runtime#132204. The assembler rejects those files under `-march=rv64im`.
-So the soft-float leg has to run on `minimal`, and the `upstream` profile is
-for proving the no-op claim.
+`upstream` + `soft_float_abi=true` is now worth trying. The assembly guards
+that this note used to say were missing are here: `06_riscv64_asm_isa_guards`
+covers the union of what `minimal/11` and `minimal/14` touch, and `18` gates
+the JIT's own `amo*`/`lr`/`sc` emission. What `minimal` still has and this
+profile does not is `17_riscv64_isa_seed_defaults`,
+`18_riscv64_isa_assert_fp_emission`, `20_riscv64_splitcodedata`,
+`22_riscv64_dispatchresolve_tail` and `30_riscv64_single_threaded_runtime`, so
+whether the soft-float leg gets all the way through on `upstream` alone is an
+open question that a run answers.
 
 `soft_float_abi` also selects the rootfs: `true` applies the custom lp64 Alpine
 (`patch_alpine.sh`), `false` uses the stock userspace. The `upstream` profile
