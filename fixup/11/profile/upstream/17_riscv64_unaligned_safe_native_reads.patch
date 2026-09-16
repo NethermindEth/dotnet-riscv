@@ -12,33 +12,35 @@ cannot tell which, so it should not ask for it here. Build flags do not
 help: with -mstrict-align the compiler still emits a single lw, because the
 cast promised the alignment.
 
-Read the offsets a byte at a time through NativePrimitiveDecoder, which
-already reads these blobs. It gets a non-mutating PeekInt32, and
-ReadInt32/ReadUInt32 now use it instead of repeating the byte assembly.
-Widening each byte before the shift also removes the signed overflow the
-old expressions had in the top byte.
+Read the offsets through memcpy instead, in the decoder that already reads
+these blobs. NativePrimitiveDecoder gets a non-mutating PeekInt32 and
+PeekUInt32, and ReadInt32/ReadUInt32 use them rather than assembling the
+value out of byte loads by hand. That keeps every read native-endian, as it
+was before, and drops the signed overflow the old expressions had in the
+top byte.
 
 Nothing is lost where misaligned access is available: with clang 22.1.8 at
 -O2 the affected paths still compile to one ldrsw on arm64 and one movslq
 on x64.
+diff --git a/src/coreclr/nativeaot/Runtime/NativePrimitiveDecoder.h b/src/coreclr/nativeaot/Runtime/NativePrimitiveDecoder.h
 --- a/src/coreclr/nativeaot/Runtime/NativePrimitiveDecoder.h
 +++ b/src/coreclr/nativeaot/Runtime/NativePrimitiveDecoder.h
 @@ -46,17 +46,31 @@ public:
          return value;
      }
  
-+    // The encodings read here are byte-packed, so a 32-bit field can start at any
-+    // address. Assemble it out of byte loads: a wide load at a misaligned address
-+    // faults on a target that does not implement misaligned access, and a compiler
-+    // for a target that does implement it folds these back into one wide load.
 +    static uint32_t PeekUInt32(const uint8_t* p)
 +    {
-+        return (uint32_t)*p | ((uint32_t)*(p+1) << 8) | ((uint32_t)*(p+2) << 16) | ((uint32_t)*(p+3) << 24);
++        uint32_t value;
++        memcpy(&value, p, sizeof(value));
++        return value;
 +    }
 +
 +    static int32_t PeekInt32(const uint8_t* p)
 +    {
-+        return (int32_t)PeekUInt32(p);
++        int32_t value;
++        memcpy(&value, p, sizeof(value));
++        return value;
 +    }
 +
      static int32_t ReadInt32(uint8_t* & p)
@@ -59,6 +61,7 @@ on x64.
          return value;
      }
  };
+diff --git a/src/coreclr/nativeaot/Runtime/RuntimeInstance.cpp b/src/coreclr/nativeaot/Runtime/RuntimeInstance.cpp
 --- a/src/coreclr/nativeaot/Runtime/RuntimeInstance.cpp
 +++ b/src/coreclr/nativeaot/Runtime/RuntimeInstance.cpp
 @@ -10,6 +10,7 @@
@@ -78,6 +81,7 @@ on x64.
          }
      }
  
+diff --git a/src/coreclr/nativeaot/Runtime/unix/UnixNativeCodeManager.cpp b/src/coreclr/nativeaot/Runtime/unix/UnixNativeCodeManager.cpp
 --- a/src/coreclr/nativeaot/Runtime/unix/UnixNativeCodeManager.cpp
 +++ b/src/coreclr/nativeaot/Runtime/unix/UnixNativeCodeManager.cpp
 @@ -329,10 +329,10 @@ bool UnixNativeCodeManager::FindMethodInfo(PTR_VOID        ControlPC,

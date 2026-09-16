@@ -1,16 +1,32 @@
-ILC pads code sections to the node alignment with a single byte: NOP on
-x86/x64, zero elsewhere. On riscv64 that leaves 0x00000000 words between
-methods (about two per method), which is not an instruction. SP1 eagerly
-transpiles every word of every PF_X segment and panics on the first one it
-cannot decode ("Cannot decode instruction: 0x0"), so no bflat guest loads
-there; ZisK/OpenVM only tolerate the zeros because they are never executed.
-Pad riscv64 code with a real NOP (addi x0, x0, 0 = 0x00000013) instead:
-SectionData takes a padding pattern and keeps it in phase with the section
-offset.
+[NativeAOT] Pad code sections with a NOP on ARM64, LoongArch64 and RISC-V
 
---- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/ObjectWriter.cs	2026-09-11 13:10:07
-+++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/ObjectWriter.cs	2026-09-11 13:10:07
-@@ -29,7 +29,7 @@
+ILC fills the alignment gaps between code nodes with one repeated byte: 0x90
+on x86 and x64, zero everywhere else. The field holding it is a single byte,
+which is why only x86 and x64 ever got a NOP - on a fixed-width target a NOP
+does not fit in a byte. Every other architecture therefore pads its
+executable sections with a word that is not an instruction: 0x00000000 is
+udf #0 on ARM64 and an invalid encoding on RISC-V and LoongArch64. Anything
+that decodes the section linearly - a disassembler, a debugger, a loader
+that validates the code it is handed - reads garbage between methods.
+
+Make the padding a pattern instead of a byte, keep it in phase with the
+section offset, and give the fixed-width targets their NOP:
+
+    ARM64          nop                  d503201f
+    LoongArch64    andi $r0, $r0, 0     03400000
+    RISC-V         c.nop                0001
+
+RISC-V uses the compressed NOP rather than addi x0, x0, 0 because the JIT
+emits RVC, so a method can end two bytes short of a four-byte boundary. A
+four-byte pattern would put 0x0000 in that gap, which is the illegal
+encoding - exactly the hole this change is meant to close.
+
+x86 and x64 are unaffected, and the output does not grow: the gaps were
+already there, they just held zeros.
+diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/ObjectWriter.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/ObjectWriter.cs
+--- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/ObjectWriter.cs
++++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/ObjectWriter.cs
+@@ -29,7 +29,7 @@ private protected sealed record BlockToRelocate(int SectionIndex, long Offset, b
  
          private readonly Dictionary<ISymbolNode, string> _mangledNameMap = new();
  
@@ -19,27 +35,34 @@ offset.
  
          // Standard sections
          private readonly Dictionary<string, int> _sectionNameToSectionIndex = new(StringComparer.Ordinal);
-@@ -50,11 +50,15 @@
+@@ -49,12 +49,21 @@ private protected ObjectWriter(NodeFactory factory, ObjectWritingOptions options
+             _isSingleFileCompilation = _nodeFactory.CompilationModuleGroup.IsSingleFileCompilation;
              _usesSubsectionsViaSymbols = factory.Target.IsApplePlatform;
  
-             // Padding byte for code sections (NOP for x86/x64)
+-            // Padding byte for code sections (NOP for x86/x64)
 -            _insPaddingByte = factory.Target.Architecture switch
++            // Padding pattern for code sections: a NOP, so that whatever decodes the
++            // section linearly - a disassembler, a debugger, a loader that validates
++            // the code - reads instructions rather than a hole. A zero word is not an
++            // encoding: it is udf #0 on ARM64 and illegal on LoongArch64 and RISC-V.
 +            _insPadding = factory.Target.Architecture switch
              {
 -                TargetArchitecture.X86 => 0x90,
 -                TargetArchitecture.X64 => 0x90,
 -                _ => 0
-+                TargetArchitecture.X86 => [0x90],
-+                TargetArchitecture.X64 => [0x90],
-+                // zkVM executors (SP1, ZisK) decode every word of the code
-+                // segment up front; a zero word is not an encoding, so pad
-+                // with a real NOP (addi x0, x0, 0).
-+                TargetArchitecture.RiscV64 => [0x13, 0x00, 0x00, 0x00],
++                TargetArchitecture.X86 => [0x90],                             // nop
++                TargetArchitecture.X64 => [0x90],                             // nop
++                TargetArchitecture.ARM64 => [0x1F, 0x20, 0x03, 0xD5],         // nop
++                TargetArchitecture.LoongArch64 => [0x00, 0x00, 0x40, 0x03],   // andi $r0, $r0, 0
++                // RISC-V gets the compressed NOP: the JIT emits RVC, so a method can
++                // end two bytes short of a four-byte boundary, and the tail of a
++                // four-byte pattern would leave 0x0000 there - the illegal encoding.
++                TargetArchitecture.RiscV64 => [0x01, 0x00],                   // c.nop
 +                _ => [0]
              };
          }
  
-@@ -83,7 +87,7 @@
+@@ -83,7 +92,7 @@ private protected SectionWriter GetOrCreateSection(ObjectNodeSection section, st
  
              if (comdatName is not null || !_sectionNameToSectionIndex.TryGetValue(section.Name, out sectionIndex))
              {
@@ -48,9 +71,10 @@ offset.
                  sectionIndex = _sectionIndexToData.Count;
                  CreateSection(section, comdatName, symbolName, sectionData.GetReadStream());
                  _sectionIndexToData.Add(sectionData);
---- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/SectionData.cs	2026-09-11 13:10:07
-+++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/SectionData.cs	2026-09-11 13:10:07
-@@ -26,10 +26,23 @@
+diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/SectionData.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/SectionData.cs
+--- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/SectionData.cs
++++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/SectionData.cs
+@@ -26,10 +26,25 @@ internal sealed class SectionData
          private readonly List<ReadOnlyMemory<byte>> _buffers = new();
          private long _length;
          private readonly byte[] _padding = new byte[16];
@@ -66,6 +90,8 @@ offset.
 +            }
 +            else
 +            {
++                // Repeat the pattern across the whole buffer, so that any padding up
++                // to _padding.Length can be served by a single copy.
 +                Debug.Assert(_padding.Length % paddingPattern.Length == 0);
 +                for (int i = 0; i < _padding.Length; i += paddingPattern.Length)
 +                {
@@ -76,14 +102,14 @@ offset.
          }
  
          private void FlushAppendBuffer()
-@@ -53,9 +66,24 @@
+@@ -53,9 +68,24 @@ public void AppendPadding(int paddingLength)
          {
              if (paddingLength > 0)
              {
 -                if (_appendBuffer.WrittenCount > 0 || paddingLength > _padding.Length)
-+                // A multi-byte pattern (an instruction) has to stay in phase
-+                // with the section offset, so the fast paths are only taken
-+                // when the padding starts on a pattern boundary.
++                // A multi-byte pattern is an instruction, so it has to stay in phase
++                // with the section offset. Both paths below start the pattern at its
++                // first byte, so they only apply when the gap does too.
 +                int phase = (int)(Length % _paddingPatternLength);
 +                if (_appendBuffer.WrittenCount > 0 || paddingLength > _padding.Length || phase != 0)
                  {
