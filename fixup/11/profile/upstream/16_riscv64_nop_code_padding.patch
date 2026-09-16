@@ -23,6 +23,7 @@ encoding - exactly the hole this change is meant to close.
 
 x86 and x64 are unaffected, and the output does not grow: the gaps were
 already there, they just held zeros.
+
 diff --git a/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWriter.cs b/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWriter.cs
 --- a/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWriter.cs
 +++ b/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWriter.cs

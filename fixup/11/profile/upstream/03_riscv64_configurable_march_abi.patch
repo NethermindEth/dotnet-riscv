@@ -25,8 +25,6 @@ This mirrors how armel selects -mfloat-abi=softfp a few lines above.
 
 Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
- eng/native/configurecompiler.cmake | 35 ++++++++++++++++++++++++++++--
- 1 file changed, 33 insertions(+), 2 deletions(-)
 
 diff --git a/eng/native/configurecompiler.cmake b/eng/native/configurecompiler.cmake
 --- a/eng/native/configurecompiler.cmake

@@ -22,14 +22,11 @@ present.
 
 Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
- src/coreclr/jit/compiler.h      |  2 +-
- src/coreclr/jit/emitriscv64.cpp | 30 ++++++++++++++++++++++++++++++
- 2 files changed, 31 insertions(+), 1 deletion(-)
 
 diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
 --- a/src/coreclr/jit/compiler.h
 +++ b/src/coreclr/jit/compiler.h
-@@ -10926,7 +10926,7 @@ private:
+@@ -10886,7 +10886,7 @@ private:
      // support/nonsupport for an instruction set
      bool compIsaSupportedDebugOnly(CORINFO_InstructionSet isa) const
      {

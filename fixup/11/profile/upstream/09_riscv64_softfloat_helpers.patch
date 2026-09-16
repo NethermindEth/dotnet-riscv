@@ -25,29 +25,6 @@ was deleted upstream in #133474 and needs a new home.
 
 Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
- src/coreclr/inc/corinfo.h                     | 22 +++++++++
- src/coreclr/inc/jithelpers.h                  | 18 ++++++++
- src/coreclr/jit/utils.cpp                     | 15 ++++++
- src/coreclr/jit/valuenum.cpp                  | 46 +++++++++++++++++++
- src/coreclr/jit/valuenumfuncs.h               |  6 +++
- .../tools/Common/CommandLineHelpers.cs        |  5 +-
- .../Compiler/ObjectWriter/ElfObjectWriter.cs  | 23 +++++++++-
- .../ObjectWriter/ObjectWritingOptions.cs      |  4 ++
- .../tools/Common/InstructionSetHelpers.cs     | 10 ++--
- .../Internal/Runtime/ReadyToRunConstants.cs   | 16 +++++++
- .../Common/JitInterface/CorInfoHelpFunc.cs    | 16 +++++++
- .../tools/Common/JitInterface/CorInfoImpl.cs  |  7 +++
- .../Common/TypeSystem/Common/TargetDetails.cs |  5 ++
- .../ILCompiler.Compiler/Compiler/JitHelper.cs | 44 ++++++++++++++++++
- .../ILCompiler.Diagnostics/PerfMapWriter.cs   |  1 +
- .../TestCases/R2RTestSuites.cs                | 28 +++++++++++
- .../TestCasesRunner/R2RTestRunner.cs          | 11 +++++
- .../Compiler/RyuJitCompilation.cs             | 24 ++++++++++
- .../JitInterface/CorInfoImpl.RyuJit.cs        | 42 +++++++++++++++++
- .../aot/ILCompiler/ILCompilerRootCommand.cs   |  4 +-
- src/coreclr/tools/aot/ILCompiler/Program.cs   |  3 +-
- src/coreclr/tools/aot/crossgen2/Program.cs    |  8 +++-
- 23 files changed, 352 insertions(+), 9 deletions(-)
 
 diff --git a/src/coreclr/inc/corinfo.h b/src/coreclr/inc/corinfo.h
 --- a/src/coreclr/inc/corinfo.h
@@ -137,7 +114,7 @@ diff --git a/src/coreclr/jit/utils.cpp b/src/coreclr/jit/utils.cpp
 diff --git a/src/coreclr/jit/valuenum.cpp b/src/coreclr/jit/valuenum.cpp
 --- a/src/coreclr/jit/valuenum.cpp
 +++ b/src/coreclr/jit/valuenum.cpp
-@@ -15116,6 +15116,14 @@ void Compiler::fgValueNumberCastHelper(GenTreeCall* call)
+@@ -15046,6 +15046,14 @@ void Compiler::fgValueNumberCastHelper(GenTreeCall* call)
              castFromType     = TYP_DOUBLE;
              hasOverflowCheck = true;
              break;
@@ -152,7 +129,7 @@ diff --git a/src/coreclr/jit/valuenum.cpp b/src/coreclr/jit/valuenum.cpp
  
          default:
              unreached();
-@@ -15183,6 +15191,42 @@ VNFunc Compiler::fgValueNumberJitHelperMethodVNFunc(CorInfoHelpFunc helpFunc)
+@@ -15113,6 +15121,42 @@ VNFunc Compiler::fgValueNumberJitHelperMethodVNFunc(CorInfoHelpFunc helpFunc)
          case CORINFO_HELP_DBLREM:
              vnf = VNF_MOD;
              break;
@@ -195,7 +172,7 @@ diff --git a/src/coreclr/jit/valuenum.cpp b/src/coreclr/jit/valuenum.cpp
  
          // These allocation operations probably require some augmentation -- perhaps allocSiteId,
          // something about array length...
-@@ -15425,6 +15469,8 @@ bool Compiler::fgValueNumberHelperCall(GenTreeCall* call)
+@@ -15355,6 +15399,8 @@ bool Compiler::fgValueNumberHelperCall(GenTreeCall* call)
          case CORINFO_HELP_DBL2LNG:
          case CORINFO_HELP_DBL2LNG_OVF:
          case CORINFO_HELP_DBL2UINT_OVF:
@@ -347,7 +324,7 @@ diff --git a/src/coreclr/tools/Common/InstructionSetHelpers.cs b/src/coreclr/too
 diff --git a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs
 --- a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs
 +++ b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs
-@@ -406,6 +406,22 @@ public enum ReadyToRunHelper
+@@ -403,6 +403,22 @@ public enum ReadyToRunHelper
          TypeHandleToRuntimeType,
          GetRefAny,
          TypeHandleToRuntimeTypeHandle,
@@ -399,7 +376,7 @@ diff --git a/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs b/src/core
 diff --git a/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs b/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
 --- a/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
 +++ b/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
-@@ -4915,6 +4915,13 @@ private uint getJitFlags(ref CORJIT_FLAGS flags, uint sizeInBytes)
+@@ -4885,6 +4885,13 @@ private uint getJitFlags(ref CORJIT_FLAGS flags, uint sizeInBytes)
                  flags.Set(CorJitFlag.CORJIT_FLAG_SOFTFP_ABI);
              }
  
@@ -485,7 +462,7 @@ diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs b/s
 diff --git a/src/coreclr/tools/aot/ILCompiler.Diagnostics/PerfMapWriter.cs b/src/coreclr/tools/aot/ILCompiler.Diagnostics/PerfMapWriter.cs
 --- a/src/coreclr/tools/aot/ILCompiler.Diagnostics/PerfMapWriter.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.Diagnostics/PerfMapWriter.cs
-@@ -128,6 +128,7 @@ private static PerfmapTokensForTarget TranslateTargetDetailsToPerfmapConstants(T
+@@ -126,6 +126,7 @@ private static PerfmapTokensForTarget TranslateTargetDetailsToPerfmapConstants(T
                  TargetAbi.Unknown => PerfMapAbiToken.Unknown,
                  TargetAbi.NativeAot => PerfMapAbiToken.Default,
                  TargetAbi.NativeAotArmel => PerfMapAbiToken.Armel,
@@ -496,7 +473,7 @@ diff --git a/src/coreclr/tools/aot/ILCompiler.Diagnostics/PerfMapWriter.cs b/src
 diff --git a/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCases/R2RTestSuites.cs b/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCases/R2RTestSuites.cs
 --- a/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCases/R2RTestSuites.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCases/R2RTestSuites.cs
-@@ -66,6 +66,34 @@ static void Validate(ReadyToRunReader reader)
+@@ -62,6 +62,34 @@ static void Validate(ReadyToRunReader reader)
          }
      }
  
@@ -562,7 +539,7 @@ diff --git a/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCasesRunner/R
 diff --git a/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs b/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs
 --- a/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs
-@@ -60,6 +60,26 @@ internal RyuJitCompilation(
+@@ -54,6 +54,26 @@ internal RyuJitCompilation(
              _compilationOptions = options;
              InstructionSetSupport = instructionSetSupport;
  
@@ -589,7 +566,7 @@ diff --git a/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.
              _profileDataManager = profileDataManager;
  
              _methodImportationErrorProvider = errorProvider;
-@@ -126,6 +146,10 @@ protected override void CompileInternal(string outputFile, ObjectDumper dumper)
+@@ -116,6 +136,10 @@ protected override void CompileInternal(string outputFile, ObjectDumper dumper)
              if ((_compilationOptions & RyuJitCompilationOptions.ControlFlowGuardAnnotations) != 0)
                  options |= ObjectWritingOptions.ControlFlowGuard;
  
@@ -689,7 +666,7 @@ diff --git a/src/coreclr/tools/aot/ILCompiler/Program.cs b/src/coreclr/tools/aot
 diff --git a/src/coreclr/tools/aot/crossgen2/Program.cs b/src/coreclr/tools/aot/crossgen2/Program.cs
 --- a/src/coreclr/tools/aot/crossgen2/Program.cs
 +++ b/src/coreclr/tools/aot/crossgen2/Program.cs
-@@ -80,6 +80,11 @@ public int Run()
+@@ -78,6 +78,11 @@ public int Run()
  
              (TargetArchitecture targetArchitecture, TargetOS targetOS, TargetAbi targetAbi) =
                  Helpers.GetTargetSpec(Get(_command.TargetArchitecture), Get(_command.TargetOS));
@@ -698,10 +675,10 @@ diff --git a/src/coreclr/tools/aot/crossgen2/Program.cs b/src/coreclr/tools/aot/
 +                // The soft-float helpers have no ReadyToRun encoding; the target is NativeAOT only.
 +                throw new CommandLineException($"Target architecture '{Get(_command.TargetArchitecture)}' is not supported by ReadyToRun");
 +            }
+             bool targetAllowsRuntimeCodeGeneration = GetTargetAllowsRuntimeCodeGeneration(targetOS, targetArchitecture);
  
-             // The portable call-helpers generator is currently supported only for Wasm.
-             if (_generatePortableCallHelpers is not null
-@@ -108,7 +113,8 @@ public int Run()
+             // Crossgen2 is partial AOT and its pre-compiled methods can be thrown away at runtime if
+@@ -98,7 +103,8 @@ public int Run()
              InstructionSetSupport instructionSetSupport = Helpers.ConfigureInstructionSetSupport(Get(_command.InstructionSet), Get(_command.MaxVectorTBitWidth), isVectorTOptimistic, targetArchitecture, targetOS,
                  SR.InstructionSetMustNotBe, SR.InstructionSetInvalidImplication, logger,
                  allowOptimistic: allowOptimistic,

@@ -26,10 +26,6 @@ and still the only ones taken.
 
 Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
- .../external/libunwind/include/libunwind-riscv.h     |  6 ++++++
- .../libunwind/include/tdep-riscv/libunwind_i.h       | 12 ++++++++++++
- src/native/external/libunwind/src/riscv/asm.h        |  5 +++--
- 3 files changed, 21 insertions(+), 2 deletions(-)
 
 diff --git a/src/native/external/libunwind/include/libunwind-riscv.h b/src/native/external/libunwind/include/libunwind-riscv.h
 --- a/src/native/external/libunwind/include/libunwind-riscv.h

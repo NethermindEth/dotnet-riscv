@@ -22,6 +22,7 @@ top byte.
 Nothing is lost where misaligned access is available: with clang 22.1.8 at
 -O2 the affected paths still compile to one ldrsw on arm64 and one movslq
 on x64.
+
 diff --git a/src/coreclr/nativeaot/Runtime/NativePrimitiveDecoder.h b/src/coreclr/nativeaot/Runtime/NativePrimitiveDecoder.h
 --- a/src/coreclr/nativeaot/Runtime/NativePrimitiveDecoder.h
 +++ b/src/coreclr/nativeaot/Runtime/NativePrimitiveDecoder.h

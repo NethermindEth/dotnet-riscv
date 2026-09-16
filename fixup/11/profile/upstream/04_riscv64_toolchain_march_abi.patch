@@ -20,8 +20,6 @@ This follows what the arm/armel branch above already does for -mfpu and
 
 Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
- eng/common/cross/toolchain.cmake | 45 ++++++++++++++++++++++++++++++++
- 1 file changed, 45 insertions(+)
 
 diff --git a/eng/common/cross/toolchain.cmake b/eng/common/cross/toolchain.cmake
 --- a/eng/common/cross/toolchain.cmake
