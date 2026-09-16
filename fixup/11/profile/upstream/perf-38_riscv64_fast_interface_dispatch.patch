@@ -1,32 +1,41 @@
-.NET 11 replaced the per-cell cached interface dispatch stubs with a dispatch
-helper (dotnet/runtime#123252): the cell is { cached MethodTable, cached code }
-and polymorphic call sites are cached in a global hashtable. amd64/arm64 got
-optimized helpers with an inline monomorphic check and an asm hashtable probe;
-riscv64 only got the slow helper that goes through RhpUniversalTransition and
-the managed resolver on *every* interface call (RhpCidResolve_Worker ->
-FindImplSlotInSimpleMap show up at the top of zkVM step profiles, ~2x the
-total step count of .NET 10 on the same guest).
+[NativeAOT] Fast interface dispatch helper for riscv64
 
-Port the arm64 INTERFACE_DISPATCH macro to riscv64: monomorphic cell check,
-then a GenericCache<Key, nint> probe (same hash, quadratic reprobe, seqlock
-version check), falling back to RhpCidResolve / RhpCidResolve_Worker. Only
-temporaries are used, so no argument spilling; the probe count is packed into
-the upper bits of the index register because riscv64 has exactly one spare
-temporary at the key compare. Plain loads are ordered with "fence r, r" where
-arm64 relies on ldar/dmb (a nop-cost instruction on single-hart zkVMs).
+Interface dispatch moved to a helper with a global dispatch cache in
+dotnet/runtime#123252. amd64 and arm64 got optimized helpers that check the
+monomorphic cell inline and probe the cache in assembly; riscv64 was left
+with the slow path, so every interface call goes through
+RhpUniversalTransition and the managed resolver.
 
+Port the arm64 INTERFACE_DISPATCH macro: monomorphic cell check, then a
+GenericCache<Key, nint> probe using the same hash, the same quadratic
+reprobe and the same seqlock version check, falling back to RhpCidResolve
+and RhpCidResolve_Worker. Only temporaries are used, so nothing has to be
+spilled around the probe.
+
+Three things differ from arm64, all forced by the ISA:
+
+  - arm64 gets its acquire loads from ldar and orders the value read
+    against the version re-read with dmb ishld. RVWMO does not order a
+    plain ld against later loads, so each of those becomes a fence r, r
+    after the load.
+  - at the key compare only one temporary is still free, so the probe
+    count travels in the upper bits of the index register instead of
+    having a register of its own.
+  - the tail call to RhpUniversalTransitionTailCall is written out by
+    hand: the tail pseudo-instruction expands through t1, which is
+    carrying the thunk parameter.
 diff --git a/src/coreclr/nativeaot/Runtime/riscv64/DispatchResolve.S b/src/coreclr/nativeaot/Runtime/riscv64/DispatchResolve.S
 --- a/src/coreclr/nativeaot/Runtime/riscv64/DispatchResolve.S
 +++ b/src/coreclr/nativeaot/Runtime/riscv64/DispatchResolve.S
-@@ -4,35 +4,138 @@
+@@ -4,35 +4,153 @@
  #include <unixasmmacros.inc>
  
  // Dispatching version of RhpResolveInterfaceMethod
 -LEAF_ENTRY RhpInterfaceDispatch, _TEXT
 +.macro INTERFACE_DISPATCH DispatchName, ReturnTarget, DispatchCellReg
- 
-+LEAF_ENTRY \DispatchName, _TEXT
 +
++LEAF_ENTRY \DispatchName, _TEXT
+ 
          // Load the MethodTable from the object instance in a0.
          // Trigger an AV if we're dispatching on a null this.
          // The exception handling infrastructure is aware of the fact that this is the first
@@ -34,12 +43,13 @@ diff --git a/src/coreclr/nativeaot/Runtime/riscv64/DispatchResolve.S b/src/corec
          // to a NullReferenceException at the callsite.
 -        ld      zero, 0(a0)
 +        ld      t0, 0(a0)
- 
--        // t5 currently contains the indirection cell address.
++
 +        // DispatchCellReg currently contains the indirection cell address.
-+        // The cell is { cached MethodTable, cached code }. The writer stores Code
-+        // before MethodTable (release), so the load of Code has to be ordered after
-+        // the load of MethodTable: RVWMO may reorder two plain loads, hence the fence.
++        // The cell is { cached MethodTable, cached code }; the writer stores Code
++        // first and publishes the entry with a release store of MethodTable. RVWMO
++        // allows two plain loads to be reordered, so "fence r, r" after the
++        // MethodTable load gives it acquire semantics: the load of Code below cannot
++        // be hoisted above it. This is what the ldar in the arm64 helper does.
 +        ld      t6, 0(\DispatchCellReg)
 +        fence   r, r
 +        bne     t6, t0, LOCAL_LABEL(Hashtable\@) // not the monomorphic MethodTable?
@@ -56,13 +66,19 @@ diff --git a/src/coreclr/nativeaot/Runtime/riscv64/DispatchResolve.S b/src/corec
 +
 +        // t0 = MethodTable, DispatchCellReg = indirection cell address
 +        // Look up the target in the dispatch cache hashtable (GenericCache<Key, nint>).
-+        // Only the temporaries t1-t4/t6 are used, so no argument register spilling is needed.
++        // Only the temporaries t0-t4 and t6 are used, so no argument register
++        // spilling is needed.
 +        //
 +        // Register use in the probe loop:
-+        //   t1 = Entry[] table, t2 = bucket index (bits 0..31) | probe count i (bits 40..47),
-+        //   t3 = current entry, t4 = version snapshot, t6 = scratch.
++        //   t0 = MethodTable, t1 = Entry[] table, t3 = current entry,
++        //   t4 = version snapshot, t6 = scratch.
++        //   t2 = bucket index (bits 0..31) | probe count i (bits 40..47). The two
++        //   share a register because at the key compare below t6 is the only
++        //   temporary still free, so the probe count has nowhere else to live.
++        //   arm64 has the registers to keep it separate, in w15.
 +
-+        // Load the _table field (Entry[]) from the cache struct.
++        // Load the _table field (Entry[]) from the cache struct: the first load
++        // dereferences the address of g_pDispatchCache, the second reads _table.
 +        PREPARE_EXTERNAL_VAR g_pDispatchCache, t1
 +        ld      t1, 0(t1)
 +        ld      t1, 0(t1)
@@ -84,14 +100,17 @@ diff --git a/src/coreclr/nativeaot/Runtime/riscv64/DispatchResolve.S b/src/corec
 +        srl     t2, t2, t3              // bucket index, i = 0
 +
 +LOCAL_LABEL(ProbeLoop\@):
-+        // Compute entry address: Element(table, index) = table + 0x10 + (index + 1) * 0x20
-+        slli    t3, t2, 32              // drop the probe count, keep index in the upper half
-+        srli    t3, t3, 27              // index * 0x20
++        // Compute entry address: Element(table, index) = table + 0x10 + (index + 1) * 0x20.
++        // The shift pair does two things at once: it drops the packed probe count and
++        // zero-extends the 32-bit index, and it scales that index by 0x20.
++        slli    t3, t2, 32              // index in the upper half, probe count gone
++        srli    t3, t3, 27              // back down, times 0x20
 +        add     t3, t3, t1
 +        addi    t3, t3, 0x30
 +
-+        // Read version snapshot (seqlock protocol). The fence orders the loads of the
-+        // key and value after the load of the version.
++        // Read the version snapshot (seqlock protocol). "fence r, r" makes the load
++        // acquire, so the key and value loads below cannot be hoisted above it and
++        // are guaranteed to see the data written before this version was published.
 +        lw      t4, 0(t3)
 +        fence   r, r
 +        andi    t6, t4, 1
@@ -102,11 +121,13 @@ diff --git a/src/coreclr/nativeaot/Runtime/riscv64/DispatchResolve.S b/src/corec
 +        bne     t6, \DispatchCellReg, LOCAL_LABEL(ProbeMiss\@)
 +        ld      t6, 16(t3)
 +        bne     t6, t0, LOCAL_LABEL(ProbeMiss\@)
-+
+ 
+-        // t5 currently contains the indirection cell address.
 +        // Read the cached code pointer.
 +        ld      t6, 24(t3)
 +
-+        // Ensure value read completes before version re-read.
++        // Order the value load before the version re-read, so that a writer which
++        // touched this entry in between is guaranteed to show up as a version change.
 +        fence   r, r
 +
 +        // Re-verify version has not changed.
@@ -125,7 +146,8 @@ diff --git a/src/coreclr/nativeaot/Runtime/riscv64/DispatchResolve.S b/src/corec
 +        // If version is zero the rest of the bucket is unclaimed - stop probing.
 +        beqz    t4, LOCAL_LABEL(CacheMiss\@)
 +
-+        // Quadratic reprobe: i++; index = (index + i) & tableMask
++        // Quadratic reprobe: i++; index = (index + i) & tableMask. Give up after
++        // eight probes, matching arm64.
 +        srli    t6, t2, 40              // i
 +        addi    t6, t6, 1
 +        li      t3, 8
@@ -150,25 +172,27 @@ diff --git a/src/coreclr/nativeaot/Runtime/riscv64/DispatchResolve.S b/src/corec
          PREPARE_EXTERNAL_VAR RhpCidResolve, t0
 -        mv      t1, t5
 +        mv      t1, \DispatchCellReg
++        // The tail call is written out by hand because the "tail" pseudo-instruction
++        // expands through t1, which is carrying the thunk parameter set just above.
  1:
          auipc   t2, %pcrel_hi(C_FUNC(RhpUniversalTransitionTailCall))
          jalr    x0, t2, %pcrel_lo(1b)
 +.endif
  
 -LEAF_END RhpInterfaceDispatch, _TEXT
-+LEAF_END \DispatchName, _TEXT
- 
+-
 -// Resolve helper for the standard calling convention.
 -// a0 = object instance, a1 = indirection cell address, result in a0.
 -LEAF_ENTRY RhpDispatchResolve, _TEXT
-+.endm
- 
+-
 -        // Load the MethodTable from the object instance in a0.
 -        // Trigger an AV if we're dispatching on a null this.
 -        ld      t0, 0(a0)
--
++LEAF_END \DispatchName, _TEXT
+ 
 -        tail    C_FUNC(RhpResolveInterfaceMethod)
--
++.endm
+ 
 -LEAF_END RhpDispatchResolve, _TEXT
 +        INTERFACE_DISPATCH RhpInterfaceDispatch, 0, t5
 +        INTERFACE_DISPATCH RhpDispatchResolve, 1, a1
