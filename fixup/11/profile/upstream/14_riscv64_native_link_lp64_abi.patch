@@ -17,8 +17,6 @@ main link get it.
 
 Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
- .../BuildIntegration/Microsoft.NETCore.Native.Unix.targets  | 6 ++++++
- 1 file changed, 6 insertions(+)
 
 diff --git a/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets b/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets
 --- a/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets

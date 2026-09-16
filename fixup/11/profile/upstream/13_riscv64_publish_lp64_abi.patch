@@ -19,13 +19,11 @@ on ARM, where armel follows from the RID alone.
 
 Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
- .../Microsoft.DotNet.ILCompiler.SingleEntry.targets         | 6 ++++++
- 1 file changed, 6 insertions(+)
 
 diff --git a/src/coreclr/nativeaot/BuildIntegration/Microsoft.DotNet.ILCompiler.SingleEntry.targets b/src/coreclr/nativeaot/BuildIntegration/Microsoft.DotNet.ILCompiler.SingleEntry.targets
 --- a/src/coreclr/nativeaot/BuildIntegration/Microsoft.DotNet.ILCompiler.SingleEntry.targets
 +++ b/src/coreclr/nativeaot/BuildIntegration/Microsoft.DotNet.ILCompiler.SingleEntry.targets
-@@ -44,6 +44,12 @@
+@@ -46,6 +46,12 @@
      <!-- linux-bionic on ARM uses armel (softfp) ABI -->
      <_targetArchitectureWithAbi>$(_targetArchitecture)</_targetArchitectureWithAbi>
      <_targetArchitectureWithAbi Condition="'$(_linuxLibcFlavor)' == 'bionic' and '$(_targetArchitecture)' == 'arm'">armel</_targetArchitectureWithAbi>

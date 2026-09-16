@@ -31,23 +31,11 @@ part of that contract.
 
 Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
- src/coreclr/inc/clrconfigvalues.h             |  4 ++
- src/coreclr/inc/corinfoinstructionset.h       | 24 +++++++++
- src/coreclr/inc/readytoruninstructionset.h    |  4 ++
- src/coreclr/jit/compiler.cpp                  | 49 +++++++++++++++++++
- src/coreclr/jit/jitconfigvalues.h             |  4 ++
- .../tools/Common/InstructionSetHelpers.cs     | 10 ++++
- .../Runtime/ReadyToRunInstructionSet.cs       |  4 ++
- .../Runtime/ReadyToRunInstructionSetHelper.cs |  4 ++
- .../JitInterface/CorInfoInstructionSet.cs     | 28 +++++++++++
- .../ThunkGenerator/InstructionSetDesc.txt     | 10 +++-
- src/coreclr/vm/codeman.cpp                    | 27 ++++++++++
- 11 files changed, 167 insertions(+), 1 deletion(-)
 
 diff --git a/src/coreclr/inc/clrconfigvalues.h b/src/coreclr/inc/clrconfigvalues.h
 --- a/src/coreclr/inc/clrconfigvalues.h
 +++ b/src/coreclr/inc/clrconfigvalues.h
-@@ -712,6 +712,10 @@ RETAIL_CONFIG_DWORD_INFO(EXTERNAL_EnableRiscV64Zba,             W("EnableRiscV64
+@@ -720,6 +720,10 @@ RETAIL_CONFIG_DWORD_INFO(EXTERNAL_EnableRiscV64Zba,             W("EnableRiscV64
  RETAIL_CONFIG_DWORD_INFO(EXTERNAL_EnableRiscV64Zbb,             W("EnableRiscV64Zbb"),          1, "Allows RiscV64 Zbb hardware intrinsics to be disabled")
  RETAIL_CONFIG_DWORD_INFO(EXTERNAL_EnableRiscV64Zbs,             W("EnableRiscV64Zbs"),          1, "Allows RiscV64 Zbs hardware intrinsics to be disabled")
  RETAIL_CONFIG_DWORD_INFO(EXTERNAL_EnableRiscV64Zicond,          W("EnableRiscV64Zicond"),       1, "Allows RiscV64 Zicond hardware intrinsics to be disabled")
@@ -130,7 +118,7 @@ diff --git a/src/coreclr/inc/readytoruninstructionset.h b/src/coreclr/inc/readyt
 diff --git a/src/coreclr/jit/compiler.cpp b/src/coreclr/jit/compiler.cpp
 --- a/src/coreclr/jit/compiler.cpp
 +++ b/src/coreclr/jit/compiler.cpp
-@@ -1941,6 +1941,35 @@ void Compiler::compSetProcessor()
+@@ -1981,6 +1981,35 @@ void Compiler::compSetProcessor()
  
      // Add virtual vector ISA. Vector128 is part of the required Wasm SIMD baseline.
      instructionSetFlags.AddInstructionSet(InstructionSet_Vector128);
@@ -166,7 +154,7 @@ diff --git a/src/coreclr/jit/compiler.cpp b/src/coreclr/jit/compiler.cpp
  #endif // TARGET_ARM64
  
      assert(instructionSetFlags.Equals(EnsureInstructionSetFlagsAreValid(instructionSetFlags)));
-@@ -6198,6 +6227,26 @@ int Compiler::compCompileAfterInit(CORINFO_MODULE_HANDLE classPtr,
+@@ -6230,6 +6259,26 @@ int Compiler::compCompileAfterInit(CORINFO_MODULE_HANDLE classPtr,
          {
              instructionSetFlags.AddInstructionSet(InstructionSet_Zicond);
          }
@@ -196,7 +184,7 @@ diff --git a/src/coreclr/jit/compiler.cpp b/src/coreclr/jit/compiler.cpp
 diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
 --- a/src/coreclr/jit/jitconfigvalues.h
 +++ b/src/coreclr/jit/jitconfigvalues.h
-@@ -456,6 +456,10 @@ RELEASE_CONFIG_INTEGER(EnableRiscV64Zba,            "EnableRiscV64Zba",
+@@ -458,6 +458,10 @@ RELEASE_CONFIG_INTEGER(EnableRiscV64Zba,            "EnableRiscV64Zba",
  RELEASE_CONFIG_INTEGER(EnableRiscV64Zbb,            "EnableRiscV64Zbb",          1) // Allows RiscV64 Zbb hardware intrinsics to be disabled
  RELEASE_CONFIG_INTEGER(EnableRiscV64Zbs,            "EnableRiscV64Zbs",          1) // Allows RiscV64 Zbs hardware intrinsics to be disabled
  RELEASE_CONFIG_INTEGER(EnableRiscV64Zicond,         "EnableRiscV64Zicond",       1) // Allows RiscV64 Zicond hardware intrinsics to be disabled
@@ -355,7 +343,7 @@ diff --git a/src/coreclr/tools/Common/JitInterface/ThunkGenerator/InstructionSet
 diff --git a/src/coreclr/vm/codeman.cpp b/src/coreclr/vm/codeman.cpp
 --- a/src/coreclr/vm/codeman.cpp
 +++ b/src/coreclr/vm/codeman.cpp
-@@ -1789,6 +1789,33 @@ void EEJitManager::SetCpuInfo()
+@@ -1712,6 +1712,33 @@ void EEJitManager::SetCpuInfo()
      if (g_pConfig->EnableHWIntrinsic())
      {
          CPUCompileFlags.Set(InstructionSet_RiscV64Base);

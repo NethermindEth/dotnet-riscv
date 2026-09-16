@@ -20,18 +20,6 @@ macros rather than on the InstructionSet model used elsewhere.
 
 Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
- .../debug/di/riscv64/floatconversion.S        |   2 +
- .../Runtime/riscv64/ExceptionHandling.S       |  44 +++++
- .../nativeaot/Runtime/riscv64/GcProbe.S       |   4 +
- .../Runtime/riscv64/UniversalTransition.S     |   6 +
- src/coreclr/pal/inc/unixasmmacrosriscv64.inc  |  10 +
- src/coreclr/pal/src/arch/riscv64/context2.S   |   8 +
- src/coreclr/runtime/riscv64/WriteBarriers.S   |  13 ++
- src/coreclr/vm/precode.h                      |   6 +
- src/coreclr/vm/riscv64/asmhelpers.S           | 175 ++++++++++++++++++
- .../vm/riscv64/calldescrworkerriscv64.S       |   6 +
- src/coreclr/vm/riscv64/thunktemplates.S       |  12 ++
- 11 files changed, 286 insertions(+)
 
 diff --git a/src/coreclr/debug/di/riscv64/floatconversion.S b/src/coreclr/debug/di/riscv64/floatconversion.S
 --- a/src/coreclr/debug/di/riscv64/floatconversion.S
@@ -500,7 +488,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
  
      EPILOG_RESTORE_REG_PAIR   s1, s2, 16
      EPILOG_RESTORE_REG_PAIR   s3, s4, 32
-@@ -1206,7 +1210,9 @@ NESTED_ENTRY CallJittedMethodRetDouble, _TEXT, NoHandler
+@@ -1244,7 +1248,9 @@ NESTED_ENTRY CallJittedMethodRetDouble, _TEXT, NoHandler
      ld a4, 24(fp)
      sd a2, 0(a4)
      ld a2, 16(fp)
@@ -510,7 +498,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      EPILOG_STACK_RESTORE
      EPILOG_RESTORE_REG_PAIR_INDEXED fp, ra, 32
      EPILOG_RETURN
-@@ -1230,7 +1236,9 @@ NESTED_ENTRY CallJittedMethodRetFloat, _TEXT, NoHandler
+@@ -1268,7 +1274,9 @@ NESTED_ENTRY CallJittedMethodRetFloat, _TEXT, NoHandler
      ld a4, 24(fp)
      sd a2, 0(a4)
      ld a2, 16(fp)
@@ -520,7 +508,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      EPILOG_STACK_RESTORE
      EPILOG_RESTORE_REG_PAIR_INDEXED fp, ra, 32
      EPILOG_RETURN
-@@ -1279,8 +1287,10 @@ NESTED_ENTRY CallJittedMethodRet2Double, _TEXT, NoHandler
+@@ -1317,8 +1325,10 @@ NESTED_ENTRY CallJittedMethodRet2Double, _TEXT, NoHandler
      ld a4, 24(fp)
      sd a2, 0(a4)
      ld a2, 16(fp)
@@ -531,7 +519,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      EPILOG_STACK_RESTORE
      EPILOG_RESTORE_REG_PAIR_INDEXED fp, ra, 32
      EPILOG_RETURN
-@@ -1304,8 +1314,10 @@ NESTED_ENTRY CallJittedMethodRet2Float, _TEXT, NoHandler
+@@ -1342,8 +1352,10 @@ NESTED_ENTRY CallJittedMethodRet2Float, _TEXT, NoHandler
      ld a4, 24(fp)
      sd a2, 0(a4)
      ld a2, 16(fp)
@@ -542,7 +530,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      EPILOG_STACK_RESTORE
      EPILOG_RESTORE_REG_PAIR_INDEXED fp, ra, 32
      EPILOG_RETURN
-@@ -1329,7 +1341,9 @@ NESTED_ENTRY CallJittedMethodRetFloatInt, _TEXT, NoHandler
+@@ -1367,7 +1379,9 @@ NESTED_ENTRY CallJittedMethodRetFloatInt, _TEXT, NoHandler
      ld a4, 24(fp)
      sd a2, 0(a4)
      ld a2, 16(fp)
@@ -552,7 +540,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      sd a0, 8(a2)
      EPILOG_STACK_RESTORE
      EPILOG_RESTORE_REG_PAIR_INDEXED fp, ra, 32
-@@ -1355,7 +1369,9 @@ NESTED_ENTRY CallJittedMethodRetIntFloat, _TEXT, NoHandler
+@@ -1393,7 +1407,9 @@ NESTED_ENTRY CallJittedMethodRetIntFloat, _TEXT, NoHandler
      sd a2, 0(a4)
      ld a2, 16(fp)
      sd a0, 0(a2)
@@ -562,7 +550,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      EPILOG_STACK_RESTORE
      EPILOG_RESTORE_REG_PAIR_INDEXED fp, ra, 32
      EPILOG_RETURN
-@@ -1434,7 +1450,9 @@ NESTED_ENTRY InterpreterStubRetDouble, _TEXT, NoHandler
+@@ -1472,7 +1488,9 @@ NESTED_ENTRY InterpreterStubRetDouble, _TEXT, NoHandler
      mv a1, s1 // the IR bytecode pointer
      mv a2, zero
      call C_FUNC(ExecuteInterpretedMethod)
@@ -572,7 +560,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      EPILOG_RESTORE_REG_PAIR_INDEXED   fp, ra,   16
      EPILOG_RETURN
  NESTED_END InterpreterStubRetDouble, _TEXT
-@@ -1470,8 +1488,10 @@ NESTED_ENTRY InterpreterStubRet2Double, _TEXT, NoHandler
+@@ -1508,8 +1526,10 @@ NESTED_ENTRY InterpreterStubRet2Double, _TEXT, NoHandler
      mv a1, s1 // the IR bytecode pointer
      mv a2, zero
      call C_FUNC(ExecuteInterpretedMethod)
@@ -583,7 +571,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      EPILOG_RESTORE_REG_PAIR_INDEXED   fp, ra,   16
      EPILOG_RETURN
  NESTED_END InterpreterStubRet2Double, _TEXT
-@@ -1483,7 +1503,9 @@ NESTED_ENTRY InterpreterStubRetFloat, _TEXT, NoHandler
+@@ -1521,7 +1541,9 @@ NESTED_ENTRY InterpreterStubRetFloat, _TEXT, NoHandler
      mv a1, s1 // the IR bytecode pointer
      mv a2, zero
      call C_FUNC(ExecuteInterpretedMethod)
@@ -593,7 +581,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      EPILOG_RESTORE_REG_PAIR_INDEXED   fp, ra,   16
      EPILOG_RETURN
  NESTED_END InterpreterStubRetFloat, _TEXT
-@@ -1495,8 +1517,10 @@ NESTED_ENTRY InterpreterStubRet2Float, _TEXT, NoHandler
+@@ -1533,8 +1555,10 @@ NESTED_ENTRY InterpreterStubRet2Float, _TEXT, NoHandler
      mv a1, s1 // the IR bytecode pointer
      mv a2, zero
      call C_FUNC(ExecuteInterpretedMethod)
@@ -604,7 +592,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      EPILOG_RESTORE_REG_PAIR_INDEXED   fp, ra,   16
      EPILOG_RETURN
  NESTED_END InterpreterStubRet2Float, _TEXT
-@@ -1508,7 +1532,9 @@ NESTED_ENTRY InterpreterStubRetFloatInt, _TEXT, NoHandler
+@@ -1546,7 +1570,9 @@ NESTED_ENTRY InterpreterStubRetFloatInt, _TEXT, NoHandler
      mv a1, s1 // the IR bytecode pointer
      mv a2, zero
      call C_FUNC(ExecuteInterpretedMethod)
@@ -614,7 +602,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      ld a0, 8(a0)
      EPILOG_RESTORE_REG_PAIR_INDEXED   fp, ra,   16
      EPILOG_RETURN
-@@ -1522,7 +1548,9 @@ NESTED_ENTRY InterpreterStubRetIntFloat, _TEXT, NoHandler
+@@ -1560,7 +1586,9 @@ NESTED_ENTRY InterpreterStubRetIntFloat, _TEXT, NoHandler
      mv a2, zero
      call C_FUNC(ExecuteInterpretedMethod)
      ld a1, 0(a0)
@@ -624,7 +612,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      mv a0, a1
      EPILOG_RESTORE_REG_PAIR_INDEXED   fp, ra,   16
      EPILOG_RETURN
-@@ -1979,9 +2007,14 @@ ALTERNATE_ENTRY Store_A7
+@@ -2017,9 +2045,14 @@ ALTERNATE_ENTRY Store_A7
  LEAF_END Store_A1_A2_A3_A4_A5_A6_A7
  
  // Float point load/store routines
@@ -639,7 +627,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 8
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -1989,8 +2022,10 @@ LEAF_ENTRY Load_FA0
+@@ -2027,8 +2060,10 @@ LEAF_ENTRY Load_FA0
  LEAF_END Load_FA0
  
  LEAF_ENTRY Load_FA0_FA1
@@ -650,7 +638,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 16
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -1998,11 +2033,15 @@ LEAF_ENTRY Load_FA0_FA1
+@@ -2036,11 +2071,15 @@ LEAF_ENTRY Load_FA0_FA1
  LEAF_END Load_FA0_FA1
  
  LEAF_ENTRY Load_FA0_FA1_FA2
@@ -666,7 +654,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 8
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2010,12 +2049,16 @@ ALTERNATE_ENTRY Load_FA2
+@@ -2048,12 +2087,16 @@ ALTERNATE_ENTRY Load_FA2
  LEAF_END Load_FA0_FA1_FA2
  
  LEAF_ENTRY Load_FA0_FA1_FA2_FA3
@@ -683,7 +671,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 16
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2023,15 +2066,21 @@ ALTERNATE_ENTRY Load_FA2_FA3
+@@ -2061,15 +2104,21 @@ ALTERNATE_ENTRY Load_FA2_FA3
  LEAF_END Load_FA0_FA1_FA2_FA3
  
  LEAF_ENTRY Load_FA0_FA1_FA2_FA3_FA4
@@ -705,7 +693,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 8
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2039,16 +2088,22 @@ ALTERNATE_ENTRY Load_FA4
+@@ -2077,16 +2126,22 @@ ALTERNATE_ENTRY Load_FA4
  LEAF_END Load_FA0_FA1_FA2_FA3_FA4
  
  LEAF_ENTRY Load_FA0_FA1_FA2_FA3_FA4_FA5
@@ -728,7 +716,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 16
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2056,19 +2111,27 @@ ALTERNATE_ENTRY Load_FA4_FA5
+@@ -2094,19 +2149,27 @@ ALTERNATE_ENTRY Load_FA4_FA5
  LEAF_END Load_FA0_FA1_FA2_FA3_FA4_FA5
  
  LEAF_ENTRY Load_FA0_FA1_FA2_FA3_FA4_FA5_FA6
@@ -756,7 +744,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 8
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2076,20 +2139,28 @@ ALTERNATE_ENTRY Load_FA6
+@@ -2114,20 +2177,28 @@ ALTERNATE_ENTRY Load_FA6
  LEAF_END Load_FA0_FA1_FA2_FA3_FA4_FA5_FA6
  
  LEAF_ENTRY Load_FA0_FA1_FA2_FA3_FA4_FA5_FA6_FA7
@@ -785,7 +773,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 16
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2098,7 +2169,9 @@ LEAF_END Load_FA0_FA1_FA2_FA3_FA4_FA5_FA6_FA7
+@@ -2136,7 +2207,9 @@ LEAF_END Load_FA0_FA1_FA2_FA3_FA4_FA5_FA6_FA7
  
  // Additional Load_FA* routines starting from FA1, FA3, FA5, FA7
  LEAF_ENTRY Load_FA1
@@ -795,7 +783,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 8
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2106,8 +2179,10 @@ LEAF_ENTRY Load_FA1
+@@ -2144,8 +2217,10 @@ LEAF_ENTRY Load_FA1
  LEAF_END Load_FA1
  
  LEAF_ENTRY Load_FA1_FA2
@@ -806,7 +794,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 16
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2115,9 +2190,11 @@ LEAF_ENTRY Load_FA1_FA2
+@@ -2153,9 +2228,11 @@ LEAF_ENTRY Load_FA1_FA2
  LEAF_END Load_FA1_FA2
  
  LEAF_ENTRY Load_FA1_FA2_FA3
@@ -818,7 +806,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 24
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2125,10 +2202,12 @@ LEAF_ENTRY Load_FA1_FA2_FA3
+@@ -2163,10 +2240,12 @@ LEAF_ENTRY Load_FA1_FA2_FA3
  LEAF_END Load_FA1_FA2_FA3
  
  LEAF_ENTRY Load_FA1_FA2_FA3_FA4
@@ -831,7 +819,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 32
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2136,11 +2215,13 @@ LEAF_ENTRY Load_FA1_FA2_FA3_FA4
+@@ -2174,11 +2253,13 @@ LEAF_ENTRY Load_FA1_FA2_FA3_FA4
  LEAF_END Load_FA1_FA2_FA3_FA4
  
  LEAF_ENTRY Load_FA1_FA2_FA3_FA4_FA5
@@ -845,7 +833,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 40
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2148,12 +2229,14 @@ LEAF_ENTRY Load_FA1_FA2_FA3_FA4_FA5
+@@ -2186,12 +2267,14 @@ LEAF_ENTRY Load_FA1_FA2_FA3_FA4_FA5
  LEAF_END Load_FA1_FA2_FA3_FA4_FA5
  
  LEAF_ENTRY Load_FA1_FA2_FA3_FA4_FA5_FA6
@@ -860,7 +848,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 48
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2161,6 +2244,7 @@ LEAF_ENTRY Load_FA1_FA2_FA3_FA4_FA5_FA6
+@@ -2199,6 +2282,7 @@ LEAF_ENTRY Load_FA1_FA2_FA3_FA4_FA5_FA6
  LEAF_END Load_FA1_FA2_FA3_FA4_FA5_FA6
  
  LEAF_ENTRY Load_FA1_FA2_FA3_FA4_FA5_FA6_FA7
@@ -868,7 +856,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      fld fa1, 0(t3)
      fld fa2, 8(t3)
      fld fa3, 16(t3)
-@@ -2168,6 +2252,7 @@ LEAF_ENTRY Load_FA1_FA2_FA3_FA4_FA5_FA6_FA7
+@@ -2206,6 +2290,7 @@ LEAF_ENTRY Load_FA1_FA2_FA3_FA4_FA5_FA6_FA7
      fld fa5, 32(t3)
      fld fa6, 40(t3)
      fld fa7, 48(t3)
@@ -876,7 +864,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 56
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2175,7 +2260,9 @@ LEAF_ENTRY Load_FA1_FA2_FA3_FA4_FA5_FA6_FA7
+@@ -2213,7 +2298,9 @@ LEAF_ENTRY Load_FA1_FA2_FA3_FA4_FA5_FA6_FA7
  LEAF_END Load_FA1_FA2_FA3_FA4_FA5_FA6_FA7
  
  LEAF_ENTRY Load_FA3
@@ -886,7 +874,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 8
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2183,8 +2270,10 @@ LEAF_ENTRY Load_FA3
+@@ -2221,8 +2308,10 @@ LEAF_ENTRY Load_FA3
  LEAF_END Load_FA3
  
  LEAF_ENTRY Load_FA3_FA4
@@ -897,7 +885,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 16
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2192,9 +2281,11 @@ LEAF_ENTRY Load_FA3_FA4
+@@ -2230,9 +2319,11 @@ LEAF_ENTRY Load_FA3_FA4
  LEAF_END Load_FA3_FA4
  
  LEAF_ENTRY Load_FA3_FA4_FA5
@@ -909,7 +897,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 24
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2202,10 +2293,12 @@ LEAF_ENTRY Load_FA3_FA4_FA5
+@@ -2240,10 +2331,12 @@ LEAF_ENTRY Load_FA3_FA4_FA5
  LEAF_END Load_FA3_FA4_FA5
  
  LEAF_ENTRY Load_FA3_FA4_FA5_FA6
@@ -922,7 +910,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 32
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2213,11 +2306,13 @@ LEAF_ENTRY Load_FA3_FA4_FA5_FA6
+@@ -2251,11 +2344,13 @@ LEAF_ENTRY Load_FA3_FA4_FA5_FA6
  LEAF_END Load_FA3_FA4_FA5_FA6
  
  LEAF_ENTRY Load_FA3_FA4_FA5_FA6_FA7
@@ -936,7 +924,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 40
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2225,7 +2320,9 @@ LEAF_ENTRY Load_FA3_FA4_FA5_FA6_FA7
+@@ -2263,7 +2358,9 @@ LEAF_ENTRY Load_FA3_FA4_FA5_FA6_FA7
  LEAF_END Load_FA3_FA4_FA5_FA6_FA7
  
  LEAF_ENTRY Load_FA5
@@ -946,7 +934,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 8
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2233,8 +2330,10 @@ LEAF_ENTRY Load_FA5
+@@ -2271,8 +2368,10 @@ LEAF_ENTRY Load_FA5
  LEAF_END Load_FA5
  
  LEAF_ENTRY Load_FA5_FA6
@@ -957,7 +945,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 16
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2242,9 +2341,11 @@ LEAF_ENTRY Load_FA5_FA6
+@@ -2280,9 +2379,11 @@ LEAF_ENTRY Load_FA5_FA6
  LEAF_END Load_FA5_FA6
  
  LEAF_ENTRY Load_FA5_FA6_FA7
@@ -969,7 +957,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 24
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2252,7 +2353,9 @@ LEAF_ENTRY Load_FA5_FA6_FA7
+@@ -2290,7 +2391,9 @@ LEAF_ENTRY Load_FA5_FA6_FA7
  LEAF_END Load_FA5_FA6_FA7
  
  LEAF_ENTRY Load_FA7
@@ -979,7 +967,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 8
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2260,7 +2363,9 @@ LEAF_ENTRY Load_FA7
+@@ -2298,7 +2401,9 @@ LEAF_ENTRY Load_FA7
  LEAF_END Load_FA7
  
  LEAF_ENTRY Store_FA0
@@ -989,7 +977,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 8
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2268,8 +2373,10 @@ LEAF_ENTRY Store_FA0
+@@ -2306,8 +2411,10 @@ LEAF_ENTRY Store_FA0
  LEAF_END Store_FA0
  
  LEAF_ENTRY Store_FA0_FA1
@@ -1000,7 +988,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 16
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2277,11 +2384,15 @@ LEAF_ENTRY Store_FA0_FA1
+@@ -2315,11 +2422,15 @@ LEAF_ENTRY Store_FA0_FA1
  LEAF_END Store_FA0_FA1
  
  LEAF_ENTRY Store_FA0_FA1_FA2
@@ -1016,7 +1004,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 8
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2289,12 +2400,16 @@ ALTERNATE_ENTRY Store_FA2
+@@ -2327,12 +2438,16 @@ ALTERNATE_ENTRY Store_FA2
  LEAF_END Store_FA0_FA1_FA2
  
  LEAF_ENTRY Store_FA0_FA1_FA2_FA3
@@ -1033,7 +1021,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 16
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2302,15 +2417,21 @@ ALTERNATE_ENTRY Store_FA2_FA3
+@@ -2340,15 +2455,21 @@ ALTERNATE_ENTRY Store_FA2_FA3
  LEAF_END Store_FA0_FA1_FA2_FA3
  
  LEAF_ENTRY Store_FA0_FA1_FA2_FA3_FA4
@@ -1055,7 +1043,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 8
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2318,16 +2439,22 @@ ALTERNATE_ENTRY Store_FA4
+@@ -2356,16 +2477,22 @@ ALTERNATE_ENTRY Store_FA4
  LEAF_END Store_FA0_FA1_FA2_FA3_FA4
  
  LEAF_ENTRY Store_FA0_FA1_FA2_FA3_FA4_FA5
@@ -1078,7 +1066,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 16
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2335,19 +2462,27 @@ ALTERNATE_ENTRY Store_FA4_FA5
+@@ -2373,19 +2500,27 @@ ALTERNATE_ENTRY Store_FA4_FA5
  LEAF_END Store_FA0_FA1_FA2_FA3_FA4_FA5
  
  LEAF_ENTRY Store_FA0_FA1_FA2_FA3_FA4_FA5_FA6
@@ -1106,7 +1094,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 8
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2355,20 +2490,28 @@ ALTERNATE_ENTRY Store_FA6
+@@ -2393,20 +2528,28 @@ ALTERNATE_ENTRY Store_FA6
  LEAF_END Store_FA0_FA1_FA2_FA3_FA4_FA5_FA6
  
  LEAF_ENTRY Store_FA0_FA1_FA2_FA3_FA4_FA5_FA6_FA7
@@ -1135,7 +1123,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 16
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2377,7 +2520,9 @@ LEAF_END Store_FA0_FA1_FA2_FA3_FA4_FA5_FA6_FA7
+@@ -2415,7 +2558,9 @@ LEAF_END Store_FA0_FA1_FA2_FA3_FA4_FA5_FA6_FA7
  
  // Additional Store_FA* routines starting from FA1, FA3, FA5, FA7
  LEAF_ENTRY Store_FA1
@@ -1145,7 +1133,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 8
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2385,8 +2530,10 @@ LEAF_ENTRY Store_FA1
+@@ -2423,8 +2568,10 @@ LEAF_ENTRY Store_FA1
  LEAF_END Store_FA1
  
  LEAF_ENTRY Store_FA1_FA2
@@ -1156,7 +1144,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 16
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2394,9 +2541,11 @@ LEAF_ENTRY Store_FA1_FA2
+@@ -2432,9 +2579,11 @@ LEAF_ENTRY Store_FA1_FA2
  LEAF_END Store_FA1_FA2
  
  LEAF_ENTRY Store_FA1_FA2_FA3
@@ -1168,7 +1156,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 24
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2404,10 +2553,12 @@ LEAF_ENTRY Store_FA1_FA2_FA3
+@@ -2442,10 +2591,12 @@ LEAF_ENTRY Store_FA1_FA2_FA3
  LEAF_END Store_FA1_FA2_FA3
  
  LEAF_ENTRY Store_FA1_FA2_FA3_FA4
@@ -1181,7 +1169,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 32
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2415,11 +2566,13 @@ LEAF_ENTRY Store_FA1_FA2_FA3_FA4
+@@ -2453,11 +2604,13 @@ LEAF_ENTRY Store_FA1_FA2_FA3_FA4
  LEAF_END Store_FA1_FA2_FA3_FA4
  
  LEAF_ENTRY Store_FA1_FA2_FA3_FA4_FA5
@@ -1195,7 +1183,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 40
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2427,12 +2580,14 @@ LEAF_ENTRY Store_FA1_FA2_FA3_FA4_FA5
+@@ -2465,12 +2618,14 @@ LEAF_ENTRY Store_FA1_FA2_FA3_FA4_FA5
  LEAF_END Store_FA1_FA2_FA3_FA4_FA5
  
  LEAF_ENTRY Store_FA1_FA2_FA3_FA4_FA5_FA6
@@ -1210,7 +1198,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 48
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2440,6 +2595,7 @@ LEAF_ENTRY Store_FA1_FA2_FA3_FA4_FA5_FA6
+@@ -2478,6 +2633,7 @@ LEAF_ENTRY Store_FA1_FA2_FA3_FA4_FA5_FA6
  LEAF_END Store_FA1_FA2_FA3_FA4_FA5_FA6
  
  LEAF_ENTRY Store_FA1_FA2_FA3_FA4_FA5_FA6_FA7
@@ -1218,7 +1206,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      fsd fa1, 0(t3)
      fsd fa2, 8(t3)
      fsd fa3, 16(t3)
-@@ -2447,6 +2603,7 @@ LEAF_ENTRY Store_FA1_FA2_FA3_FA4_FA5_FA6_FA7
+@@ -2485,6 +2641,7 @@ LEAF_ENTRY Store_FA1_FA2_FA3_FA4_FA5_FA6_FA7
      fsd fa5, 32(t3)
      fsd fa6, 40(t3)
      fsd fa7, 48(t3)
@@ -1226,7 +1214,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 56
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2454,7 +2611,9 @@ LEAF_ENTRY Store_FA1_FA2_FA3_FA4_FA5_FA6_FA7
+@@ -2492,7 +2649,9 @@ LEAF_ENTRY Store_FA1_FA2_FA3_FA4_FA5_FA6_FA7
  LEAF_END Store_FA1_FA2_FA3_FA4_FA5_FA6_FA7
  
  LEAF_ENTRY Store_FA3
@@ -1236,7 +1224,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 8
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2462,8 +2621,10 @@ LEAF_ENTRY Store_FA3
+@@ -2500,8 +2659,10 @@ LEAF_ENTRY Store_FA3
  LEAF_END Store_FA3
  
  LEAF_ENTRY Store_FA3_FA4
@@ -1247,7 +1235,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 16
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2471,9 +2632,11 @@ LEAF_ENTRY Store_FA3_FA4
+@@ -2509,9 +2670,11 @@ LEAF_ENTRY Store_FA3_FA4
  LEAF_END Store_FA3_FA4
  
  LEAF_ENTRY Store_FA3_FA4_FA5
@@ -1259,7 +1247,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 24
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2481,10 +2644,12 @@ LEAF_ENTRY Store_FA3_FA4_FA5
+@@ -2519,10 +2682,12 @@ LEAF_ENTRY Store_FA3_FA4_FA5
  LEAF_END Store_FA3_FA4_FA5
  
  LEAF_ENTRY Store_FA3_FA4_FA5_FA6
@@ -1272,7 +1260,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 32
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2492,11 +2657,13 @@ LEAF_ENTRY Store_FA3_FA4_FA5_FA6
+@@ -2530,11 +2695,13 @@ LEAF_ENTRY Store_FA3_FA4_FA5_FA6
  LEAF_END Store_FA3_FA4_FA5_FA6
  
  LEAF_ENTRY Store_FA3_FA4_FA5_FA6_FA7
@@ -1286,7 +1274,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 40
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2504,7 +2671,9 @@ LEAF_ENTRY Store_FA3_FA4_FA5_FA6_FA7
+@@ -2542,7 +2709,9 @@ LEAF_ENTRY Store_FA3_FA4_FA5_FA6_FA7
  LEAF_END Store_FA3_FA4_FA5_FA6_FA7
  
  LEAF_ENTRY Store_FA5
@@ -1296,7 +1284,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 8
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2512,8 +2681,10 @@ LEAF_ENTRY Store_FA5
+@@ -2550,8 +2719,10 @@ LEAF_ENTRY Store_FA5
  LEAF_END Store_FA5
  
  LEAF_ENTRY Store_FA5_FA6
@@ -1307,7 +1295,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 16
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2521,9 +2692,11 @@ LEAF_ENTRY Store_FA5_FA6
+@@ -2559,9 +2730,11 @@ LEAF_ENTRY Store_FA5_FA6
  LEAF_END Store_FA5_FA6
  
  LEAF_ENTRY Store_FA5_FA6_FA7
@@ -1319,7 +1307,7 @@ diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhel
      addi t3, t3, 24
      ld t4, 0(t2)
      addi t2, t2, 8
-@@ -2531,7 +2704,9 @@ LEAF_ENTRY Store_FA5_FA6_FA7
+@@ -2569,7 +2742,9 @@ LEAF_ENTRY Store_FA5_FA6_FA7
  LEAF_END Store_FA5_FA6_FA7
  
  LEAF_ENTRY Store_FA7

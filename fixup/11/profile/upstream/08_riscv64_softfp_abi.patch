@@ -12,13 +12,6 @@ because it is the part that is purely a calling convention.
 
 Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
- src/coreclr/inc/corjitflags.h     |  4 +++-
- src/coreclr/jit/compiler.cpp      |  7 ++++++-
- src/coreclr/jit/compiler.h        |  4 +++-
- src/coreclr/jit/gentree.cpp       | 16 ++++++++++------
- src/coreclr/jit/jitee.h           |  8 ++++++--
- src/coreclr/jit/targetriscv64.cpp |  4 ++--
- 6 files changed, 30 insertions(+), 13 deletions(-)
 
 diff --git a/src/coreclr/inc/corjitflags.h b/src/coreclr/inc/corjitflags.h
 --- a/src/coreclr/inc/corjitflags.h
@@ -37,7 +30,7 @@ diff --git a/src/coreclr/inc/corjitflags.h b/src/coreclr/inc/corjitflags.h
 diff --git a/src/coreclr/jit/compiler.cpp b/src/coreclr/jit/compiler.cpp
 --- a/src/coreclr/jit/compiler.cpp
 +++ b/src/coreclr/jit/compiler.cpp
-@@ -867,7 +867,7 @@ var_types Compiler::getReturnTypeForStruct(CORINFO_CLASS_HANDLE     clsHnd,
+@@ -865,7 +865,7 @@ var_types Compiler::getReturnTypeForStruct(CORINFO_CLASS_HANDLE     clsHnd,
          useType             = TYP_UNKNOWN;
      }
  #elif defined(TARGET_RISCV64) || defined(TARGET_LOONGARCH64)
@@ -46,7 +39,7 @@ diff --git a/src/coreclr/jit/compiler.cpp b/src/coreclr/jit/compiler.cpp
      {
          const CORINFO_FPSTRUCT_LOWERING* lowering = GetFpStructLowering(clsHnd);
          if (!lowering->byIntegerCallConv)
-@@ -2918,6 +2918,11 @@ void Compiler::compInitOptions(JitFlags* jitFlags)
+@@ -2958,6 +2958,11 @@ void Compiler::compInitOptions(JitFlags* jitFlags)
      }
  
      GlobalJitOptions::compFeatureHfa = !opts.compUseSoftFP;
@@ -61,7 +54,7 @@ diff --git a/src/coreclr/jit/compiler.cpp b/src/coreclr/jit/compiler.cpp
 diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
 --- a/src/coreclr/jit/compiler.h
 +++ b/src/coreclr/jit/compiler.h
-@@ -11615,7 +11615,9 @@ public:
+@@ -11575,7 +11575,9 @@ public:
          int compJitSaveFpLrWithCalleeSavedRegisters;
  #endif // defined(TARGET_ARM64)
  
@@ -75,7 +68,7 @@ diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
 diff --git a/src/coreclr/jit/gentree.cpp b/src/coreclr/jit/gentree.cpp
 --- a/src/coreclr/jit/gentree.cpp
 +++ b/src/coreclr/jit/gentree.cpp
-@@ -34117,11 +34117,14 @@ void ReturnTypeDesc::InitializeStructReturnType(Compiler*                comp,
+@@ -34180,11 +34180,14 @@ void ReturnTypeDesc::InitializeStructReturnType(Compiler*                comp,
              m_regType[0] = returnType;
  
  #if defined(TARGET_RISCV64) || defined(TARGET_LOONGARCH64)
@@ -94,7 +87,7 @@ diff --git a/src/coreclr/jit/gentree.cpp b/src/coreclr/jit/gentree.cpp
              }
  #endif // defined(TARGET_RISCV64) || defined(TARGET_LOONGARCH64)
              break;
-@@ -34193,8 +34196,9 @@ void ReturnTypeDesc::InitializeStructReturnType(Compiler*                comp,
+@@ -34256,8 +34259,9 @@ void ReturnTypeDesc::InitializeStructReturnType(Compiler*                comp,
              assert(structSize <= (2 * TARGET_POINTER_SIZE));
              BYTE gcPtrs[2] = {TYPE_GC_NONE, TYPE_GC_NONE};
              comp->info.compCompHnd->getClassGClayout(retClsHnd, &gcPtrs[0]);
@@ -135,7 +128,7 @@ diff --git a/src/coreclr/jit/jitee.h b/src/coreclr/jit/jitee.h
 diff --git a/src/coreclr/jit/targetriscv64.cpp b/src/coreclr/jit/targetriscv64.cpp
 --- a/src/coreclr/jit/targetriscv64.cpp
 +++ b/src/coreclr/jit/targetriscv64.cpp
-@@ -78,7 +78,7 @@ ABIPassingInformation RiscV64Classifier::Classify(Compiler*    comp,
+@@ -72,7 +72,7 @@ ABIPassingInformation RiscV64Classifier::Classify(Compiler*    comp,
              passedByRef = true;
              passedSize  = TARGET_POINTER_SIZE;
          }
@@ -144,7 +137,7 @@ diff --git a/src/coreclr/jit/targetriscv64.cpp b/src/coreclr/jit/targetriscv64.c
          {
              lowering = comp->GetFpStructLowering(structLayout->GetClassHandle());
              if (!lowering->byIntegerCallConv)
-@@ -100,7 +100,7 @@ ABIPassingInformation RiscV64Classifier::Classify(Compiler*    comp,
+@@ -94,7 +94,7 @@ ABIPassingInformation RiscV64Classifier::Classify(Compiler*    comp,
      {
          passedSize = genTypeSize(type);
          assert(passedSize <= TARGET_POINTER_SIZE);

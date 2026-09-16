@@ -19,31 +19,11 @@ fails on the method that produced it.
 
 Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
- src/coreclr/jit/codegencommon.cpp             |   9 +
- src/coreclr/jit/codegenriscv64.cpp            |  20 +
- src/coreclr/jit/compiler.cpp                  |  54 ++-
- src/coreclr/jit/compiler.h                    |   9 +
- src/coreclr/jit/emitriscv64.cpp               |   2 +-
- src/coreclr/jit/flowgraph.cpp                 |   9 +-
- src/coreclr/jit/importer.cpp                  |   2 +-
- src/coreclr/jit/importercalls.cpp             |  12 +-
- src/coreclr/jit/instr.cpp                     |   7 +-
- src/coreclr/jit/jit.h                         |   6 +
- src/coreclr/jit/lclvars.cpp                   |   7 +-
- src/coreclr/jit/lower.cpp                     |   5 +-
- src/coreclr/jit/lsra.cpp                      |   8 +
- src/coreclr/jit/lsrabuild.cpp                 |  11 +-
- src/coreclr/jit/lsrariscv64.cpp               |   6 +-
- src/coreclr/jit/morph.cpp                     | 445 ++++++++++++++++++
- src/coreclr/jit/utils.cpp                     |   4 +
- src/coreclr/jit/vartype.h                     |  10 +
- src/coreclr/nativeaot/Runtime/MathHelpers.cpp |  18 +-
- 19 files changed, 620 insertions(+), 24 deletions(-)
 
 diff --git a/src/coreclr/jit/codegencommon.cpp b/src/coreclr/jit/codegencommon.cpp
 --- a/src/coreclr/jit/codegencommon.cpp
 +++ b/src/coreclr/jit/codegencommon.cpp
-@@ -8611,6 +8611,15 @@ void CodeGen::genPoisonFrame(regMaskTP regLiveIn)
+@@ -8628,6 +8628,15 @@ void CodeGen::genPoisonFrame(regMaskTP regLiveIn)
  //
  void CodeGen::genBitCast(var_types targetType, regNumber targetReg, var_types srcType, regNumber srcReg)
  {
@@ -102,7 +82,7 @@ diff --git a/src/coreclr/jit/compiler.cpp b/src/coreclr/jit/compiler.cpp
  
  /*****************************************************************************
   *
-@@ -2514,6 +2517,11 @@ void Compiler::compInitOptions(JitFlags* jitFlags)
+@@ -2554,6 +2557,11 @@ void Compiler::compInitOptions(JitFlags* jitFlags)
  
      if (compIsForInlining())
      {
@@ -114,7 +94,7 @@ diff --git a/src/coreclr/jit/compiler.cpp b/src/coreclr/jit/compiler.cpp
          return;
      }
  
-@@ -2919,10 +2927,50 @@ void Compiler::compInitOptions(JitFlags* jitFlags)
+@@ -2959,10 +2967,50 @@ void Compiler::compInitOptions(JitFlags* jitFlags)
  
      GlobalJitOptions::compFeatureHfa = !opts.compUseSoftFP;
  #elif defined(TARGET_RISCV64)
@@ -171,7 +151,7 @@ diff --git a/src/coreclr/jit/compiler.cpp b/src/coreclr/jit/compiler.cpp
 diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
 --- a/src/coreclr/jit/compiler.h
 +++ b/src/coreclr/jit/compiler.h
-@@ -7273,6 +7273,15 @@ private:
+@@ -7309,6 +7309,15 @@ private:
      bool fgIsBlockCold(BasicBlock* block);
  
      GenTree* fgMorphCastIntoHelper(GenTree* tree, int helper, GenTree* oper);
@@ -240,7 +220,7 @@ diff --git a/src/coreclr/jit/importer.cpp b/src/coreclr/jit/importer.cpp
 diff --git a/src/coreclr/jit/importercalls.cpp b/src/coreclr/jit/importercalls.cpp
 --- a/src/coreclr/jit/importercalls.cpp
 +++ b/src/coreclr/jit/importercalls.cpp
-@@ -5796,7 +5796,8 @@ GenTree* Compiler::impIntrinsic(CORINFO_CLASS_HANDLE    clsHnd,
+@@ -5798,7 +5798,8 @@ GenTree* Compiler::impIntrinsic(CORINFO_CLASS_HANDLE    clsHnd,
  #endif // FEATURE_HW_INTRINSICS
  
  #ifdef TARGET_RISCV64
@@ -250,7 +230,7 @@ diff --git a/src/coreclr/jit/importercalls.cpp b/src/coreclr/jit/importercalls.c
                  {
                      GenTree* op2 = impImplicitR4orR8Cast(impPopStack().val, callType);
                      GenTree* op1 = impImplicitR4orR8Cast(impPopStack().val, callType);
-@@ -11412,6 +11413,15 @@ GenTree* Compiler::impMathIntrinsic(CORINFO_METHOD_HANDLE method,
+@@ -11344,6 +11345,15 @@ GenTree* Compiler::impMathIntrinsic(CORINFO_METHOD_HANDLE method,
      assert(IsMathIntrinsic(intrinsicName));
      assert(isSpecial != nullptr);
  
@@ -310,7 +290,7 @@ diff --git a/src/coreclr/jit/jit.h b/src/coreclr/jit/jit.h
 diff --git a/src/coreclr/jit/lclvars.cpp b/src/coreclr/jit/lclvars.cpp
 --- a/src/coreclr/jit/lclvars.cpp
 +++ b/src/coreclr/jit/lclvars.cpp
-@@ -676,7 +676,10 @@ void Compiler::lvaInitUserArgs(unsigned* curVarNum, unsigned skipArgs, unsigned
+@@ -657,7 +657,10 @@ void Compiler::lvaInitUserArgs(unsigned* curVarNum, unsigned skipArgs, unsigned
          }
  #endif
  
@@ -322,7 +302,7 @@ diff --git a/src/coreclr/jit/lclvars.cpp b/src/coreclr/jit/lclvars.cpp
          {
  #ifndef TARGET_X86
              // TODO-CQ: We shouldn't have to go as far as to declare these
-@@ -897,7 +900,7 @@ void Compiler::lvaInitVarDsc(LclVarDsc*              varDsc,
+@@ -878,7 +881,7 @@ void Compiler::lvaInitVarDsc(LclVarDsc*              varDsc,
      }
  
      var_types type = JITtype2varType(corInfoType);
@@ -334,7 +314,7 @@ diff --git a/src/coreclr/jit/lclvars.cpp b/src/coreclr/jit/lclvars.cpp
 diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
 --- a/src/coreclr/jit/lower.cpp
 +++ b/src/coreclr/jit/lower.cpp
-@@ -5528,7 +5528,10 @@ void Lowering::LowerFieldListToFieldListOfRegisters(GenTreeFieldList*   fieldLis
+@@ -5530,7 +5530,10 @@ void Lowering::LowerFieldListToFieldListOfRegisters(GenTreeFieldList*   fieldLis
              }
  
              // If this is a float -> int insertion, then we need the bitcast now.
@@ -376,7 +356,7 @@ diff --git a/src/coreclr/jit/lsrabuild.cpp b/src/coreclr/jit/lsrabuild.cpp
                          !VarSetOps::IsMember(m_compiler, fpCalleeSaveCandidateVars, varIndex))
                      {
                          continue;
-@@ -4342,6 +4342,15 @@ int LinearScan::BuildReturn(GenTree* tree)
+@@ -4335,6 +4335,15 @@ int LinearScan::BuildReturn(GenTree* tree)
              else
  #endif // FEATURE_MULTIREG_RET
              {
@@ -829,7 +809,7 @@ diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
  #ifndef TARGET_64BIT
      else if (varTypeIsLong(srcType))
      {
-@@ -7010,6 +7393,40 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
+@@ -7037,6 +7420,40 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
          // Some arithmetic operators need to use a helper call to the EE
          int helper;
  
@@ -870,7 +850,7 @@ diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
          case GT_STORE_LCL_VAR:
          case GT_STORE_LCL_FLD:
          {
-@@ -7084,6 +7501,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
+@@ -7111,6 +7528,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
          case GT_MUL:
              noway_assert(op2 != nullptr);
  
@@ -884,7 +864,7 @@ diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
  #if !defined(TARGET_64BIT) && !defined(TARGET_WASM)
              if (typ == TYP_LONG)
              {
-@@ -7188,6 +7612,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
+@@ -7215,6 +7639,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
              break;
  
          case GT_DIV:
@@ -898,7 +878,7 @@ diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
              // Convert DIV to UDIV if both op1 and op2 are known to be never negative
              if (varTypeIsIntegral(tree) && op1->IsNeverNegative(this) && op2->IsNeverNegative(this))
              {
-@@ -7483,6 +7914,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
+@@ -7510,6 +7941,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
          case GT_EQ:
          case GT_NE:
          {
@@ -912,7 +892,7 @@ diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
              if (opts.OptimizationEnabled())
              {
                  GenTree* optimizedTree = gtFoldTypeCompare(tree);
-@@ -7544,6 +7982,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
+@@ -7571,6 +8009,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
  
          case GT_GT:
          {

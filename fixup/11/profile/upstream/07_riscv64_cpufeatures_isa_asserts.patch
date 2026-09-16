@@ -9,8 +9,6 @@ for. Assert what the build actually requires instead.
 
 Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
- src/native/minipal/cpufeatures.c | 9 ++++++++-
- 1 file changed, 8 insertions(+), 1 deletion(-)
 
 diff --git a/src/native/minipal/cpufeatures.c b/src/native/minipal/cpufeatures.c
 --- a/src/native/minipal/cpufeatures.c

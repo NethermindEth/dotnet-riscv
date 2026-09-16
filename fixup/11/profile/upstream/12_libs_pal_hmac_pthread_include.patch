@@ -12,7 +12,6 @@ Include it directly, as pal_evp.c, opensslshim.c and pal_bio.c in the same
 library already do.
 
 diff --git a/src/native/libs/System.Security.Cryptography.Native/pal_hmac.c b/src/native/libs/System.Security.Cryptography.Native/pal_hmac.c
-index cb9ae46..6a7c54f 100644
 --- a/src/native/libs/System.Security.Cryptography.Native/pal_hmac.c
 +++ b/src/native/libs/System.Security.Cryptography.Native/pal_hmac.c
 @@ -6,6 +6,7 @@
