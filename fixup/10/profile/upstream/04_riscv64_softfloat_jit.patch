@@ -866,7 +866,7 @@ index 3a02970..500551b 100644
  GenTree* Compiler::fgMorphExpandCast(GenTreeCast* tree)
  {
      GenTree*  oper    = tree->CastOp();
-@@ -322,6 +652,35 @@ GenTree* Compiler::fgMorphExpandCast(GenTreeCast* tree)
+@@ -322,6 +652,45 @@ GenTree* Compiler::fgMorphExpandCast(GenTreeCast* tree)
          {
              if (!tree->gtOverflow())
              {
@@ -877,6 +877,16 @@ index 3a02970..500551b 100644
 +                // .NET semantics (NaN -> 0, saturation).
 +                if (opts.compUseSoftFP)
 +                {
++                    // The helpers all take a double. Upstream widens a float
++                    // source only for the overflow forms, because with an FPU
++                    // those are the only casts that reach a helper at all;
++                    // without one, every cast here does.
++                    if (srcType == TYP_FLOAT)
++                    {
++                        oper           = gtNewCastNode(TYP_DOUBLE, oper, false, TYP_DOUBLE);
++                        tree->CastOp() = oper;
++                    }
++
 +                    switch (dstType)
 +                    {
 +                        case TYP_INT:
@@ -902,7 +912,7 @@ index 3a02970..500551b 100644
  #ifdef TARGET_64BIT
                  return nullptr;
  #else
-@@ -375,6 +734,42 @@ GenTree* Compiler::fgMorphExpandCast(GenTreeCast* tree)
+@@ -375,6 +744,42 @@ GenTree* Compiler::fgMorphExpandCast(GenTreeCast* tree)
          return fgMorphTree(oper);
      }
  
@@ -945,7 +955,7 @@ index 3a02970..500551b 100644
  #ifndef TARGET_64BIT
      // The code generation phase (for x86 & ARM32) does not handle casts
      // directly from [u]long to anything other than [u]int. Insert an
-@@ -7041,6 +7436,40 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, MorphAddrContext* mac, bool* optA
+@@ -7041,6 +7446,40 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, MorphAddrContext* mac, bool* optA
          // Some arithmetic operators need to use a helper call to the EE
          int helper;
  
@@ -986,7 +996,7 @@ index 3a02970..500551b 100644
          case GT_STORE_LCL_VAR:
          case GT_STORE_LCL_FLD:
          {
-@@ -7115,6 +7544,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, MorphAddrContext* mac, bool* optA
+@@ -7115,6 +7554,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, MorphAddrContext* mac, bool* optA
          case GT_MUL:
              noway_assert(op2 != nullptr);
  
@@ -1000,7 +1010,7 @@ index 3a02970..500551b 100644
  #ifndef TARGET_64BIT
              if (typ == TYP_LONG)
              {
-@@ -7203,6 +7599,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, MorphAddrContext* mac, bool* optA
+@@ -7203,6 +7609,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, MorphAddrContext* mac, bool* optA
              break;
  
          case GT_DIV:
@@ -1014,7 +1024,7 @@ index 3a02970..500551b 100644
              // Replace "val / dcon" with "val * (1.0 / dcon)" if dcon is a power of two.
              // Powers of two within range are always exactly represented,
              // so multiplication by the reciprocal is safe in this scenario
-@@ -7512,6 +7955,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, MorphAddrContext* mac, bool* optA
+@@ -7512,6 +7965,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, MorphAddrContext* mac, bool* optA
          case GT_EQ:
          case GT_NE:
          {
@@ -1028,7 +1038,7 @@ index 3a02970..500551b 100644
              if (opts.OptimizationEnabled())
              {
                  GenTree* optimizedTree = gtFoldTypeCompare(tree);
-@@ -7557,6 +8007,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, MorphAddrContext* mac, bool* optA
+@@ -7557,6 +8017,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, MorphAddrContext* mac, bool* optA
  
          case GT_GT:
          {
