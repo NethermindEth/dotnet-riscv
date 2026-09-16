@@ -1,32 +1,26 @@
-[NativeAOT] Read the byte-packed LSDA offsets without a misaligned wide load
+[NativeAOT] Read the byte-packed LSDA offsets without a misaligned load
 
-The unwind blob a method's LSDA points at is byte-packed: EmitLsda in
-UnixObjectWriter.Aot.cs writes a one-byte flags field and then the 32-bit
-main-LSDA, method-start, EH-info and associated-data offsets with no padding.
-UnixNativeCodeManager and RuntimeInstance read those offsets back with
-*dac_cast<PTR_int32_t>(p) - a 32-bit load from an address one byte past
-whatever alignment the section gave the blob. It is misaligned by
-construction, on every target.
+A method's LSDA is byte-packed with no padding: a one-byte flags field
+followed by 32-bit offsets. UnixNativeCodeManager and RuntimeInstance read
+those offsets with *dac_cast<PTR_int32_t>(p), so the load lands on a
+4-byte-aligned address only by chance. The cast also tells the compiler
+that the address is aligned, which the format does not promise.
 
-x64 and arm64 do not care. RISC-V is not required to implement misaligned
-access: on hardware without Zicclsm the load traps, and Linux then emulates
-it in a kernel trap handler, which is correct but hundreds of cycles for a
-load on what is an unwinding hot path. Where nothing emulates it - a
-bare-metal or zkVM executor, or a runtime built -mstrict-align - it is
-fatal, and the first site hit in practice is EHEnumInit.
+x64 and arm64 do not care. A RISC-V execution environment may support
+misaligned access in hardware, emulate it, or reject it, and the runtime
+cannot tell which, so it should not ask for it here. Build flags do not
+help: with -mstrict-align the compiler still emits a single lw, because the
+cast promised the alignment.
 
-Read the offsets a byte at a time instead, through the decoder that already
-reads these very blobs. NativePrimitiveDecoder grows a non-mutating
-PeekInt32, and the existing ReadInt32/ReadUInt32 are expressed in terms of
-it rather than repeating the byte assembly a third time; that also drops the
-signed overflow the old expressions had in the top byte. Decoding
-little-endian byte by byte is what the writer asks for anyway - it emits the
-field with WriteLittleEndian<int>.
+Read the offsets a byte at a time through NativePrimitiveDecoder, which
+already reads these blobs. It gets a non-mutating PeekInt32, and
+ReadInt32/ReadUInt32 now use it instead of repeating the byte assembly.
+Widening each byte before the shift also removes the signed overflow the
+old expressions had in the top byte.
 
-Nothing changes for a target that implements misaligned access: the byte
-loads fold back into one wide load. All four call sites still compile to a
-single ldrsw on arm64 and a single movslq on x64, and on riscv64 to a single
-lw unless the build asks for -mstrict-align.
+Nothing is lost where misaligned access is available: with clang 22.1.8 at
+-O2 the affected paths still compile to one ldrsw on arm64 and one movslq
+on x64.
 --- a/src/coreclr/nativeaot/Runtime/NativePrimitiveDecoder.h
 +++ b/src/coreclr/nativeaot/Runtime/NativePrimitiveDecoder.h
 @@ -46,17 +46,31 @@ public:
