@@ -1,4 +1,9 @@
 #!/bin/bash
+# Any step failing here leaves a rootfs that is missing libraries rather than
+# absent, and every later pack step happily archives what is there - which is
+# how a release shipped without libgcc.a, libm.a and libdl.a.
+set -eo pipefail
+
 export TOP_DIR="$(cd "$(dirname "$(which "$0")")" ; pwd -P)"
 
 tmp_dir="${TOP_DIR}/tmp/rootfs"
