@@ -1,8 +1,8 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 7f768be6801d38215a6a68110247e8479f09418d Mon Sep 17 00:00:00 2001
 From: Maxim Menshikov <maximmenshchikov@gmail.com>
 Date: Wed, 9 Sep 2026 11:26:54 +0100
-Subject: [PATCH 06/11] [RISC-V] Guard FP and atomic instructions in the
- assembly sources
+Subject: [PATCH] [RISC-V] Guard FP and atomic instructions in the assembly
+ sources
 
 The hand-written riscv64 assembly uses fld/fsd and the A-extension amo*
 unconditionally, so a runtime built for a target without F/D or A does not
@@ -17,6 +17,8 @@ the same instructions are emitted.
 The .S sources are the one place where the instruction set cannot be a compiler
 concept - the assembler is the consumer - so they switch on the predefined
 macros rather than on the InstructionSet model used elsewhere.
+
+Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
  .../debug/di/riscv64/floatconversion.S        |   2 +
  .../Runtime/riscv64/ExceptionHandling.S       |  44 +++++
@@ -32,7 +34,6 @@ macros rather than on the InstructionSet model used elsewhere.
  11 files changed, 286 insertions(+)
 
 diff --git a/src/coreclr/debug/di/riscv64/floatconversion.S b/src/coreclr/debug/di/riscv64/floatconversion.S
-index 138db0bc..1b8e0295 100644
 --- a/src/coreclr/debug/di/riscv64/floatconversion.S
 +++ b/src/coreclr/debug/di/riscv64/floatconversion.S
 @@ -7,6 +7,8 @@
@@ -45,7 +46,6 @@ index 138db0bc..1b8e0295 100644
          ret
  LEAF_END FPFillR8, .TEXT
 diff --git a/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S b/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S
-index 8cbe1b6a..21b1ac1b 100644
 --- a/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S
 +++ b/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S
 @@ -31,6 +31,7 @@
@@ -232,7 +232,6 @@ index 8cbe1b6a..21b1ac1b 100644
          // set preserved regs to the values expected by the funclet
          RESTORE_PRESERVED_REGISTERS a2
 diff --git a/src/coreclr/nativeaot/Runtime/riscv64/GcProbe.S b/src/coreclr/nativeaot/Runtime/riscv64/GcProbe.S
-index 8522bc01..050770e3 100644
 --- a/src/coreclr/nativeaot/Runtime/riscv64/GcProbe.S
 +++ b/src/coreclr/nativeaot/Runtime/riscv64/GcProbe.S
 @@ -39,8 +39,10 @@
@@ -258,7 +257,6 @@ index 8522bc01..050770e3 100644
      // Restore callee saved registers
      EPILOG_RESTORE_REG_PAIR s1, s2,  0x20
 diff --git a/src/coreclr/nativeaot/Runtime/riscv64/UniversalTransition.S b/src/coreclr/nativeaot/Runtime/riscv64/UniversalTransition.S
-index b38480f8..7e5fce8c 100644
 --- a/src/coreclr/nativeaot/Runtime/riscv64/UniversalTransition.S
 +++ b/src/coreclr/nativeaot/Runtime/riscv64/UniversalTransition.S
 @@ -89,6 +89,7 @@
@@ -310,7 +308,6 @@ index b38480f8..7e5fce8c 100644
          # Restore the argument registers
          ld          a0, ARGUMENT_REGISTERS_OFFSET(sp)
 diff --git a/src/coreclr/pal/inc/unixasmmacrosriscv64.inc b/src/coreclr/pal/inc/unixasmmacrosriscv64.inc
-index 406074d6..5342ef99 100644
 --- a/src/coreclr/pal/inc/unixasmmacrosriscv64.inc
 +++ b/src/coreclr/pal/inc/unixasmmacrosriscv64.inc
 @@ -161,6 +161,9 @@ C_FUNC(\Name):
@@ -380,7 +377,6 @@ index 406074d6..5342ef99 100644
      // Set target to TransitionBlock pointer
      addi  \target, sp, 160
 diff --git a/src/coreclr/pal/src/arch/riscv64/context2.S b/src/coreclr/pal/src/arch/riscv64/context2.S
-index 5bb06b0e..7914eae9 100644
 --- a/src/coreclr/pal/src/arch/riscv64/context2.S
 +++ b/src/coreclr/pal/src/arch/riscv64/context2.S
 @@ -26,6 +26,7 @@ LEAF_ENTRY RtlRestoreContext, _TEXT
@@ -425,7 +421,6 @@ index 5bb06b0e..7914eae9 100644
  
  LOCAL_LABEL(Done_CONTEXT_FLOATING_POINT):
 diff --git a/src/coreclr/runtime/riscv64/WriteBarriers.S b/src/coreclr/runtime/riscv64/WriteBarriers.S
-index c4a336be..4dc36d28 100644
 --- a/src/coreclr/runtime/riscv64/WriteBarriers.S
 +++ b/src/coreclr/runtime/riscv64/WriteBarriers.S
 @@ -277,6 +277,7 @@ LEAF_END RhpAssignRef, _TEXT
@@ -464,7 +459,6 @@ index c4a336be..4dc36d28 100644
          // See comment at the top of PalInterlockedOperationBarrier method for explanation why this memory
          // barrier is necessary.
 diff --git a/src/coreclr/vm/precode.h b/src/coreclr/vm/precode.h
-index 2b6aef0d..ff5b21fa 100644
 --- a/src/coreclr/vm/precode.h
 +++ b/src/coreclr/vm/precode.h
 @@ -394,7 +394,13 @@ struct FixupPrecode
@@ -482,7 +476,6 @@ index 2b6aef0d..ff5b21fa 100644
  
      BYTE m_code[CodeSize];
 diff --git a/src/coreclr/vm/riscv64/asmhelpers.S b/src/coreclr/vm/riscv64/asmhelpers.S
-index 486fce77..6e94858f 100644
 --- a/src/coreclr/vm/riscv64/asmhelpers.S
 +++ b/src/coreclr/vm/riscv64/asmhelpers.S
 @@ -489,8 +489,10 @@ NESTED_ENTRY OnHijackTripThread, _TEXT, NoHandler
@@ -1337,7 +1330,6 @@ index 486fce77..6e94858f 100644
      ld t4, 0(t2)
      addi t2, t2, 8
 diff --git a/src/coreclr/vm/riscv64/calldescrworkerriscv64.S b/src/coreclr/vm/riscv64/calldescrworkerriscv64.S
-index 54725758..73e901a1 100644
 --- a/src/coreclr/vm/riscv64/calldescrworkerriscv64.S
 +++ b/src/coreclr/vm/riscv64/calldescrworkerriscv64.S
 @@ -44,6 +44,7 @@ LOCAL_LABEL(donestack):
@@ -1377,7 +1369,6 @@ index 54725758..73e901a1 100644
  
  LOCAL_LABEL(IntReturn):
 diff --git a/src/coreclr/vm/riscv64/thunktemplates.S b/src/coreclr/vm/riscv64/thunktemplates.S
-index ce4e1d4b..34fae325 100644
 --- a/src/coreclr/vm/riscv64/thunktemplates.S
 +++ b/src/coreclr/vm/riscv64/thunktemplates.S
 @@ -14,6 +14,9 @@ LEAF_END_MARKED StubPrecodeCode

@@ -1,8 +1,8 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Maxim Menshikov <maximmenshchikov@gmail.com>
-Date: Wed, 9 Sep 2026 11:27:23 +0100
-Subject: [PATCH 09/11] [RISC-V] Add the soft-float helpers and the
- riscv64-lp64 target
+From b28e5de3153804899157ca0c11e6a0d5f68c5e1f Mon Sep 17 00:00:00 2001
+From: Maxim Menshikov <maksim.menshikov@nethermind.io>
+Date: Wed, 16 Sep 2026 15:26:14 +0100
+Subject: [PATCH] [RISC-V] Add the soft-float helpers and the riscv64-lp64
+ target
 
 Fourteen helpers - {FLT,DBL}{ADD,SUB,MUL,DIV}, {FLT,DBL}CMP_{LE,GE}, FLT2DBL and
 DBL2FLT - bound by ilc to the toolchain's compiler-rt builtins (__adddf3,
@@ -19,6 +19,11 @@ them. crossgen2 rejects the target - the helpers have no ReadyToRun encoding.
 Value numbering models the helpers as the operations they implement, as
 CORINFO_HELP_LMUL is modelled on 32-bit targets; only the two three-way
 compares need VNFuncs of their own.
+
+Note: the RiscV64ObjectWriterTests addition was dropped - ILCompiler.Compiler.Tests
+was deleted upstream in #133474 and needs a new home.
+
+Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
  src/coreclr/inc/corinfo.h                     | 22 +++++++++
  src/coreclr/inc/jithelpers.h                  | 18 ++++++++
@@ -33,10 +38,7 @@ compares need VNFuncs of their own.
  .../Common/JitInterface/CorInfoHelpFunc.cs    | 16 +++++++
  .../tools/Common/JitInterface/CorInfoImpl.cs  |  7 +++
  .../Common/TypeSystem/Common/TargetDetails.cs |  5 ++
- .../ILCompiler.Compiler.Tests.csproj          |  1 +
- .../RiscV64ObjectWriterTests.cs               | 26 +++++++++++
  .../ILCompiler.Compiler/Compiler/JitHelper.cs | 44 ++++++++++++++++++
- .../ILCompiler.Compiler.csproj                |  3 ++
  .../ILCompiler.Diagnostics/PerfMapWriter.cs   |  1 +
  .../TestCases/R2RTestSuites.cs                | 28 +++++++++++
  .../TestCasesRunner/R2RTestRunner.cs          | 11 +++++
@@ -45,11 +47,9 @@ compares need VNFuncs of their own.
  .../aot/ILCompiler/ILCompilerRootCommand.cs   |  4 +-
  src/coreclr/tools/aot/ILCompiler/Program.cs   |  3 +-
  src/coreclr/tools/aot/crossgen2/Program.cs    |  8 +++-
- 25 files changed, 379 insertions(+), 9 deletions(-)
- create mode 100644 src/coreclr/tools/aot/ILCompiler.Compiler.Tests/RiscV64ObjectWriterTests.cs
+ 23 files changed, 352 insertions(+), 9 deletions(-)
 
 diff --git a/src/coreclr/inc/corinfo.h b/src/coreclr/inc/corinfo.h
-index 2b2802f9..3005dfde 100644
 --- a/src/coreclr/inc/corinfo.h
 +++ b/src/coreclr/inc/corinfo.h
 @@ -342,6 +342,28 @@ enum CorInfoHelpFunc
@@ -82,7 +82,6 @@ index 2b2802f9..3005dfde 100644
         which is the right helper to use to allocate an object of a given type. */
  
 diff --git a/src/coreclr/inc/jithelpers.h b/src/coreclr/inc/jithelpers.h
-index 2d6eb1bb..14678850 100644
 --- a/src/coreclr/inc/jithelpers.h
 +++ b/src/coreclr/inc/jithelpers.h
 @@ -96,6 +96,24 @@
@@ -111,7 +110,6 @@ index 2d6eb1bb..14678850 100644
      JITHELPER(CORINFO_HELP_NEWFAST,                     RhpNew,                   METHOD__NIL)
      JITHELPER(CORINFO_HELP_NEWFAST_MAYBEFROZEN,         RhpNewMaybeFrozen,        METHOD__NIL)
 diff --git a/src/coreclr/jit/utils.cpp b/src/coreclr/jit/utils.cpp
-index fb09f5d6..6bb6059e 100644
 --- a/src/coreclr/jit/utils.cpp
 +++ b/src/coreclr/jit/utils.cpp
 @@ -1458,6 +1458,21 @@ void HelperCallProperties::init()
@@ -137,10 +135,9 @@ index fb09f5d6..6bb6059e 100644
                  FALLTHROUGH;
              case CORINFO_HELP_LMUL:
 diff --git a/src/coreclr/jit/valuenum.cpp b/src/coreclr/jit/valuenum.cpp
-index 6bc1336e..c81733c8 100644
 --- a/src/coreclr/jit/valuenum.cpp
 +++ b/src/coreclr/jit/valuenum.cpp
-@@ -15046,6 +15046,14 @@ void Compiler::fgValueNumberCastHelper(GenTreeCall* call)
+@@ -15116,6 +15116,14 @@ void Compiler::fgValueNumberCastHelper(GenTreeCall* call)
              castFromType     = TYP_DOUBLE;
              hasOverflowCheck = true;
              break;
@@ -155,7 +152,7 @@ index 6bc1336e..c81733c8 100644
  
          default:
              unreached();
-@@ -15113,6 +15121,42 @@ VNFunc Compiler::fgValueNumberJitHelperMethodVNFunc(CorInfoHelpFunc helpFunc)
+@@ -15183,6 +15191,42 @@ VNFunc Compiler::fgValueNumberJitHelperMethodVNFunc(CorInfoHelpFunc helpFunc)
          case CORINFO_HELP_DBLREM:
              vnf = VNF_MOD;
              break;
@@ -198,7 +195,7 @@ index 6bc1336e..c81733c8 100644
  
          // These allocation operations probably require some augmentation -- perhaps allocSiteId,
          // something about array length...
-@@ -15355,6 +15399,8 @@ bool Compiler::fgValueNumberHelperCall(GenTreeCall* call)
+@@ -15425,6 +15469,8 @@ bool Compiler::fgValueNumberHelperCall(GenTreeCall* call)
          case CORINFO_HELP_DBL2LNG:
          case CORINFO_HELP_DBL2LNG_OVF:
          case CORINFO_HELP_DBL2UINT_OVF:
@@ -208,7 +205,6 @@ index 6bc1336e..c81733c8 100644
          case CORINFO_HELP_DBL2ULNG_OVF:
              fgValueNumberCastHelper(call);
 diff --git a/src/coreclr/jit/valuenumfuncs.h b/src/coreclr/jit/valuenumfuncs.h
-index aed12076..92742269 100644
 --- a/src/coreclr/jit/valuenumfuncs.h
 +++ b/src/coreclr/jit/valuenumfuncs.h
 @@ -207,6 +207,12 @@ ValueNumFuncDef(HWI_INTRINSIC_END, -1, false, false)
@@ -225,7 +221,6 @@ index aed12076..92742269 100644
      // Signed/Unsigned integer min/max intrinsics
      ValueNumFuncDef(MinInt, 2, true, false)
 diff --git a/src/coreclr/tools/Common/CommandLineHelpers.cs b/src/coreclr/tools/Common/CommandLineHelpers.cs
-index 58ff170a..0d917dc1 100644
 --- a/src/coreclr/tools/Common/CommandLineHelpers.cs
 +++ b/src/coreclr/tools/Common/CommandLineHelpers.cs
 @@ -27,6 +27,8 @@ internal static partial class Helpers
@@ -255,7 +250,6 @@ index 58ff170a..0d917dc1 100644
              };
  
 diff --git a/src/coreclr/tools/Common/Compiler/ObjectWriter/ElfObjectWriter.cs b/src/coreclr/tools/Common/Compiler/ObjectWriter/ElfObjectWriter.cs
-index 3e252c36..ad48f024 100644
 --- a/src/coreclr/tools/Common/Compiler/ObjectWriter/ElfObjectWriter.cs
 +++ b/src/coreclr/tools/Common/Compiler/ObjectWriter/ElfObjectWriter.cs
 @@ -41,6 +41,7 @@ internal sealed partial class ElfObjectWriter : UnixObjectWriter
@@ -310,7 +304,6 @@ index 3e252c36..ad48f024 100644
                  },
              };
 diff --git a/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWritingOptions.cs b/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWritingOptions.cs
-index 61276810..7e9f4e61 100644
 --- a/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWritingOptions.cs
 +++ b/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWritingOptions.cs
 @@ -13,5 +13,9 @@ public enum ObjectWritingOptions
@@ -324,7 +317,6 @@ index 61276810..7e9f4e61 100644
      }
  }
 diff --git a/src/coreclr/tools/Common/InstructionSetHelpers.cs b/src/coreclr/tools/Common/InstructionSetHelpers.cs
-index cc484a89..2b4eb89e 100644
 --- a/src/coreclr/tools/Common/InstructionSetHelpers.cs
 +++ b/src/coreclr/tools/Common/InstructionSetHelpers.cs
 @@ -18,7 +18,7 @@ namespace System.CommandLine
@@ -353,7 +345,6 @@ index cc484a89..2b4eb89e 100644
                  instructionSetSupportBuilder.AddSupportedInstructionSet("a");
              }
 diff --git a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs
-index dac7b8fe..b66b269d 100644
 --- a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs
 +++ b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunConstants.cs
 @@ -406,6 +406,22 @@ public enum ReadyToRunHelper
@@ -380,7 +371,6 @@ index dac7b8fe..b66b269d 100644
  
      // Enum used for HFA type recognition.
 diff --git a/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs b/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs
-index bcae9776..bf167ed8 100644
 --- a/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs
 +++ b/src/coreclr/tools/Common/JitInterface/CorInfoHelpFunc.cs
 @@ -41,6 +41,22 @@ public enum CorInfoHelpFunc
@@ -407,10 +397,9 @@ index bcae9776..bf167ed8 100644
             which is the right helper to use to allocate an object of a given type. */
  
 diff --git a/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs b/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
-index 6463dc16..33e59471 100644
 --- a/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
 +++ b/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
-@@ -4879,6 +4879,13 @@ private uint getJitFlags(ref CORJIT_FLAGS flags, uint sizeInBytes)
+@@ -4915,6 +4915,13 @@ private uint getJitFlags(ref CORJIT_FLAGS flags, uint sizeInBytes)
                  flags.Set(CorJitFlag.CORJIT_FLAG_SOFTFP_ABI);
              }
  
@@ -425,7 +414,6 @@ index 6463dc16..33e59471 100644
  #if !READYTORUN
                  || (_compilation.TypeSystemContext.IsSpecialUnboxingThunk(this.MethodBeingCompiled) && _compilation.TypeSystemContext.GetTargetOfSpecialUnboxingThunk(this.MethodBeingCompiled).IsAsyncCall())
 diff --git a/src/coreclr/tools/Common/TypeSystem/Common/TargetDetails.cs b/src/coreclr/tools/Common/TypeSystem/Common/TargetDetails.cs
-index 4c9862cd..2ceac0f2 100644
 --- a/src/coreclr/tools/Common/TypeSystem/Common/TargetDetails.cs
 +++ b/src/coreclr/tools/Common/TypeSystem/Common/TargetDetails.cs
 @@ -39,6 +39,11 @@ public enum TargetAbi
@@ -440,52 +428,7 @@ index 4c9862cd..2ceac0f2 100644
      }
  
      /// <summary>
-diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler.Tests/ILCompiler.Compiler.Tests.csproj b/src/coreclr/tools/aot/ILCompiler.Compiler.Tests/ILCompiler.Compiler.Tests.csproj
-index 69e9d876..3f6add4a 100644
---- a/src/coreclr/tools/aot/ILCompiler.Compiler.Tests/ILCompiler.Compiler.Tests.csproj
-+++ b/src/coreclr/tools/aot/ILCompiler.Compiler.Tests/ILCompiler.Compiler.Tests.csproj
-@@ -42,6 +42,7 @@
-   <ItemGroup>
-     <Compile Include="DependencyGraphTests.cs" />
-     <Compile Include="DevirtualizationTests.cs" />
-+    <Compile Include="RiscV64ObjectWriterTests.cs" />
-     <Compile Include="SwiftLoweringTests.cs" />
-   </ItemGroup>
- </Project>
-diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler.Tests/RiscV64ObjectWriterTests.cs b/src/coreclr/tools/aot/ILCompiler.Compiler.Tests/RiscV64ObjectWriterTests.cs
-new file mode 100644
-index 00000000..0fbe5742
---- /dev/null
-+++ b/src/coreclr/tools/aot/ILCompiler.Compiler.Tests/RiscV64ObjectWriterTests.cs
-@@ -0,0 +1,26 @@
-+// Licensed to the .NET Foundation under one or more agreements.
-+// The .NET Foundation licenses this file to you under the MIT license.
-+
-+using ILCompiler.ObjectWriter;
-+using Internal.TypeSystem;
-+using Xunit;
-+
-+namespace ILCompiler.Compiler.Tests
-+{
-+    public class RiscV64ObjectWriterTests
-+    {
-+        // e_flags of a RISC-V object: EF_RISCV_RVC (0x1) only when the target has the C
-+        // extension, EF_RISCV_FLOAT_ABI_DOUBLE (0x4) for lp64d and EF_RISCV_FLOAT_ABI_SOFT (0)
-+        // for the lp64 (soft-float) ABI.
-+        [Theory]
-+        [InlineData(TargetAbi.NativeAot, false, 0x4u)]
-+        [InlineData(TargetAbi.NativeAot, true, 0x5u)]
-+        [InlineData(TargetAbi.NativeAotRiscV64SoftFloat, false, 0x0u)]
-+        [InlineData(TargetAbi.NativeAotRiscV64SoftFloat, true, 0x1u)]
-+        public void ElfFlagsFollowTheTarget(TargetAbi abi, bool compressed, uint expectedFlags)
-+        {
-+            ObjectWritingOptions options = compressed ? ObjectWritingOptions.RiscV64Compressed : ObjectWritingOptions.None;
-+            Assert.Equal(expectedFlags, ElfObjectWriter.GetRiscV64ElfFlags(abi, options));
-+        }
-+    }
-+}
 diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs
-index 8c614010..b454c35b 100644
 --- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/JitHelper.cs
 @@ -216,6 +216,50 @@ public static void GetEntryPoint(TypeSystemContext context, ReadyToRunHelper id,
@@ -539,20 +482,7 @@ index 8c614010..b454c35b 100644
                  case ReadyToRunHelper.LMul:
                      mangledName = "RhpLMul";
                      break;
-diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/ILCompiler.Compiler.csproj b/src/coreclr/tools/aot/ILCompiler.Compiler/ILCompiler.Compiler.csproj
-index d4270adf..afde3d5e 100644
---- a/src/coreclr/tools/aot/ILCompiler.Compiler/ILCompiler.Compiler.csproj
-+++ b/src/coreclr/tools/aot/ILCompiler.Compiler/ILCompiler.Compiler.csproj
-@@ -824,4 +824,7 @@
-   <Import Project="..\..\..\..\tools\illink\src\ILLink.Shared\ILLink.Shared.projitems" Label="Shared" />
-   <Import Project="..\..\Common\Compiler\GenericCycleDetection\GenericCycleDetection.projitems" />
- 
-+  <ItemGroup>
-+    <InternalsVisibleTo Include="ILCompiler.Compiler.Tests" />
-+  </ItemGroup>
- </Project>
 diff --git a/src/coreclr/tools/aot/ILCompiler.Diagnostics/PerfMapWriter.cs b/src/coreclr/tools/aot/ILCompiler.Diagnostics/PerfMapWriter.cs
-index 86fdf190..eb0d7b92 100644
 --- a/src/coreclr/tools/aot/ILCompiler.Diagnostics/PerfMapWriter.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.Diagnostics/PerfMapWriter.cs
 @@ -128,6 +128,7 @@ private static PerfmapTokensForTarget TranslateTargetDetailsToPerfmapConstants(T
@@ -564,10 +494,9 @@ index 86fdf190..eb0d7b92 100644
              };
  
 diff --git a/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCases/R2RTestSuites.cs b/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCases/R2RTestSuites.cs
-index 156a90e1..6116b40a 100644
 --- a/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCases/R2RTestSuites.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCases/R2RTestSuites.cs
-@@ -62,6 +62,34 @@ static void Validate(ReadyToRunReader reader)
+@@ -66,6 +66,34 @@ static void Validate(ReadyToRunReader reader)
          }
      }
  
@@ -603,7 +532,6 @@ index 156a90e1..6116b40a 100644
      public void GenericTypeConstraintsAllowVariantParameters()
      {
 diff --git a/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCasesRunner/R2RTestRunner.cs b/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCasesRunner/R2RTestRunner.cs
-index 4fdb38bc..14ba3d15 100644
 --- a/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCasesRunner/R2RTestRunner.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.ReadyToRun.Tests/TestCasesRunner/R2RTestRunner.cs
 @@ -94,6 +94,11 @@ internal sealed class CrossgenCompilation(string name, List<CrossgenAssembly> as
@@ -632,10 +560,9 @@ index 4fdb38bc..14ba3d15 100644
              $"crossgen2 failed for '{testName}':\n{result.StandardError}\n{result.StandardOutput}");
  
 diff --git a/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs b/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs
-index 5c635bf6..543bc1d9 100644
 --- a/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs
-@@ -54,6 +54,26 @@ internal RyuJitCompilation(
+@@ -60,6 +60,26 @@ internal RyuJitCompilation(
              _compilationOptions = options;
              InstructionSetSupport = instructionSetSupport;
  
@@ -662,7 +589,7 @@ index 5c635bf6..543bc1d9 100644
              _profileDataManager = profileDataManager;
  
              _methodImportationErrorProvider = errorProvider;
-@@ -116,6 +136,10 @@ protected override void CompileInternal(string outputFile, ObjectDumper dumper)
+@@ -126,6 +146,10 @@ protected override void CompileInternal(string outputFile, ObjectDumper dumper)
              if ((_compilationOptions & RyuJitCompilationOptions.ControlFlowGuardAnnotations) != 0)
                  options |= ObjectWritingOptions.ControlFlowGuard;
  
@@ -674,7 +601,6 @@ index 5c635bf6..543bc1d9 100644
          }
  
 diff --git a/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs b/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs
-index 23d0fd50..c3e2a2a8 100644
 --- a/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.RyuJit/JitInterface/CorInfoImpl.RyuJit.cs
 @@ -734,6 +734,48 @@ private ISymbolNode GetHelperFtnUncached(CorInfoHelpFunc ftnNum)
@@ -727,7 +653,6 @@ index 23d0fd50..c3e2a2a8 100644
                  case CorInfoHelpFunc.CORINFO_HELP_JIT_PINVOKE_BEGIN:
                      id = ReadyToRunHelper.PInvokeBegin;
 diff --git a/src/coreclr/tools/aot/ILCompiler/ILCompilerRootCommand.cs b/src/coreclr/tools/aot/ILCompiler/ILCompilerRootCommand.cs
-index 875bbeaf..9bed4be8 100644
 --- a/src/coreclr/tools/aot/ILCompiler/ILCompilerRootCommand.cs
 +++ b/src/coreclr/tools/aot/ILCompiler/ILCompilerRootCommand.cs
 @@ -352,7 +352,7 @@ public static void PrintExtendedHelp(ParseResult _)
@@ -749,7 +674,6 @@ index 875bbeaf..9bed4be8 100644
                  TargetArchitecture targetArch = Helpers.GetTargetArchitecture(arch);
                  bool first = true;
 diff --git a/src/coreclr/tools/aot/ILCompiler/Program.cs b/src/coreclr/tools/aot/ILCompiler/Program.cs
-index 34305bc9..86aac8ce 100644
 --- a/src/coreclr/tools/aot/ILCompiler/Program.cs
 +++ b/src/coreclr/tools/aot/ILCompiler/Program.cs
 @@ -109,7 +109,8 @@ public int Run()
@@ -763,10 +687,9 @@ index 34305bc9..86aac8ce 100644
              string systemModuleName = Get(_command.SystemModuleName);
              string reflectionData = Get(_command.ReflectionData);
 diff --git a/src/coreclr/tools/aot/crossgen2/Program.cs b/src/coreclr/tools/aot/crossgen2/Program.cs
-index ebd233e..77fa670 100644
 --- a/src/coreclr/tools/aot/crossgen2/Program.cs
 +++ b/src/coreclr/tools/aot/crossgen2/Program.cs
-@@ -78,6 +78,11 @@ namespace ILCompiler
+@@ -80,6 +80,11 @@ public int Run()
  
              (TargetArchitecture targetArchitecture, TargetOS targetOS, TargetAbi targetAbi) =
                  Helpers.GetTargetSpec(Get(_command.TargetArchitecture), Get(_command.TargetOS));
@@ -775,10 +698,10 @@ index ebd233e..77fa670 100644
 +                // The soft-float helpers have no ReadyToRun encoding; the target is NativeAOT only.
 +                throw new CommandLineException($"Target architecture '{Get(_command.TargetArchitecture)}' is not supported by ReadyToRun");
 +            }
-             bool targetAllowsRuntimeCodeGeneration = GetTargetAllowsRuntimeCodeGeneration(targetOS, targetArchitecture);
  
-             // Crossgen2 is partial AOT and its pre-compiled methods can be thrown away at runtime if
-@@ -98,7 +103,8 @@ namespace ILCompiler
+             // The portable call-helpers generator is currently supported only for Wasm.
+             if (_generatePortableCallHelpers is not null
+@@ -108,7 +113,8 @@ public int Run()
              InstructionSetSupport instructionSetSupport = Helpers.ConfigureInstructionSetSupport(Get(_command.InstructionSet), Get(_command.MaxVectorTBitWidth), isVectorTOptimistic, targetArchitecture, targetOS,
                  SR.InstructionSetMustNotBe, SR.InstructionSetInvalidImplication, logger,
                  allowOptimistic: allowOptimistic,

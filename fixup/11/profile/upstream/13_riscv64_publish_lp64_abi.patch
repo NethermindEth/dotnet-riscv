@@ -1,4 +1,8 @@
-[RISC-V] Let a build select the lp64 ABI for NativeAOT publishing
+From dd13a04f92bd2702104e2bb14ff49871ebe253d2 Mon Sep 17 00:00:00 2001
+From: Maxim Menshikov <maksim.menshikov@nethermind.io>
+Date: Wed, 16 Sep 2026 15:26:33 +0100
+Subject: [PATCH] [RISC-V] Let a build select the lp64 ABI for NativeAOT
+ publishing
 
 The ILCompiler is published as a NativeAOT application for the target, and it
 gets --targetarch from _targetArchitectureWithAbi. On a riscv64 target that
@@ -13,8 +17,12 @@ conditional on a property rather than derived from the RID, because
 linux-musl-riscv64 covers both lp64d and lp64 userspaces - unlike linux-bionic
 on ARM, where armel follows from the RID alone.
 
+Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
+---
+ .../Microsoft.DotNet.ILCompiler.SingleEntry.targets         | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
 diff --git a/src/coreclr/nativeaot/BuildIntegration/Microsoft.DotNet.ILCompiler.SingleEntry.targets b/src/coreclr/nativeaot/BuildIntegration/Microsoft.DotNet.ILCompiler.SingleEntry.targets
-index 368ab3b..be8043b 100644
 --- a/src/coreclr/nativeaot/BuildIntegration/Microsoft.DotNet.ILCompiler.SingleEntry.targets
 +++ b/src/coreclr/nativeaot/BuildIntegration/Microsoft.DotNet.ILCompiler.SingleEntry.targets
 @@ -44,6 +44,12 @@

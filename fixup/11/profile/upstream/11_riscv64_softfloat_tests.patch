@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From fd913a79e9f9f0a9c2853a78f9787c871c5f4267 Mon Sep 17 00:00:00 2001
 From: Maxim Menshikov <maximmenshchikov@gmail.com>
 Date: Wed, 9 Sep 2026 11:27:26 +0100
-Subject: [PATCH 11/11] [RISC-V] Add a floating-point semantics test for the
+Subject: [PATCH] [RISC-V] Add a floating-point semantics test for the
  soft-float target
 
 Bit-exact expectations for arithmetic rounding, NaN comparison semantics
@@ -14,6 +14,8 @@ and float-bits-as-int sign extension.
 Every expected value is the exact IEEE 754 result, so the test is valid on every
 target and passes on hard-float today; on a soft-float image the same assertions
 exercise the compiler-rt helpers.
+
+Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
  src/tests/JIT/Directed/softfloat/SoftFloat.cs | 284 ++++++++++++++++++
  .../JIT/Directed/softfloat/SoftFloat.csproj   |  12 +
@@ -23,7 +25,6 @@ exercise the compiler-rt helpers.
 
 diff --git a/src/tests/JIT/Directed/softfloat/SoftFloat.cs b/src/tests/JIT/Directed/softfloat/SoftFloat.cs
 new file mode 100644
-index 00000000..e6f7f32d
 --- /dev/null
 +++ b/src/tests/JIT/Directed/softfloat/SoftFloat.cs
 @@ -0,0 +1,284 @@
@@ -313,7 +314,6 @@ index 00000000..e6f7f32d
 +}
 diff --git a/src/tests/JIT/Directed/softfloat/SoftFloat.csproj b/src/tests/JIT/Directed/softfloat/SoftFloat.csproj
 new file mode 100644
-index 00000000..c0a7d8b5
 --- /dev/null
 +++ b/src/tests/JIT/Directed/softfloat/SoftFloat.csproj
 @@ -0,0 +1,12 @@

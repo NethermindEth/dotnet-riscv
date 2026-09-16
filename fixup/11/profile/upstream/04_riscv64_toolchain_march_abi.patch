@@ -1,8 +1,8 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 943043c74244316c0860a8f2227eeb49d43c2dae Mon Sep 17 00:00:00 2001
 From: Maxim Menshikov <maximmenshchikov@gmail.com>
 Date: Tue, 8 Sep 2026 23:39:42 +0100
-Subject: [PATCH 04/11] [RISC-V] Apply the ISA string and ABI to the cross
- toolchain probes
+Subject: [PATCH] [RISC-V] Apply the ISA string and ABI to the cross toolchain
+ probes
 
 configurecompiler.cmake settles the RISC-V ISA and ABI for the project, but
 cmake compiles and links its own probes at project() time, before any of the
@@ -17,15 +17,16 @@ toolchain's own defaults stay in place and nothing changes for existing targets.
 
 This follows what the arm/armel branch above already does for -mfpu and
 -mfloat-abi.
+
+Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
- eng/common/cross/toolchain.cmake | 17 +++++++++++++++++
- 1 file changed, 17 insertions(+)
+ eng/common/cross/toolchain.cmake | 45 ++++++++++++++++++++++++++++++++
+ 1 file changed, 45 insertions(+)
 
 diff --git a/eng/common/cross/toolchain.cmake b/eng/common/cross/toolchain.cmake
-index 70b7139..4a4ef49 100644
 --- a/eng/common/cross/toolchain.cmake
 +++ b/eng/common/cross/toolchain.cmake
-@@ -333,6 +333,51 @@ if(TARGET_ARCH_NAME MATCHES "^(arm|armel)$")
+@@ -333,6 +333,59 @@ if(TARGET_ARCH_NAME MATCHES "^(arm|armel)$")
    if(TARGET_ARCH_NAME STREQUAL "armel")
      add_compile_options(-mfloat-abi=softfp)
    endif()
@@ -68,8 +69,16 @@ index 70b7139..4a4ef49 100644
 +  # Without the A extension the compiler lowers C/C++ atomics to __atomic_*
 +  # calls instead of emitting lr/sc, and those live in libatomic. Not every link
 +  # in the tree passes -latomic on its own.
-+  if(DEFINED CLR_CMAKE_RISCV64_MARCH AND NOT CLR_CMAKE_RISCV64_MARCH MATCHES "a")
-+    add_toolchain_linker_flag("-latomic")
++  #
++  # Only the single-letter part of the ISA string counts: a multi-letter extension
++  # whose name contains "a" (Zba, for one) is not the A extension, and "g" is
++  # shorthand for imafd and so implies it.
++  if(DEFINED CLR_CMAKE_RISCV64_MARCH)
++    string(REGEX REPLACE "_.*$" "" _riscv_single_letter "${CLR_CMAKE_RISCV64_MARCH}")
++    string(REGEX REPLACE "^rv[0-9]+" "" _riscv_single_letter "${_riscv_single_letter}")
++    if(NOT _riscv_single_letter MATCHES "[ag]")
++      add_toolchain_linker_flag("-latomic")
++    endif()
 +  endif()
 +
 +  # persist variables across multiple try_compile passes

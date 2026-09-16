@@ -1,4 +1,8 @@
-[RISC-V] Pass -mabi=lp64 to the native linker and the shim compiler for riscv64-lp64
+From af8d26309b1d9f954490506d4350c6562ff8be86 Mon Sep 17 00:00:00 2001
+From: Maxim Menshikov <maksim.menshikov@nethermind.io>
+Date: Wed, 16 Sep 2026 15:26:34 +0100
+Subject: [PATCH] [RISC-V] Pass -mabi=lp64 to the native linker and the shim
+ compiler for riscv64-lp64
 
 The aggregate-executable shim is compiled from C and linked by clang straight from
 MSBuild; nothing there knows the target ABI, so on a soft-float sysroot the shim
@@ -11,10 +15,15 @@ Derive the flag from _targetArchitectureWithAbi, the same property that already
 selects --targetarch for ilc, and mark it Shim="true" so both the shim and the
 main link get it.
 
+Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
+---
+ .../BuildIntegration/Microsoft.NETCore.Native.Unix.targets  | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
 diff --git a/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets b/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets
---- a/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets	2026-09-09 17:18:29
-+++ b/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets	2026-09-09 17:18:29
-@@ -261,6 +261,12 @@
+--- a/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets
++++ b/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets
+@@ -261,6 +261,12 @@ The .NET Foundation licenses this file to you under the MIT license.
        <LinkerArg Include="--sysroot=&quot;$(SysRoot)&quot;" Condition="'$(SysRoot)' != '' and '$(_IsApplePlatform)' != 'true'" Shim="true" />
        <LinkerArg Include="-isysroot &quot;$(SysRoot)&quot;" Condition="'$(SysRoot)' != '' and '$(_IsApplePlatform)' == 'true'" Shim="true" />
        <LinkerArg Include="--target=$(TargetTriple)" Condition="'$(TargetTriple)' != ''" Shim="true" />
