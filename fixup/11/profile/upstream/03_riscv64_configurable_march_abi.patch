@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 6f962e035903f67b4a24829d385da29a06edd5e8 Mon Sep 17 00:00:00 2001
 From: Maxim Menshikov <maximmenshchikov@gmail.com>
 Date: Tue, 8 Sep 2026 23:19:24 +0100
-Subject: [PATCH 03/11] [RISC-V] Make the native build's ISA string and ABI
+Subject: [PATCH] [RISC-V] Make the native build's ISA string and ABI
  configurable
 
 The native runtime is compiled -march=rv64gc -mabi=lp64d unconditionally, so a
@@ -22,15 +22,16 @@ are passed at link time as well, so the driver selects the matching CRT and
 builtins.
 
 This mirrors how armel selects -mfloat-abi=softfp a few lines above.
+
+Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
- eng/native/configurecompiler.cmake | 18 ++++++++++++++++--
- 1 file changed, 16 insertions(+), 2 deletions(-)
+ eng/native/configurecompiler.cmake | 35 ++++++++++++++++++++++++++++--
+ 1 file changed, 33 insertions(+), 2 deletions(-)
 
 diff --git a/eng/native/configurecompiler.cmake b/eng/native/configurecompiler.cmake
-index bc5fcb1..8b29d1a 100644
 --- a/eng/native/configurecompiler.cmake
 +++ b/eng/native/configurecompiler.cmake
-@@ -915,8 +915,39 @@ if(CLR_CMAKE_HOST_UNIX_ARMV6)
+@@ -915,8 +915,50 @@ if(CLR_CMAKE_HOST_UNIX_ARMV6)
  endif(CLR_CMAKE_HOST_UNIX_ARMV6)
  
  if(CLR_CMAKE_HOST_UNIX_RISCV64)
@@ -59,9 +60,20 @@ index bc5fcb1..8b29d1a 100644
 +    set(CLR_CMAKE_RISCV64_MABI "$ENV{CLR_CMAKE_RISCV64_MABI}")
 +  endif()
 +
++  # Decide whether the ISA string selects the A extension. Only the single-letter
++  # part counts: a multi-letter extension whose name contains "a" (Zba, for one)
++  # is not the A extension, and "g" is shorthand for imafd and so implies it.
++  string(REGEX REPLACE "_.*$" "" _riscv_single_letter "${CLR_CMAKE_RISCV64_MARCH}")
++  string(REGEX REPLACE "^rv[0-9]+" "" _riscv_single_letter "${_riscv_single_letter}")
++  if(_riscv_single_letter MATCHES "[ag]")
++    set(_riscv_has_a ON)
++  else()
++    set(_riscv_has_a OFF)
++  endif()
++
 +  # Without the A extension every __atomic_* call is "not lock-free" and clang
 +  # warns; the runtime builds with -Werror, which would make that fatal.
-+  if(NOT CLR_CMAKE_RISCV64_MARCH MATCHES "a")
++  if(NOT _riscv_has_a)
 +    add_compile_options(-Wno-atomic-alignment)
 +  endif()
 +

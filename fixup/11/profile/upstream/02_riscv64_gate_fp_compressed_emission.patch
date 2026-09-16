@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 02de44fcd85eab7613f52636b756bb41f8e94142 Mon Sep 17 00:00:00 2001
 From: Maxim Menshikov <maxim@menshikov.org>
 Date: Fri, 4 Sep 2026 14:06:14 +0100
-Subject: [PATCH 02/11] [RISC-V] Gate FP and compressed emission on the F and C
+Subject: [PATCH] [RISC-V] Gate FP and compressed emission on the F and C
  instruction sets
 
 With F, D, C and A described as instruction sets, let the riscv64 backend
@@ -19,16 +19,17 @@ false outside xarch and arm64; enable the real check for riscv64 too.
 
 Both are no-ops on the rv64gc baseline, where F, D, C and A are always
 present.
+
+Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
  src/coreclr/jit/compiler.h      |  2 +-
  src/coreclr/jit/emitriscv64.cpp | 30 ++++++++++++++++++++++++++++++
  2 files changed, 31 insertions(+), 1 deletion(-)
 
 diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
-index 6e9141f4..5265ce80 100644
 --- a/src/coreclr/jit/compiler.h
 +++ b/src/coreclr/jit/compiler.h
-@@ -10911,7 +10911,7 @@ private:
+@@ -10926,7 +10926,7 @@ private:
      // support/nonsupport for an instruction set
      bool compIsaSupportedDebugOnly(CORINFO_InstructionSet isa) const
      {
@@ -38,7 +39,6 @@ index 6e9141f4..5265ce80 100644
  #else
          return false;
 diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
-index 9dcd3a29..02c4ddb5 100644
 --- a/src/coreclr/jit/emitriscv64.cpp
 +++ b/src/coreclr/jit/emitriscv64.cpp
 @@ -1012,6 +1012,13 @@ void emitter::emitIns_R_R_R(

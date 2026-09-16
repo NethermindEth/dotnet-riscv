@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 6e5bd1709f19702696bf8f35f26eadefcb189dce Mon Sep 17 00:00:00 2001
 From: Maxim Menshikov <maximmenshchikov@gmail.com>
 Date: Wed, 9 Sep 2026 11:27:25 +0100
-Subject: [PATCH 10/11] [RISC-V] Generate code for the soft-float target
+Subject: [PATCH] [RISC-V] Generate code for the soft-float target
 
 The IR keeps TYP_FLOAT and TYP_DOUBLE; what changes under the soft-float ABI is
 their register class, which becomes VTR_INT. Most of the backend already decides
@@ -16,6 +16,8 @@ check on the exponent field. FP Math intrinsics are declined by type and remain
 calls to the managed implementations. The debug JIT asserts on any F/D opcode
 reaching the emitter when F is not in the instruction set, so an unexpanded node
 fails on the method that produced it.
+
+Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
  src/coreclr/jit/codegencommon.cpp             |   9 +
  src/coreclr/jit/codegenriscv64.cpp            |  20 +
@@ -39,10 +41,9 @@ fails on the method that produced it.
  19 files changed, 620 insertions(+), 24 deletions(-)
 
 diff --git a/src/coreclr/jit/codegencommon.cpp b/src/coreclr/jit/codegencommon.cpp
-index fe101ab2..9aa94c64 100644
 --- a/src/coreclr/jit/codegencommon.cpp
 +++ b/src/coreclr/jit/codegencommon.cpp
-@@ -8636,6 +8636,15 @@ void CodeGen::genPoisonFrame(regMaskTP regLiveIn)
+@@ -8611,6 +8611,15 @@ void CodeGen::genPoisonFrame(regMaskTP regLiveIn)
  //
  void CodeGen::genBitCast(var_types targetType, regNumber targetReg, var_types srcType, regNumber srcReg)
  {
@@ -59,7 +60,6 @@ index fe101ab2..9aa94c64 100644
      assert(srcFltReg == genIsValidFloatReg(srcReg));
  
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
-index 7a50852c..3c177717 100644
 --- a/src/coreclr/jit/codegenriscv64.cpp
 +++ b/src/coreclr/jit/codegenriscv64.cpp
 @@ -1008,6 +1008,26 @@ void CodeGen::genSetRegToConst(regNumber targetReg, var_types targetType, GenTre
@@ -90,7 +90,6 @@ index 7a50852c..3c177717 100644
              int64_t bits;
              if (emitter::isSingleInstructionFpImm(constValue, size, &bits))
 diff --git a/src/coreclr/jit/compiler.cpp b/src/coreclr/jit/compiler.cpp
-index a57582b8..13e33751 100644
 --- a/src/coreclr/jit/compiler.cpp
 +++ b/src/coreclr/jit/compiler.cpp
 @@ -53,6 +53,9 @@ MethodSet* Compiler::s_pJitMethodSet               = nullptr;
@@ -170,10 +169,9 @@ index a57582b8..13e33751 100644
      // Armel is unconditionally enabled in the JIT. Verify that the VM side agrees.
      assert(jitFlags->IsSet(JitFlags::JIT_FLAG_SOFTFP_ABI));
 diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
-index d03269d7..13f34968 100644
 --- a/src/coreclr/jit/compiler.h
 +++ b/src/coreclr/jit/compiler.h
-@@ -7262,6 +7262,15 @@ private:
+@@ -7273,6 +7273,15 @@ private:
      bool fgIsBlockCold(BasicBlock* block);
  
      GenTree* fgMorphCastIntoHelper(GenTree* tree, int helper, GenTree* oper);
@@ -190,7 +188,6 @@ index d03269d7..13f34968 100644
      GenTree* fgMorphIntoHelperCall(
          GenTree* tree, int helper, bool morphArgs, GenTree* arg1 = nullptr, GenTree* arg2 = nullptr);
 diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
-index 02c4ddb5..3620f01a 100644
 --- a/src/coreclr/jit/emitriscv64.cpp
 +++ b/src/coreclr/jit/emitriscv64.cpp
 @@ -4994,7 +4994,7 @@ void emitter::emitInsLoadStoreOp(instruction ins, emitAttr attr, regNumber dataR
@@ -203,7 +200,6 @@ index 02c4ddb5..3620f01a 100644
                  {
                      regNumber addrReg = needTemp ? codeGen->internalRegisters.GetSingle(indir) : dataReg;
 diff --git a/src/coreclr/jit/flowgraph.cpp b/src/coreclr/jit/flowgraph.cpp
-index c94494d5..e34cb9b2 100644
 --- a/src/coreclr/jit/flowgraph.cpp
 +++ b/src/coreclr/jit/flowgraph.cpp
 @@ -1350,6 +1350,13 @@ bool Compiler::fgCastRequiresHelper(var_types fromType, var_types toType, bool o
@@ -230,7 +226,6 @@ index c94494d5..e34cb9b2 100644
                  m_compiler->compFloatingPointUsed = true;
              }
 diff --git a/src/coreclr/jit/importer.cpp b/src/coreclr/jit/importer.cpp
-index 9749ce52..b2d6442b 100644
 --- a/src/coreclr/jit/importer.cpp
 +++ b/src/coreclr/jit/importer.cpp
 @@ -41,7 +41,7 @@ void Compiler::impPushOnStack(GenTree* tree, typeInfo ti)
@@ -243,10 +238,9 @@ index 9749ce52..b2d6442b 100644
          compFloatingPointUsed = true;
      }
 diff --git a/src/coreclr/jit/importercalls.cpp b/src/coreclr/jit/importercalls.cpp
-index c31a226f..bc8ecc43 100644
 --- a/src/coreclr/jit/importercalls.cpp
 +++ b/src/coreclr/jit/importercalls.cpp
-@@ -5776,7 +5776,8 @@ GenTree* Compiler::impIntrinsic(CORINFO_CLASS_HANDLE    clsHnd,
+@@ -5796,7 +5796,8 @@ GenTree* Compiler::impIntrinsic(CORINFO_CLASS_HANDLE    clsHnd,
  #endif // FEATURE_HW_INTRINSICS
  
  #ifdef TARGET_RISCV64
@@ -256,7 +250,7 @@ index c31a226f..bc8ecc43 100644
                  {
                      GenTree* op2 = impImplicitR4orR8Cast(impPopStack().val, callType);
                      GenTree* op1 = impImplicitR4orR8Cast(impPopStack().val, callType);
-@@ -11394,6 +11395,15 @@ GenTree* Compiler::impMathIntrinsic(CORINFO_METHOD_HANDLE method,
+@@ -11412,6 +11413,15 @@ GenTree* Compiler::impMathIntrinsic(CORINFO_METHOD_HANDLE method,
      assert(IsMathIntrinsic(intrinsicName));
      assert(isSpecial != nullptr);
  
@@ -273,7 +267,6 @@ index c31a226f..bc8ecc43 100644
  
      bool isIntrinsicImplementedByUserCall = IsIntrinsicImplementedByUserCall(intrinsicName);
 diff --git a/src/coreclr/jit/instr.cpp b/src/coreclr/jit/instr.cpp
-index cb5c3396..9ba41860 100644
 --- a/src/coreclr/jit/instr.cpp
 +++ b/src/coreclr/jit/instr.cpp
 @@ -2156,8 +2156,9 @@ instruction CodeGenInterface::ins_Load(var_types srcType, bool aligned /*=false*
@@ -299,7 +292,6 @@ index cb5c3396..9ba41860 100644
              ins = INS_sd;
  #else
 diff --git a/src/coreclr/jit/jit.h b/src/coreclr/jit/jit.h
-index 376fc80e..7fa7a798 100644
 --- a/src/coreclr/jit/jit.h
 +++ b/src/coreclr/jit/jit.h
 @@ -476,6 +476,12 @@ public:
@@ -316,10 +308,9 @@ index 376fc80e..7fa7a798 100644
  #ifdef FEATURE_HFA
  #undef FEATURE_HFA
 diff --git a/src/coreclr/jit/lclvars.cpp b/src/coreclr/jit/lclvars.cpp
-index 87a2f95e..9f12c4c7 100644
 --- a/src/coreclr/jit/lclvars.cpp
 +++ b/src/coreclr/jit/lclvars.cpp
-@@ -672,7 +672,10 @@ void Compiler::lvaInitUserArgs(unsigned* curVarNum, unsigned skipArgs, unsigned
+@@ -676,7 +676,10 @@ void Compiler::lvaInitUserArgs(unsigned* curVarNum, unsigned skipArgs, unsigned
          }
  #endif
  
@@ -331,7 +322,7 @@ index 87a2f95e..9f12c4c7 100644
          {
  #ifndef TARGET_X86
              // TODO-CQ: We shouldn't have to go as far as to declare these
-@@ -893,7 +896,7 @@ void Compiler::lvaInitVarDsc(LclVarDsc*              varDsc,
+@@ -897,7 +900,7 @@ void Compiler::lvaInitVarDsc(LclVarDsc*              varDsc,
      }
  
      var_types type = JITtype2varType(corInfoType);
@@ -341,7 +332,6 @@ index 87a2f95e..9f12c4c7 100644
          compFloatingPointUsed = true;
      }
 diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
-index d425a72e..7458db57 100644
 --- a/src/coreclr/jit/lower.cpp
 +++ b/src/coreclr/jit/lower.cpp
 @@ -5528,7 +5528,10 @@ void Lowering::LowerFieldListToFieldListOfRegisters(GenTreeFieldList*   fieldLis
@@ -357,7 +347,6 @@ index d425a72e..7458db57 100644
                  assert((genTypeSize(value) == 4) || (genTypeSize(value) == 8));
                  var_types castType = genTypeSize(value) == 4 ? TYP_INT : TYP_LONG;
 diff --git a/src/coreclr/jit/lsra.cpp b/src/coreclr/jit/lsra.cpp
-index faf1b4b1..ef29f805 100644
 --- a/src/coreclr/jit/lsra.cpp
 +++ b/src/coreclr/jit/lsra.cpp
 @@ -1009,6 +1009,14 @@ LinearScan::LinearScan(Compiler* theCompiler)
@@ -376,7 +365,6 @@ index faf1b4b1..ef29f805 100644
  #if defined(TARGET_XARCH)
  #if defined(TARGET_AMD64)
 diff --git a/src/coreclr/jit/lsrabuild.cpp b/src/coreclr/jit/lsrabuild.cpp
-index 6943985a..027b10f2 100644
 --- a/src/coreclr/jit/lsrabuild.cpp
 +++ b/src/coreclr/jit/lsrabuild.cpp
 @@ -1105,7 +1105,7 @@ bool LinearScan::buildKillPositionsForNode(GenTree* tree, LsraLocation currentLo
@@ -388,7 +376,7 @@ index 6943985a..027b10f2 100644
                          !VarSetOps::IsMember(m_compiler, fpCalleeSaveCandidateVars, varIndex))
                      {
                          continue;
-@@ -4335,6 +4335,15 @@ int LinearScan::BuildReturn(GenTree* tree)
+@@ -4342,6 +4342,15 @@ int LinearScan::BuildReturn(GenTree* tree)
              else
  #endif // FEATURE_MULTIREG_RET
              {
@@ -405,7 +393,6 @@ index 6943985a..027b10f2 100644
                  switch (tree->TypeGet())
                  {
 diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
-index 2531ce69..656d7288 100644
 --- a/src/coreclr/jit/lsrariscv64.cpp
 +++ b/src/coreclr/jit/lsrariscv64.cpp
 @@ -145,7 +145,9 @@ int LinearScan::BuildNode(GenTree* tree)
@@ -429,7 +416,6 @@ index 2531ce69..656d7288 100644
                  {
                      // This offset can't be contained in the ld/sd instruction, so we need an internal register
 diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
-index 07d6822a..f1ae05ca 100644
 --- a/src/coreclr/jit/morph.cpp
 +++ b/src/coreclr/jit/morph.cpp
 @@ -253,6 +253,335 @@ GenTree* Compiler::fgMorphIntoHelperCall(GenTree* tree, int helper, bool morphAr
@@ -843,7 +829,7 @@ index 07d6822a..f1ae05ca 100644
  #ifndef TARGET_64BIT
      else if (varTypeIsLong(srcType))
      {
-@@ -7007,6 +7390,40 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
+@@ -7010,6 +7393,40 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
          // Some arithmetic operators need to use a helper call to the EE
          int helper;
  
@@ -884,7 +870,7 @@ index 07d6822a..f1ae05ca 100644
          case GT_STORE_LCL_VAR:
          case GT_STORE_LCL_FLD:
          {
-@@ -7081,6 +7498,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
+@@ -7084,6 +7501,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
          case GT_MUL:
              noway_assert(op2 != nullptr);
  
@@ -898,7 +884,7 @@ index 07d6822a..f1ae05ca 100644
  #if !defined(TARGET_64BIT) && !defined(TARGET_WASM)
              if (typ == TYP_LONG)
              {
-@@ -7185,6 +7609,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
+@@ -7188,6 +7612,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
              break;
  
          case GT_DIV:
@@ -912,7 +898,7 @@ index 07d6822a..f1ae05ca 100644
              // Convert DIV to UDIV if both op1 and op2 are known to be never negative
              if (varTypeIsIntegral(tree) && op1->IsNeverNegative(this) && op2->IsNeverNegative(this))
              {
-@@ -7480,6 +7911,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
+@@ -7483,6 +7914,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
          case GT_EQ:
          case GT_NE:
          {
@@ -926,7 +912,7 @@ index 07d6822a..f1ae05ca 100644
              if (opts.OptimizationEnabled())
              {
                  GenTree* optimizedTree = gtFoldTypeCompare(tree);
-@@ -7541,6 +7979,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
+@@ -7544,6 +7982,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
  
          case GT_GT:
          {
@@ -941,7 +927,6 @@ index 07d6822a..f1ae05ca 100644
              GenTree* optimizedTree = gtFoldBoxNullable(tree);
  
 diff --git a/src/coreclr/jit/utils.cpp b/src/coreclr/jit/utils.cpp
-index 6bb6059e..221585a7 100644
 --- a/src/coreclr/jit/utils.cpp
 +++ b/src/coreclr/jit/utils.cpp
 @@ -86,7 +86,11 @@ const BYTE varTypeClassification[] = {
@@ -957,7 +942,6 @@ index 6bb6059e..221585a7 100644
  #include "typelist.h"
  #undef DEF_TP
 diff --git a/src/coreclr/jit/vartype.h b/src/coreclr/jit/vartype.h
-index c501dea6..e89f7e55 100644
 --- a/src/coreclr/jit/vartype.h
 +++ b/src/coreclr/jit/vartype.h
 @@ -48,7 +48,13 @@ enum var_types_register
@@ -986,7 +970,6 @@ index c501dea6..e89f7e55 100644
      // Other targets pass them as regular structs - by reference or by value.
      return varTypeIsFloating(vt);
 diff --git a/src/coreclr/nativeaot/Runtime/MathHelpers.cpp b/src/coreclr/nativeaot/Runtime/MathHelpers.cpp
-index 2cd1075b..f33d13ad 100644
 --- a/src/coreclr/nativeaot/Runtime/MathHelpers.cpp
 +++ b/src/coreclr/nativeaot/Runtime/MathHelpers.cpp
 @@ -9,26 +9,22 @@

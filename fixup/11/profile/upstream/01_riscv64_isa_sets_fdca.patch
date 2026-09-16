@@ -1,8 +1,8 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 92567f2ac9b351a1f7156d9e322f3e88d59ae42e Mon Sep 17 00:00:00 2001
 From: Maxim Menshikov <maxim@menshikov.org>
 Date: Fri, 4 Sep 2026 15:26:55 +0100
-Subject: [PATCH 01/11] [RISC-V] Model the F, D, C and A extensions as
- instruction sets
+Subject: [PATCH] [RISC-V] Model the F, D, C and A extensions as instruction
+ sets
 
 riscv64 already models its optional extensions - Zba, Zbb, Zbs and
 Zicond - as InstructionSets, but the base rv64gc extensions are assumed
@@ -28,6 +28,8 @@ supported rv64gc baseline.
 
 The JIT/EE interface GUID is updated, as instruction set definitions are
 part of that contract.
+
+Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
  src/coreclr/inc/clrconfigvalues.h             |  4 ++
  src/coreclr/inc/corinfoinstructionset.h       | 24 +++++++++
@@ -43,7 +45,6 @@ part of that contract.
  11 files changed, 167 insertions(+), 1 deletion(-)
 
 diff --git a/src/coreclr/inc/clrconfigvalues.h b/src/coreclr/inc/clrconfigvalues.h
-index d6badce7..c72eb6df 100644
 --- a/src/coreclr/inc/clrconfigvalues.h
 +++ b/src/coreclr/inc/clrconfigvalues.h
 @@ -712,6 +712,10 @@ RETAIL_CONFIG_DWORD_INFO(EXTERNAL_EnableRiscV64Zba,             W("EnableRiscV64
@@ -58,7 +59,6 @@ index d6badce7..c72eb6df 100644
  
  ///
 diff --git a/src/coreclr/inc/corinfoinstructionset.h b/src/coreclr/inc/corinfoinstructionset.h
-index 2f347572..027c542a 100644
 --- a/src/coreclr/inc/corinfoinstructionset.h
 +++ b/src/coreclr/inc/corinfoinstructionset.h
 @@ -65,6 +65,10 @@ enum CORINFO_InstructionSet
@@ -114,7 +114,6 @@ index 2f347572..027c542a 100644
  #ifdef TARGET_WASM
          case READYTORUN_INSTRUCTION_WasmBase: return InstructionSet_WasmBase;
 diff --git a/src/coreclr/inc/readytoruninstructionset.h b/src/coreclr/inc/readytoruninstructionset.h
-index d2851e91..96121c5d 100644
 --- a/src/coreclr/inc/readytoruninstructionset.h
 +++ b/src/coreclr/inc/readytoruninstructionset.h
 @@ -103,6 +103,10 @@ enum ReadyToRunInstructionSet
@@ -129,7 +128,6 @@ index d2851e91..96121c5d 100644
  };
  
 diff --git a/src/coreclr/jit/compiler.cpp b/src/coreclr/jit/compiler.cpp
-index 137d4aef..6e323316 100644
 --- a/src/coreclr/jit/compiler.cpp
 +++ b/src/coreclr/jit/compiler.cpp
 @@ -1941,6 +1941,35 @@ void Compiler::compSetProcessor()
@@ -168,7 +166,7 @@ index 137d4aef..6e323316 100644
  #endif // TARGET_ARM64
  
      assert(instructionSetFlags.Equals(EnsureInstructionSetFlagsAreValid(instructionSetFlags)));
-@@ -6196,6 +6225,26 @@ int Compiler::compCompileAfterInit(CORINFO_MODULE_HANDLE classPtr,
+@@ -6198,6 +6227,26 @@ int Compiler::compCompileAfterInit(CORINFO_MODULE_HANDLE classPtr,
          {
              instructionSetFlags.AddInstructionSet(InstructionSet_Zicond);
          }
@@ -196,10 +194,9 @@ index 137d4aef..6e323316 100644
  
          // These calls are important and explicitly ordered to ensure that the flags are correct in
 diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
-index 9a4680aa..860afc57 100644
 --- a/src/coreclr/jit/jitconfigvalues.h
 +++ b/src/coreclr/jit/jitconfigvalues.h
-@@ -455,6 +455,10 @@ RELEASE_CONFIG_INTEGER(EnableRiscV64Zba,            "EnableRiscV64Zba",
+@@ -456,6 +456,10 @@ RELEASE_CONFIG_INTEGER(EnableRiscV64Zba,            "EnableRiscV64Zba",
  RELEASE_CONFIG_INTEGER(EnableRiscV64Zbb,            "EnableRiscV64Zbb",          1) // Allows RiscV64 Zbb hardware intrinsics to be disabled
  RELEASE_CONFIG_INTEGER(EnableRiscV64Zbs,            "EnableRiscV64Zbs",          1) // Allows RiscV64 Zbs hardware intrinsics to be disabled
  RELEASE_CONFIG_INTEGER(EnableRiscV64Zicond,         "EnableRiscV64Zicond",       1) // Allows RiscV64 Zicond hardware intrinsics to be disabled
@@ -211,7 +208,6 @@ index 9a4680aa..860afc57 100644
  
  RELEASE_CONFIG_INTEGER(EnableEmbeddedBroadcast,     "EnableEmbeddedBroadcast",   1) // Allows embedded broadcasts to be disabled
 diff --git a/src/coreclr/tools/Common/InstructionSetHelpers.cs b/src/coreclr/tools/Common/InstructionSetHelpers.cs
-index f25320e9..cc484a89 100644
 --- a/src/coreclr/tools/Common/InstructionSetHelpers.cs
 +++ b/src/coreclr/tools/Common/InstructionSetHelpers.cs
 @@ -94,6 +94,16 @@ public static InstructionSetSupport ConfigureInstructionSetSupport(string instru
@@ -232,7 +228,6 @@ index f25320e9..cc484a89 100644
              bool throttleAvx512 = false;
  
 diff --git a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunInstructionSet.cs b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunInstructionSet.cs
-index 4c5574d6..efb7302b 100644
 --- a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunInstructionSet.cs
 +++ b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunInstructionSet.cs
 @@ -106,5 +106,9 @@ public enum ReadyToRunInstructionSet
@@ -246,7 +241,6 @@ index 4c5574d6..efb7302b 100644
      }
  }
 diff --git a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunInstructionSetHelper.cs b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunInstructionSetHelper.cs
-index 632e3053..28d370e3 100644
 --- a/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunInstructionSetHelper.cs
 +++ b/src/coreclr/tools/Common/Internal/Runtime/ReadyToRunInstructionSetHelper.cs
 @@ -77,6 +77,10 @@ public static class ReadyToRunInstructionSetHelper
@@ -261,7 +255,6 @@ index 632e3053..28d370e3 100644
                          default: throw new Exception("Unknown instruction set");
                      }
 diff --git a/src/coreclr/tools/Common/JitInterface/CorInfoInstructionSet.cs b/src/coreclr/tools/Common/JitInterface/CorInfoInstructionSet.cs
-index 870544e2..4feeb6db 100644
 --- a/src/coreclr/tools/Common/JitInterface/CorInfoInstructionSet.cs
 +++ b/src/coreclr/tools/Common/JitInterface/CorInfoInstructionSet.cs
 @@ -63,6 +63,10 @@ public enum InstructionSet
@@ -328,7 +321,6 @@ index 870544e2..4feeb6db 100644
  
                  case TargetArchitecture.Wasm32:
 diff --git a/src/coreclr/tools/Common/JitInterface/ThunkGenerator/InstructionSetDesc.txt b/src/coreclr/tools/Common/JitInterface/ThunkGenerator/InstructionSetDesc.txt
-index a70cd7d9..dd252841 100644
 --- a/src/coreclr/tools/Common/JitInterface/ThunkGenerator/InstructionSetDesc.txt
 +++ b/src/coreclr/tools/Common/JitInterface/ThunkGenerator/InstructionSetDesc.txt
 @@ -26,7 +26,7 @@
@@ -361,7 +353,6 @@ index a70cd7d9..dd252841 100644
  ;                    ,name and aliases           ,archs    ,lower baselines included by implication
  instructionsetgroup  ,x86-64-v2                  ,X64 X86  ,base
 diff --git a/src/coreclr/vm/codeman.cpp b/src/coreclr/vm/codeman.cpp
-index 83793eeb..c83c1376 100644
 --- a/src/coreclr/vm/codeman.cpp
 +++ b/src/coreclr/vm/codeman.cpp
 @@ -1789,6 +1789,33 @@ void EEJitManager::SetCpuInfo()

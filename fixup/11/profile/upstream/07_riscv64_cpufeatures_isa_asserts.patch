@@ -1,18 +1,18 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 1726ae4bbc89bfcb997e59d743a20824ed70b832 Mon Sep 17 00:00:00 2001
 From: Maxim Menshikov <maximmenshchikov@gmail.com>
 Date: Wed, 9 Sep 2026 11:26:55 +0100
-Subject: [PATCH 07/11] [RISC-V] Tie the hwprobe assertion to the build's own
- -march
+Subject: [PATCH] [RISC-V] Tie the hwprobe assertion to the build's own -march
 
 cpufeatures.c asserts the full rv64gc baseline at startup, so a runtime built
 for a narrower ISA fails the assert on hardware that matches what it was built
 for. Assert what the build actually requires instead.
+
+Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
  src/native/minipal/cpufeatures.c | 9 ++++++++-
  1 file changed, 8 insertions(+), 1 deletion(-)
 
 diff --git a/src/native/minipal/cpufeatures.c b/src/native/minipal/cpufeatures.c
-index ed7d7612..f400388f 100644
 --- a/src/native/minipal/cpufeatures.c
 +++ b/src/native/minipal/cpufeatures.c
 @@ -775,9 +775,16 @@ int minipal_getcpufeatures(void)
