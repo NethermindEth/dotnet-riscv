@@ -1,0 +1,111 @@
+RISC-V Zba/Zbb/Zbs lowering fixes found while auditing perf-28's producer assumptions:
+- BSWAP takes its width from the node and a 32-bit result is shifted back arithmetically (srai), so the
+  int32 stays sign-extended as RV64 and perf-28 expect; BSWAP16 keeps its srli.
+- slli.uw masks its shift amount to 6 bits, as genCodeForShift does.
+- a | (1 << b), a ^ (1 << b) and a & ~(1 << b) with a variable index become BIT_* only for 64-bit
+  operations: Zbs has no *w forms, and the 32-bit form needed the index wrapped and the result
+  sign-extended again.
+- ADD_UW/SH(X)ADD_UW no longer absorb a checked int->long cast, and SH(X)ADD no longer absorbs a checked
+  MUL: both folds dropped the overflow check.
+
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -1795,21 +1795,25 @@
+ void CodeGen::genCodeForBswap(GenTree* tree)
+ {
+     assert(tree->OperIs(GT_BSWAP, GT_BSWAP16));
+-    var_types type = tree->gtGetOp1()->TypeGet();
+-    emitAttr  size = emitTypeSize(type);
++    // The width comes from the node: the operand type need not match it.
++    emitAttr  size = emitActualTypeSize(tree);
+     regNumber dest = tree->GetRegNum();
+     regNumber src  = genConsumeReg(tree->gtGetOp1());
+ 
+     assert(m_compiler->compOpportunisticallyDependsOn(InstructionSet_Zbb));
+     emitter& emit = *GetEmitter();
+     emit.emitIns_R_R(INS_rev8, size, dest, src);
+-    if (size < EA_PTRSIZE)
++    if (tree->OperIs(GT_BSWAP16))
+     {
+-        int shiftAmount = tree->OperIs(GT_BSWAP16) ? 48 : 32;
+         // TODO: we need to right-shift the byte-reversed register anyway. Remove the cast (in Lowering::LowerCast?)
+         // wrapping GT_BSWAP16 and pass the exact destination type here, so that this codegen could leave the register
+         // properly extended.
+-        emit.emitIns_R_R_I(INS_srli, size, dest, dest, shiftAmount);
++        emit.emitIns_R_R_I(INS_srli, size, dest, dest, 48);
++    }
++    else if (size == EA_4BYTE)
++    {
++        // Shift arithmetically so the int32 result stays sign-extended, as RV64 expects of 32-bit values.
++        emit.emitIns_R_R_I(INS_srai, size, dest, dest, 32);
+     }
+ 
+     genProduceReg(tree);
+@@ -6486,7 +6490,8 @@
+ 
+     assert(shiftBy->IsCnsIntOrI());
+ 
+-    unsigned shamt = (unsigned)shiftBy->AsIntCon()->IconValue();
++    // Mask like genCodeForShift: an over-shift constant would otherwise spill into the funct6 field.
++    unsigned shamt = (unsigned)shiftBy->AsIntCon()->IconValue() & 0x3F;
+ 
+     GetEmitter()->emitIns_R_R_I(INS_slli_uw, attr, tree->GetRegNum(), tree->gtOp1->GetRegNum(), shamt);
+ 
+diff --git a/src/coreclr/jit/lowerriscv64.cpp b/src/coreclr/jit/lowerriscv64.cpp
+--- a/src/coreclr/jit/lowerriscv64.cpp
++++ b/src/coreclr/jit/lowerriscv64.cpp
+@@ -327,22 +327,14 @@
+                 constant->SetContained();
+             }
+         }
+-        else // op2 is not constant
++        else if (binOp->TypeIs(TYP_LONG)) // op2 is not constant
+         {
+             // a | (1 << b),  a ^ (1 << b),  a & ~(1 << b)   =>   BIT_{SET,INVERT,CLEAR}(a, b)
+-            if (TryLowerBitwiseOpToBitOp(binOp) != nullptr)
+-            {
+-                // binOp is now BIT_{SET,INVERT,CLEAR} with op2 as the (variable) bit index.
+-                if (op1->TypeIs(TYP_INT))
+-                {
+-                    // Zbs instructions don't have *w variants so wrap the bit index to 0-31 manually.
+-                    GenTreeIntCon* mask = m_compiler->gtNewIconNode(0x1F);
+-                    mask->SetContained();
+-                    BlockRange().InsertAfter(op2, mask);
+-                    op2 = m_compiler->gtNewOperNode(GT_AND, op2->TypeGet(), op2, mask);
+-                    BlockRange().InsertAfter(mask, op2);
+-                }
+-            }
++            //
++            // 64-bit only: Zbs has no *w variants, so a 32-bit form would need the bit index wrapped to
++            // 0-31 and the result sign-extended again (bit 31 may change), which is no cheaper than the
++            // shift it replaces.
++            TryLowerBitwiseOpToBitOp(binOp);
+         }
+     }
+ 
+@@ -581,8 +573,9 @@
+     const bool      castUnsigned = varTypeIsUnsigned(castType);
+     const unsigned  castSize     = genTypeSize(castType);
+ 
+-    return varTypeIsIntegralOrI(srcType) && varTypeIsIntegralOrI(castType) && srcSize == 4 && castSize == 8 &&
+-           (castUnsigned || srcUnsigned);
++    // A checked cast must keep its overflow check, which ADD_UW/SH(X)ADD_UW would drop.
++    return !cast->gtOverflow() && varTypeIsIntegralOrI(srcType) && varTypeIsIntegralOrI(castType) && srcSize == 4 &&
++           castSize == 8 && (castUnsigned || srcUnsigned);
+ }
+ 
+ // Determine SH(X)ADD(_UW) node for the given shift amount and signedness
+@@ -658,6 +651,12 @@
+     {
+         return false;
+     }
++
++    // A checked MUL must keep its overflow check, which SH(X)ADD would drop.
++    if (shift->gtOverflowEx())
++    {
++        return false;
++    }
+ 
+     bool isSlliUw = false;
+     if (shift->OperIs(GT_SLLI_UW))

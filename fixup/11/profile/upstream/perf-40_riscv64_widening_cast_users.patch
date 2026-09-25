@@ -1,0 +1,73 @@
+Fixes the lowering cast elision added by perf-28. Its Lowering::TryRemoveCast block drops a signed
+int->long cast over an already sign-extended producer and hands the user the TYP_INT operand, whatever
+the user is. Users that take their width from the operand then emit the 32-bit form:
+- MUL of two widened ints becomes mulw: (long)a * (long)b loses the high half.
+- a saved compare becomes subw: (long)a == b compares only the low 32 bits.
+- LeadingZeroCount/TrailingZeroCount/PopCount become clzw/ctzw/cpopw under Zbb (CastCache computes a
+  hash shift of 25 instead of 57 and indexes out of its table).
+- word-width atomics, stack-passed arguments, BSWAP, unsigned int->fp and the Zbs index are affected the
+  same way.
+Keep the widening elision only under users whose width comes from their own type (ADD, SUB, NEG, NOT, the
+value operand of a shift or rotate, STOREIND data, STORE_LCL_VAR, RETURN, integer Min/Max). Same-width
+int->int elision is unchanged.
+
+diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
+--- a/src/coreclr/jit/lower.cpp
++++ b/src/coreclr/jit/lower.cpp
+@@ -10380,18 +10380,48 @@
+         if ((srcType == TYP_INT) && !node->IsUnsigned() &&
+             ((dstType == TYP_INT) || (dstType == TYP_LONG) || (dstType == TYP_I_IMPL)) && op1IsSignExtended)
+         {
+-            JITDUMP("Eliding redundant sign-extending cast over a sign-extended producer\n");
+-            LIR::Use use;
+-            if (BlockRange().TryGetUse(node, &use))
++            LIR::Use   use;
++            const bool hasUse = BlockRange().TryGetUse(node, &use);
++
++            // Dropping an int->int cast keeps the operand type. Dropping an int->long cast hands the user a
++            // TYP_INT operand instead of a TYP_LONG one, which is only value-correct if the user takes its
++            // width from its own type and reads the full register. Many take it from the operand: bit
++            // counts (clzw/ctzw/cpopw), int->fp casts (fcvt.*.wu), atomics (amo*.w, lw/sw), stack call
++            // arguments (sw), MUL (mulw for int*int), BSWAP, saved EQ/NE compares (subw) and the Zbs
++            // lowering (5-bit index). So only elide it under users known to be width-agnostic.
++            bool canElide = true;
++            if (hasUse && (genActualType(dstType) == TYP_LONG))
+             {
+-                use.ReplaceWith(op1);
++                GenTree* const user = use.User();
++                if (user->OperIs(GT_INTRINSIC))
++                {
++                    // Integer min/max are full-register instructions whatever the operand type.
++                    const NamedIntrinsic ni = user->AsIntrinsic()->gtIntrinsicName;
++                    canElide = (ni == NI_System_Math_Min) || (ni == NI_System_Math_Max) ||
++                               (ni == NI_System_Math_MinUnsigned) || (ni == NI_System_Math_MaxUnsigned);
++                }
++                else
++                {
++                    canElide = user->OperIs(GT_ADD, GT_SUB, GT_NEG, GT_NOT, GT_STORE_LCL_VAR, GT_RETURN) ||
++                               (user->OperIs(GT_LSH, GT_RSH, GT_RSZ, GT_ROL, GT_ROR) && (user->gtGetOp1() == node)) ||
++                               (user->OperIs(GT_STOREIND) && (user->AsStoreInd()->Data() == node));
++                }
+             }
+-            else
++
++            if (canElide)
+             {
+-                op1->SetUnusedValue();
++                JITDUMP("Eliding redundant sign-extending cast over a sign-extended producer\n");
++                if (hasUse)
++                {
++                    use.ReplaceWith(op1);
++                }
++                else
++                {
++                    op1->SetUnusedValue();
++                }
++                BlockRange().Remove(node);
++                return true;
+             }
+-            BlockRange().Remove(node);
+-            return true;
+         }
+     }
+ #endif // TARGET_RISCV64
