@@ -1,0 +1,954 @@
+RISC-V extension tracking and related register-allocation fixes, applied after perf-40/41/42.
+- Values whose register is already zero-extended (compares, lbu/lhu, small unsigned casts, AND with a
+  non-negative operand, srliw by a constant) or sign-extended (W-form arithmetic, loads, long->int casts,
+  logic on extended operands) are recognised by checked predicates; their redundant casts are dropped,
+  sh*add.uw/add.uw become sh*add/add, and a remaining zero-extension is slli.uw rd,rs,0 rather than
+  zext.w (add.uw). Morph and assertion prop keep never-negative int->long casts as sign-extensions and
+  bounds-checked array indices use a sign-extending cast, which is usually free on RV64.
+- A fixed-point pass at the end of lowering finds INT locals whose every definition is extended (struct
+  fields only while the struct is never defined as a whole). Parameters, fields mapped from parameter
+  registers and INT call results are covered by an in-place sext.w in the prolog or at the store when
+  needed. This replaces perf-28's blanket assumption that every INT local, parameter and call result is
+  sign-extended with the checked predicates.
+- Fast tail calls no longer contribute a register kill set in LSRA; the kills pushed values live into
+  early-exit blocks into callee-saved registers, so every tail-calling method saved and restored them.
+- The block-copy unroll gets a second LSRA internal register instead of using RA, so leaf RA elision
+  (perf-42) also applies to methods with small struct copies.
+- Zero and known-extended INT moves use li/mv instead of sext.w; a zero-extended INT load is one lwu.
+
+--- a/src/coreclr/jit/assertionprop.cpp
++++ b/src/coreclr/jit/assertionprop.cpp
+@@ -5002,8 +5002,9 @@
+     GenTree* lcl = op1->gtEffectiveVal();
+ 
+     // Try and see if we can make this cast into a cheaper zero-extending version
+-    // if the input is known to be non-negative.
+-    if (!cast->IsUnsigned() && genActualTypeIsInt(lcl) && cast->TypeIs(TYP_LONG) && (TARGET_POINTER_SIZE == 8))
++    // if the input is known to be non-negative. (Not on RISC-V: see fgOptimizeCast.)
++    if (!cast->IsUnsigned() && genActualTypeIsInt(lcl) && cast->TypeIs(TYP_LONG) && (TARGET_POINTER_SIZE == 8) &&
++        !TargetArchitecture::IsRiscV64)
+     {
+         bool isKnownNonZero;
+         bool isKnownNonNegative;
+--- a/src/coreclr/jit/codegencommon.cpp
++++ b/src/coreclr/jit/codegencommon.cpp
+@@ -3717,6 +3717,42 @@
+             *initRegStillZeroed = false;
+         }
+     }
++
++#ifdef TARGET_RISCV64
++    // Lowering took these INT locals to be sign-extended (see Lowering::ComputeSignExtendedLocals). One homed
++    // in its incoming register still holds whatever the caller left in the upper half.
++    for (unsigned lclNum = 0; lclNum < m_compiler->lvaCount; lclNum++)
++    {
++        const LclVarDsc* const varDsc = m_compiler->lvaGetDesc(lclNum);
++        if (!varDsc->lvSignExtendedInt || !varDsc->lvIsInReg() || (!varDsc->lvIsParam && !varDsc->lvIsParamRegTarget))
++        {
++            continue;
++        }
++
++        regNumber incomingReg = REG_NA;
++        if (varDsc->lvIsParamRegTarget)
++        {
++            for (int i = 0; i < m_compiler->m_paramRegLocalMappings->Height(); i++)
++            {
++                const ParameterRegisterLocalMapping& mapping = m_compiler->m_paramRegLocalMappings->BottomRef(i);
++                if (mapping.LclNum == lclNum)
++                {
++                    incomingReg = mapping.RegisterSegment->GetRegister();
++                }
++            }
++        }
++        else if ((lclNum < m_compiler->info.compArgsCount) &&
++                 m_compiler->lvaGetParameterABIInfo(lclNum).HasExactlyOneRegisterSegment())
++        {
++            incomingReg = m_compiler->lvaGetParameterABIInfo(lclNum).Segment(0).GetRegister();
++        }
++
++        if ((incomingReg == varDsc->GetRegNum()) && ((calleeRegArgMaskLiveIn & genRegMask(incomingReg)) != 0))
++        {
++            GetEmitter()->emitIns_R_R(INS_sext_w, EA_4BYTE, incomingReg, incomingReg);
++        }
++    }
++#endif // TARGET_RISCV64
+ }
+ 
+ // -----------------------------------------------------------------------------
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -1469,7 +1469,18 @@
+             }
+             else
+             {
+-                inst_Mov(targetType, targetReg, dataReg, true);
++                // An INT already sign-extended moves with mv, which costs ZisK no ALU operation.
++                const bool isSignExtended =
++                    (targetType == TYP_INT) && Lowering::IsInt32SignExtendedInReg(m_compiler, data);
++                inst_Mov(isSignExtended ? TYP_LONG : targetType, targetReg, dataReg, true);
++#ifdef TARGET_RISCV64
++                // Lowering took the local to be sign-extended (see Lowering::ComputeSignExtendedLocals), which
++                // the move gives a call result unless it was skipped.
++                if (varDsc->lvSignExtendedInt && (targetReg == dataReg) && data->gtSkipReloadOrCopy()->IsCall())
++                {
++                    emit->emitIns_R_R(INS_sext_w, EA_4BYTE, targetReg, targetReg);
++                }
++#endif
+             }
+             genProduceReg(lclNode);
+         }
+@@ -3387,52 +3398,6 @@
+ }
+ 
+ //------------------------------------------------------------------------
+-// RiscV64ValueIsSignExtendedInt32: does this node leave its result already
+-// sign-extended from bit 31 into bits [63:32], so a following `sext.w` (e.g. the
+-// 32-bit compare-operand normalization in genCodeForCompare / genCodeForJumpCompare)
+-// would be a no-op and can be skipped?
+-//
+-// Covers RV64 W-form producers (addw/subw/mulw/divw/sllw/...), 4-byte/byte/half loads
+-// (lb/lh/lw sign-extend; lbu/lhu are non-negative), and TYP_INT locals/params (kept
+-// sign-extended by the ABI and int-store paths). TYP_UINT loads are excluded (lwu
+-// zero-extends; bit 31 may be set). Keep in sync with the matching check in
+-// Lowering::TryRemoveCast (lower.cpp, TARGET_RISCV64).
+-//
+-static bool RiscV64ValueIsSignExtendedInt32(GenTree* node)
+-{
+-    if (genActualType(node->TypeGet()) != TYP_INT)
+-    {
+-        return false;
+-    }
+-    // Producers whose 32-bit result is already sign-extended into bits [63:32]:
+-    //  - W-form arithmetic/shifts (addw/subw/mulw/divw/sllw/srlw/sraw/...) always sext;
+-    //  - GT_AND/OR/XOR of sign-extended int32 operands stay sign-extended on RV64;
+-    //  - a GT_CALL int return is sign-extended by the ABI, like incoming params;
+-    //  - a TYP_INT constant is materialized sign-extended; an array length is a
+-    //    non-negative, sign-extending load.
+-    if (node->OperIs(GT_ADD, GT_SUB, GT_MUL, GT_DIV, GT_MOD, GT_UDIV, GT_UMOD, GT_LSH, GT_RSH, GT_RSZ, GT_NEG,
+-                     GT_AND, GT_OR, GT_XOR, GT_CALL, GT_CNS_INT, GT_ARR_LENGTH))
+-    {
+-        return true;
+-    }
+-    if (node->OperIs(GT_CAST))
+-    {
+-        // A signed cast sign-extends its result; an unsigned (zero-extending) cast does not.
+-        return !node->IsUnsigned();
+-    }
+-    if (node->OperIs(GT_IND, GT_LCL_FLD))
+-    {
+-        const var_types t = node->TypeGet();
+-        return (t == TYP_INT) || (t == TYP_BYTE) || (t == TYP_UBYTE) || (t == TYP_SHORT) || (t == TYP_USHORT);
+-    }
+-    if (node->OperIs(GT_LCL_VAR))
+-    {
+-        return node->TypeGet() == TYP_INT;
+-    }
+-    return false;
+-}
+-
+-//------------------------------------------------------------------------
+ // genCodeForCompare: Produce code for a GT_EQ/GT_NE/GT_LT/GT_LE/GT_GE/GT_GT node.
+ //
+ // Arguments:
+@@ -5039,6 +5004,12 @@
+         targetType = emitActualTypeSize(targetType) == EA_4BYTE ? TYP_INT : TYP_LONG;
+     }
+ 
++    // An INT already sign-extended moves with mv, which costs ZisK no ALU operation.
++    if ((targetType == TYP_INT) && Lowering::IsInt32SignExtendedInReg(m_compiler, op1))
++    {
++        targetType = TYP_LONG;
++    }
++
+     // If child node is not already in the register we need, move it
+     GetEmitter()->emitIns_Mov(ins_Copy(op1->GetRegNum(), targetType), emitActualTypeSize(targetType), targetReg,
+                               op1->GetRegNum(), true);
+@@ -5064,7 +5035,7 @@
+     if (genActualType(length) == TYP_INT)
+     {
+         regNumber tempReg = internalRegisters.Extract(oper);
+-        if (!RiscV64ValueIsSignExtendedInt32(length))
++        if (!Lowering::IsInt32SignExtendedInReg(m_compiler, length))
+         {
+             GetEmitter()->emitIns_R_R(INS_sext_w, EA_4BYTE, tempReg, lengthReg);
+             lengthReg = tempReg;
+@@ -5073,7 +5044,7 @@
+     if (genActualType(index) == TYP_INT)
+     {
+         regNumber tempReg = internalRegisters.GetSingle(oper);
+-        if (!RiscV64ValueIsSignExtendedInt32(index))
++        if (!Lowering::IsInt32SignExtendedInReg(m_compiler, index))
+         {
+             GetEmitter()->emitIns_R_R(INS_sext_w, EA_4BYTE, tempReg, indexReg);
+             indexReg = tempReg;
+@@ -5553,6 +5524,7 @@
+ static void genRiscV64CpBlkUnrollWide(emitter*  emit,
+                                       unsigned  size,
+                                       regNumber tempReg,
++                                      regNumber tempReg2,
+                                       unsigned  srcLclNum,
+                                       regNumber srcAddrBaseReg,
+                                       int       srcOffset,
+@@ -5646,7 +5618,8 @@
+     assert(srcOffset < INT32_MAX - static_cast<int>(size));
+     assert(dstOffset < INT32_MAX - static_cast<int>(size));
+ 
+-    regNumber tempReg = internalRegisters.Extract(cpBlkNode, RBM_ALLINT);
++    regNumber tempReg  = internalRegisters.Extract(cpBlkNode, RBM_ALLINT);
++    regNumber tempReg2 = (size >= 2 * REGSIZE_BYTES) ? internalRegisters.Extract(cpBlkNode, RBM_ALLINT) : REG_NA;
+ 
+     // Unaligned access is forbidden here (JitNoUnalignedAccess). When the operands are
+     // in registers and the contained offsets keep the alignment question on the
+@@ -5685,7 +5658,7 @@
+         if (slowLabel != nullptr)
+         {
+             // Wide (aligned) path first, then jump over the slow path.
+-            genRiscV64CpBlkUnrollWide(emit, size, tempReg, srcLclNum, srcAddrBaseReg, srcOffset, dstLclNum,
++            genRiscV64CpBlkUnrollWide(emit, size, tempReg, tempReg2, srcLclNum, srcAddrBaseReg, srcOffset, dstLclNum,
+                                       dstAddrBaseReg, dstOffset);
+             emit->emitIns_J(INS_j, doneLabel);
+             genDefineTempLabel(slowLabel);
+@@ -5722,8 +5695,8 @@
+         return;
+     }
+ 
+-    genRiscV64CpBlkUnrollWide(emit, size, tempReg, srcLclNum, srcAddrBaseReg, srcOffset, dstLclNum, dstAddrBaseReg,
+-                              dstOffset);
++    genRiscV64CpBlkUnrollWide(emit, size, tempReg, tempReg2, srcLclNum, srcAddrBaseReg, srcOffset, dstLclNum,
++                              dstAddrBaseReg, dstOffset);
+ 
+     if (cpBlkNode->IsVolatile())
+     {
+@@ -5740,6 +5713,7 @@
+ static void genRiscV64CpBlkUnrollWide(emitter*  emit,
+                                       unsigned  size,
+                                       regNumber tempReg,
++                                      regNumber tempReg2,
+                                       unsigned  srcLclNum,
+                                       regNumber srcAddrBaseReg,
+                                       int       srcOffset,
+@@ -5749,7 +5723,7 @@
+ {
+     if (size >= 2 * REGSIZE_BYTES)
+     {
+-        regNumber tempReg2 = REG_RA;
++        assert(tempReg2 != REG_NA);
+ 
+         for (unsigned regSize = 2 * REGSIZE_BYTES; size >= regSize;
+              size -= regSize, srcOffset += regSize, dstOffset += regSize)
+@@ -6303,9 +6277,19 @@
+     const regNumber     dstReg  = cast->GetRegNum();
+     const unsigned char size    = 32;
+ 
+-    assert(genIsValidIntReg(srcReg));
+     assert(genIsValidIntReg(dstReg));
+ 
++    if (cast->gtGetOp1()->isContained())
++    {
++        // A zero-extended INT load (see Lowering::ContainCheckCast).
++        assert(cast->gtGetOp1()->OperIs(GT_IND) && cast->IsUnsigned());
++        emit->emitInsLoadStoreOp(INS_lwu, EA_4BYTE, dstReg, cast->gtGetOp1()->AsIndir());
++        genProduceReg(cast);
++        return;
++    }
++
++    assert(genIsValidIntReg(srcReg));
++
+     GenIntCastDesc desc(cast);
+ 
+     if (desc.CheckKind() != GenIntCastDesc::CHECK_NONE)
+@@ -6313,6 +6297,21 @@
+         genIntCastOverflowCheck(cast, desc, srcReg);
+     }
+ 
++    if (desc.CheckKind() == GenIntCastDesc::CHECK_NONE)
++    {
++        // The source register may already hold the extended value.
++        GenTree* const src = cast->gtGetOp1();
++        if (((desc.ExtendKind() == GenIntCastDesc::ZERO_EXTEND_INT) &&
++             Lowering::IsInt32NonNegativeInReg(m_compiler, src)) ||
++            ((desc.ExtendKind() == GenIntCastDesc::SIGN_EXTEND_INT) && (srcType == TYP_INT) &&
++             Lowering::IsInt32SignExtendedInReg(m_compiler, src)))
++        {
++            emit->emitIns_Mov(INS_mov, EA_PTRSIZE, dstReg, srcReg, /* canSkip */ true);
++            genProduceReg(cast);
++            return;
++        }
++    }
++
+     if ((desc.ExtendKind() != GenIntCastDesc::COPY) || (srcReg != dstReg))
+     {
+         switch (desc.ExtendKind())
+@@ -6355,7 +6354,9 @@
+             case GenIntCastDesc::ZERO_EXTEND_INT:
+                 if (m_compiler->compOpportunisticallyDependsOn(InstructionSet_Zba))
+                 {
+-                    emit->emitIns_R_R_R(INS_add_uw, EA_PTRSIZE, dstReg, srcReg, REG_R0);
++                    // slli.uw rd, rs, 0 rather than zext.w (add.uw rd, rs, zero): ZisK proves slli.uw as one
++                    // native operation but transpiles add.uw into two steps.
++                    emit->emitIns_R_R_I(INS_slli_uw, EA_PTRSIZE, dstReg, srcReg, 0);
+                 }
+                 else
+                 {
+@@ -6619,6 +6620,17 @@
+ 
+     emitAttr attr = emitActualTypeSize(tree);
+ 
++    // The .uw forms zero-extend the index, which is a no-op when it is known to be non-negative.
++    if (Lowering::IsInt32NonNegativeInReg(m_compiler, tree->gtOp1))
++    {
++        if (ins == INS_sh1add_uw)
++            ins = INS_sh1add;
++        else if (ins == INS_sh2add_uw)
++            ins = INS_sh2add;
++        else if (ins == INS_sh3add_uw)
++            ins = INS_sh3add;
++    }
++
+     GetEmitter()->emitIns_R_R_R(ins, attr, tree->GetRegNum(), tree->gtOp1->GetRegNum(), tree->gtOp2->GetRegNum());
+ 
+     genProduceReg(tree);
+@@ -6675,8 +6687,9 @@
+ 
+     emitAttr attr = emitActualTypeSize(tree);
+ 
+-    GetEmitter()->emitIns_R_R_R(INS_add_uw, attr, tree->GetRegNum(), tree->gtOp1->GetRegNum(),
+-                                tree->gtOp2->GetRegNum());
++    // add.uw zero-extends op1, which is a no-op when it is known to be non-negative.
++    instruction ins = Lowering::IsInt32NonNegativeInReg(m_compiler, tree->gtOp1) ? INS_add : INS_add_uw;
++    GetEmitter()->emitIns_R_R_R(ins, attr, tree->GetRegNum(), tree->gtOp1->GetRegNum(), tree->gtOp2->GetRegNum());
+ 
+     genProduceReg(tree);
+ }
+@@ -7002,13 +7015,6 @@
+                 return;
+             }
+ 
+-            if (node->OperIs(GT_STORE_BLK))
+-            {
+-                // genCodeForCpBlkUnroll uses REG_RA (tempReg2) for >=16-byte copies, so do
+-                // not elide any block store (none occur in the hot leaf getters anyway).
+-                return;
+-            }
+-
+             if (node->OperIs(GT_STOREIND) && varTypeIsGC(node->TypeGet()))
+             {
+                 return;
+--- a/src/coreclr/jit/compiler.h
++++ b/src/coreclr/jit/compiler.h
+@@ -609,6 +609,12 @@
+     unsigned char lvIsMultiRegArg  : 1; // true if this is a multireg LclVar struct used in an argument context
+     unsigned char lvIsMultiRegRet  : 1; // true if this is a multireg LclVar struct assigned from a multireg call
+     unsigned char lvIsMultiRegDest : 1; // true if this is a multireg LclVar struct that is stored from a multireg node
++#ifdef TARGET_RISCV64
++    unsigned char lvSignExtendedInt : 1; // INT local whose register always holds its value sign-extended from 32 bits;
++                                         // set after lowering (see Lowering::ComputeSignExtendedLocals)
++    unsigned char lvNonNegativeInt : 1;  // INT or small unsigned local whose register always holds a value in
++                                         // [0, INT32_MAX]; set after lowering (see Lowering::ComputeSignExtendedLocals)
++#endif
+ 
+ #ifdef DEBUG
+     unsigned char lvDefinedViaAddress : 1; // True when this local may have LCL_ADDRs representing definitions
+--- a/src/coreclr/jit/emitriscv64.cpp
++++ b/src/coreclr/jit/emitriscv64.cpp
+@@ -609,7 +609,8 @@
+ {
+     if (!canSkip || (dstReg != srcReg))
+     {
+-        if ((EA_4BYTE == attr) && (INS_mov == ins))
++        // Zero is sign-extended already; li costs ZisK no ALU operation where sext.w costs one.
++        if ((EA_4BYTE == attr) && (INS_mov == ins) && (srcReg != REG_ZERO))
+         {
+             assert(isGeneralRegisterOrR0(srcReg));
+             assert(isGeneralRegisterOrR0(dstReg));
+@@ -641,7 +642,8 @@
+         assert(attr == EA_4BYTE || attr == EA_PTRSIZE);
+         if (isGeneralRegisterOrR0(dstReg) && isGeneralRegisterOrR0(srcReg))
+         {
+-            emitIns_R_R(attr == EA_4BYTE ? INS_sext_w : INS_mov, attr, dstReg, srcReg);
++            // Zero is sign-extended already; li costs ZisK no ALU operation where sext.w costs one.
++            emitIns_R_R(((attr == EA_4BYTE) && (srcReg != REG_ZERO)) ? INS_sext_w : INS_mov, attr, dstReg, srcReg);
+         }
+         else if (isGeneralRegisterOrR0(dstReg) && genIsValidFloatReg(srcReg))
+         {
+--- a/src/coreclr/jit/lower.cpp
++++ b/src/coreclr/jit/lower.cpp
+@@ -9157,6 +9157,10 @@
+ 
+     m_compiler->fgInvalidateDfsTree();
+ 
++#ifdef TARGET_RISCV64
++    RemoveRedundantExtensions();
++#endif
++
+     return PhaseStatus::MODIFIED_EVERYTHING;
+ }
+ 
+@@ -10339,43 +10343,10 @@
+         GenTree* const  op1     = node->CastOp();
+         const var_types srcType = genActualType(op1->TypeGet());
+         const var_types dstType = node->CastToType();
+-        // Does op1 leave its result already sign-extended from bit 31 into [63:32]?
+-        bool op1IsSignExtended = false;
+-        if (genActualType(op1->TypeGet()) == TYP_INT)
+-        {
+-            if (op1->OperIs(GT_ADD, GT_SUB, GT_MUL, GT_DIV, GT_MOD, GT_UDIV, GT_UMOD, GT_LSH, GT_RSH,
+-                            GT_RSZ, GT_NEG, GT_AND, GT_OR, GT_XOR, GT_CALL, GT_CNS_INT, GT_ARR_LENGTH))
+-            {
+-                // W-form ops sign-extend their 32-bit result; AND/OR/XOR of sign-extended int32
+-                // operands stay sign-extended; an int GT_CALL return is sign-extended by the ABI;
+-                // a TYP_INT constant is materialized sign-extended; an array length is a
+-                // non-negative sign-extending load.
+-                op1IsSignExtended = true;
+-            }
+-            else if (op1->OperIs(GT_CAST))
+-            {
+-                // A signed cast sign-extends its result; an unsigned (zero-extending) cast does not.
+-                op1IsSignExtended = !op1->IsUnsigned();
+-            }
+-            else if (op1->OperIs(GT_IND, GT_LCL_FLD))
+-            {
+-                // A 4-byte/byte/half load: lb/lh/lw sign-extend, lbu/lhu yield a non-negative
+-                // value (bit 31 == 0). Exclude TYP_UINT, whose lwu zero-extends and may have
+-                // bit 31 set, so a following sext.w would change the value.
+-                const var_types loadType = op1->TypeGet();
+-                op1IsSignExtended = (loadType == TYP_INT) || (loadType == TYP_BYTE) ||
+-                                    (loadType == TYP_UBYTE) || (loadType == TYP_SHORT) ||
+-                                    (loadType == TYP_USHORT);
+-            }
+-            else if (op1->OperIs(GT_LCL_VAR))
+-            {
+-                // A TYP_INT local/param holds a valid int32 that the RV64 backend keeps
+-                // sign-extended: incoming int args are sign-extended per ABI, and int stores
+-                // go through W-form / sign-extending paths. State-root validation backstops
+-                // the rare corner cases the cast codegen otherwise sexts defensively for.
+-                op1IsSignExtended = (op1->TypeGet() == TYP_INT);
+-            }
+-        }
++        // Does op1 leave its result already sign-extended from bit 31 into [63:32]? Parameters, promoted
++        // fields and call results are not trusted: a register-passed struct can leave an INT field in the
++        // low half of a register whose upper half holds the next field.
++        const bool op1IsSignExtended = IsInt32SignExtendedInReg(m_compiler, op1);
+ 
+         if ((srcType == TYP_INT) && !node->IsUnsigned() &&
+             ((dstType == TYP_INT) || (dstType == TYP_LONG) || (dstType == TYP_I_IMPL)) && op1IsSignExtended)
+--- a/src/coreclr/jit/lower.h
++++ b/src/coreclr/jit/lower.h
+@@ -47,6 +47,11 @@
+     void FinalizeOutgoingArgSpace();
+     void SetFramePointerFromArgSpaceSize();
+ 
++#ifdef TARGET_RISCV64
++    static bool IsInt32NonNegativeInReg(Compiler* comp, GenTree* node, unsigned depth = 0);
++    static bool IsInt32SignExtendedInReg(Compiler* comp, GenTree* node, unsigned depth = 0);
++#endif
++
+ private:
+     // LowerRange handles new code that is introduced by or after Lowering.
+     void LowerRange(LIR::ReadOnlyRange& range)
+@@ -171,6 +176,8 @@
+ #ifdef TARGET_RISCV64
+     GenTree* LowerSavedIntegerCompare(GenTree* cmp);
+     void     SignExtendIfNecessary(GenTree** arg);
++    void     ComputeSignExtendedLocals();
++    void     RemoveRedundantExtensions();
+ #endif
+     GenTree*   LowerSelect(GenTreeConditional* cond);
+     bool       TryLowerConditionToFlagsNode(GenTree*      parent,
+--- a/src/coreclr/jit/lowerriscv64.cpp
++++ b/src/coreclr/jit/lowerriscv64.cpp
+@@ -278,11 +278,371 @@
+     if ((*arg)->OperIsShiftOrRotate() || (*arg)->OperIsCmpCompare() || (*arg)->OperIsAtomicOp())
+         return;
+ 
++    if (IsInt32SignExtendedInReg(m_compiler, *arg))
++        return;
++
+     *arg = m_compiler->gtNewCastNode(TYP_I_IMPL, *arg, false, TYP_I_IMPL);
+     BlockRange().InsertAfter((*arg)->gtGetOp1(), *arg);
+ }
+ 
+ //------------------------------------------------------------------------
++// IsInt32NonNegativeInReg: whether the register holding the value of an INT node is known to lie in
++// [0, INT32_MAX], so that its 32-bit zero and sign extensions are the register itself.
++//
++// Arguments:
++//    comp  - the compiler
++//    node  - the INT node (a GT_COPY/GT_RELOAD of one is looked through)
++//    depth - recursion depth
++//
++// Notes:
++//    Only producers whose instruction selection guarantees the range are recognized. The property
++//    survives a spill and reload, which reloads the low 32 bits sign-extended. Locals are known only
++//    after lowering (see ComputeSignExtendedLocals).
++//
++bool Lowering::IsInt32NonNegativeInReg(Compiler* comp, GenTree* node, unsigned depth)
++{
++    node = node->gtSkipReloadOrCopy();
++    if (!genActualTypeIsInt(node) || (depth > 4))
++        return false;
++
++    if (node->IsCnsIntOrI())
++    {
++        const ssize_t value = node->AsIntCon()->IconValue();
++        return !node->IsIconHandle() && (value >= 0) && (value <= INT32_MAX);
++    }
++
++    if (node->isContained())
++        return false;
++
++    switch (node->OperGet())
++    {
++        case GT_EQ:
++        case GT_NE:
++        case GT_LT:
++        case GT_LE:
++        case GT_GE:
++        case GT_GT:
++            // slt(i)(u) / feq / flt / fle, optionally followed by xori 1: 0 or 1.
++            return true;
++
++        case GT_IND:
++        case GT_LCL_FLD:
++            // lbu / lhu (or their byte-wise equivalent).
++            return node->TypeIs(TYP_UBYTE, TYP_USHORT);
++
++        case GT_CAST:
++            // andi 0xff / zext.h / slli+srli.
++            return !node->gtOverflow() && varTypeIsIntegral(node->AsCast()->CastOp()) &&
++                   varTypeIsSmall(node->AsCast()->CastToType()) && varTypeIsUnsigned(node->AsCast()->CastToType());
++
++        case GT_AND:
++            return IsInt32NonNegativeInReg(comp, node->gtGetOp1(), depth + 1) ||
++                   IsInt32NonNegativeInReg(comp, node->gtGetOp2(), depth + 1);
++
++        case GT_RSZ:
++            // srliw by 1..31 clears bit 31 of the result it sign-extends.
++            return node->gtGetOp2()->IsCnsIntOrI() && ((node->gtGetOp2()->AsIntCon()->IconValue() & 31) != 0);
++
++        case GT_LCL_VAR:
++        {
++            // A local that lives on the frame is loaded at every use, with lbu/lhu for these node types.
++            const LclVarDsc* const varDsc = comp->lvaGetDesc(node->AsLclVar());
++            return varDsc->lvNonNegativeInt || (varDsc->lvDoNotEnregister && node->TypeIs(TYP_UBYTE, TYP_USHORT));
++        }
++
++        default:
++            return false;
++    }
++}
++
++//------------------------------------------------------------------------
++// IsInt32SignExtendedInReg: whether the register holding the value of an INT node is known to be the
++// sign extension of its low 32 bits.
++//
++// Arguments:
++//    comp  - the compiler
++//    node  - the INT node (a GT_COPY/GT_RELOAD of one is looked through)
++//    depth - recursion depth
++//
++// Notes:
++//    Arithmetic, shifts, compares and atomics are the nodes SignExtendIfNecessary already trusts
++//    (their W-form instructions sign-extend). Loads use lw/lh/lb/lhu/lbu, and a cast to INT is
++//    either a sign/zero extension or, from INT, a copy of its operand. Locals are known only
++//    after lowering (see ComputeSignExtendedLocals).
++//
++bool Lowering::IsInt32SignExtendedInReg(Compiler* comp, GenTree* node, unsigned depth)
++{
++    node = node->gtSkipReloadOrCopy();
++    if (!genActualTypeIsInt(node) || (depth > 4))
++        return false;
++
++    if (IsInt32NonNegativeInReg(comp, node, depth))
++        return true;
++
++    if (node->IsCnsIntOrI())
++        return !node->IsIconHandle() && (node->AsIntCon()->IconValue() == (int32_t)node->AsIntCon()->IconValue());
++
++    if (node->isContained())
++        return false;
++
++    if (node->OperIs(GT_ADD, GT_SUB, GT_MUL, GT_MOD, GT_UMOD, GT_DIV, GT_UDIV, GT_NEG) || node->OperIsShiftOrRotate() ||
++        node->OperIsCmpCompare() || node->OperIsAtomicOp())
++        return true;
++
++    switch (node->OperGet())
++    {
++        case GT_IND:
++        case GT_LCL_FLD:
++            return node->TypeIs(TYP_INT, TYP_BYTE, TYP_SHORT);
++
++        case GT_CAST:
++        {
++            GenTree* const src = node->AsCast()->CastOp();
++            if (node->gtOverflow() || !varTypeIsIntegral(src))
++                return false;
++            // To a small type: an extension; from LONG: sext.w; from INT: a copy.
++            if (varTypeIsSmall(node->AsCast()->CastToType()) || !genActualTypeIsInt(src))
++                return true;
++            return IsInt32SignExtendedInReg(comp, src, depth + 1);
++        }
++
++        case GT_AND:
++        case GT_OR:
++        case GT_XOR:
++            return IsInt32SignExtendedInReg(comp, node->gtGetOp1(), depth + 1) &&
++                   IsInt32SignExtendedInReg(comp, node->gtGetOp2(), depth + 1);
++
++        case GT_NOT:
++            return IsInt32SignExtendedInReg(comp, node->gtGetOp1(), depth + 1);
++
++        case GT_LCL_VAR:
++        {
++            // A local that lives on the frame is loaded at every use, with lw/lh/lb/lhu/lbu for these node types.
++            const LclVarDsc* const varDsc = comp->lvaGetDesc(node->AsLclVar());
++            return varDsc->lvSignExtendedInt ||
++                   (varDsc->lvDoNotEnregister && node->TypeIs(TYP_INT, TYP_BYTE, TYP_UBYTE, TYP_SHORT, TYP_USHORT));
++        }
++
++        default:
++            return false;
++    }
++}
++
++//------------------------------------------------------------------------
++// ComputeSignExtendedLocals: find the locals whose register always holds a value sign-extended from 32
++// bits, or one in [0, INT32_MAX], and record them in LclVarDsc::lvSignExtendedInt / lvNonNegativeInt.
++//
++// Notes:
++//    Runs on the final LIR. A local qualifies when every definition is a GT_STORE_LCL_VAR of a value
++//    IsInt32SignExtendedInReg (IsInt32NonNegativeInReg) accepts, other locals included, hence the
++//    optimistic fixed point. An INT parameter, or an INT local a parameter register maps to from its
++//    low bits, is also defined by its incoming register, which the caller need not have extended:
++//    genHomeRegisterParams sign-extends it in place if the local keeps lvSignExtendedInt (a moved one is
++//    extended by the move, a spilled one reloaded by lw). Likewise a store of an INT call result, which
++//    genCodeForStoreLclVar sign-extends in place. A promoted field qualifies only while its struct is
++//    never defined as a whole.
++//
++void Lowering::ComputeSignExtendedLocals()
++{
++    for (unsigned lclNum = 0; lclNum < m_compiler->lvaCount; lclNum++)
++    {
++        LclVarDsc* const varDsc = m_compiler->lvaGetDesc(lclNum);
++        bool             candidate;
++        if (varDsc->IsAddressExposed())
++        {
++            candidate = false;
++        }
++        else if (varDsc->lvIsParamRegTarget)
++        {
++            // Only as the sole target of its register, mapped from the register's low bits.
++            candidate = varDsc->TypeIs(TYP_INT) && (m_compiler->m_paramRegLocalMappings != nullptr);
++            for (int i = 0; candidate && (i < m_compiler->m_paramRegLocalMappings->Height()); i++)
++            {
++                const ParameterRegisterLocalMapping& mapping = m_compiler->m_paramRegLocalMappings->BottomRef(i);
++                if (mapping.LclNum != lclNum)
++                    continue;
++
++                candidate = (mapping.Offset == 0);
++                for (int j = 0; candidate && (j < m_compiler->m_paramRegLocalMappings->Height()); j++)
++                {
++                    const ParameterRegisterLocalMapping& other = m_compiler->m_paramRegLocalMappings->BottomRef(j);
++                    candidate = (other.LclNum == lclNum) ||
++                                (other.RegisterSegment->GetRegister() != mapping.RegisterSegment->GetRegister());
++                }
++            }
++        }
++        else if (varDsc->lvIsParam)
++        {
++            // Only a parameter itself has ABI info: the promoted fields of a struct parameter inherit
++            // lvIsParam but are numbered past the parameters.
++            candidate = varDsc->TypeIs(TYP_INT) && (lclNum < m_compiler->info.compArgsCount) &&
++                        m_compiler->lvaGetParameterABIInfo(lclNum).HasExactlyOneRegisterSegment() &&
++                        !m_compiler->lvaGetParameterABIInfo(lclNum).HasAnyStackSegment();
++        }
++        else
++        {
++            candidate =
++                !varDsc->lvIsStructField || !m_compiler->lvaGetDesc(varDsc->lvParentLcl)->lvIsParam;
++        }
++
++        varDsc->lvSignExtendedInt = candidate && varDsc->TypeIs(TYP_INT);
++        varDsc->lvNonNegativeInt  = candidate && !varDsc->lvIsParam && !varDsc->lvIsParamRegTarget &&
++                                   varDsc->TypeIs(TYP_INT, TYP_UBYTE, TYP_USHORT);
++    }
++
++    ArrayStack<GenTreeLclVarCommon*> stores(m_compiler->getAllocator(CMK_Lower));
++    for (BasicBlock* const block : m_compiler->Blocks())
++    {
++        for (GenTree* const node : LIR::AsRange(block))
++        {
++            if (!node->OperIsLocalStore() && !node->OperIs(GT_LCL_ADDR))
++                continue;
++
++            LclVarDsc* const varDsc = m_compiler->lvaGetDesc(node->AsLclVarCommon());
++            if (varDsc->lvPromoted)
++            {
++                // The struct is defined, or its address taken, as a whole: so are its fields.
++                for (unsigned i = 0; i < varDsc->lvFieldCnt; i++)
++                {
++                    LclVarDsc* const fieldDsc = m_compiler->lvaGetDesc(varDsc->lvFieldLclStart + i);
++                    fieldDsc->lvSignExtendedInt = false;
++                    fieldDsc->lvNonNegativeInt  = false;
++                }
++            }
++
++            if (!varDsc->lvSignExtendedInt && !varDsc->lvNonNegativeInt)
++                continue;
++
++            if (node->OperIs(GT_STORE_LCL_VAR))
++            {
++                stores.Push(node->AsLclVarCommon());
++            }
++            else
++            {
++                varDsc->lvSignExtendedInt = false;
++                varDsc->lvNonNegativeInt  = false;
++            }
++        }
++    }
++
++    bool changed;
++    do
++    {
++        changed = false;
++        for (int i = 0; i < stores.Height(); i++)
++        {
++            GenTreeLclVarCommon* const store  = stores.Bottom(i);
++            LclVarDsc* const           varDsc = m_compiler->lvaGetDesc(store);
++            if (varDsc->lvSignExtendedInt && !IsInt32SignExtendedInReg(m_compiler, store->Data()) &&
++                !(store->Data()->IsCall() && genActualTypeIsInt(store->Data())))
++            {
++                varDsc->lvSignExtendedInt = false;
++                changed                   = true;
++            }
++            if (varDsc->lvNonNegativeInt && !IsInt32NonNegativeInReg(m_compiler, store->Data()))
++            {
++                varDsc->lvNonNegativeInt = false;
++                changed                  = true;
++            }
++        }
++    } while (changed);
++}
++
++//------------------------------------------------------------------------
++// IsLocalReferencedInRange: whether a node between a local read and its new consumer references the local.
++//
++// Notes:
++//    Moving the read's consumer past such a node could observe a later value or break its last-use marking.
++//
++static bool IsLocalReferencedInRange(GenTree* lclRead, GenTree* endExclusive)
++{
++    const unsigned lclNum = lclRead->AsLclVarCommon()->GetLclNum();
++    for (GenTree* node = lclRead->gtNext; node != endExclusive; node = node->gtNext)
++    {
++        if (node->OperIsAnyLocal() && (node->AsLclVarCommon()->GetLclNum() == lclNum))
++            return true;
++    }
++    return false;
++}
++
++//------------------------------------------------------------------------
++// RemoveRedundantExtensions: drop the 32-to-64-bit extensions whose operand register already holds the
++// extended value, where the user reads its operands as full registers.
++//
++// Notes:
++//    Integer compares, and the 64-bit add/sub, logic, shift and shift-add nodes, select their instruction
++//    from their own type and read full registers, so an operand already sign-extended (or, for a zero
++//    extension, non-negative) gives the same result without its cast. GT_MUL is not one of them: it picks
++//    mulw for two INT operands. Locals are known only after lowering, so this also removes the casts
++//    SignExtendIfNecessary had to insert for them.
++//
++void Lowering::RemoveRedundantExtensions()
++{
++    if (m_compiler->opts.OptimizationDisabled() || m_compiler->opts.IsOSR())
++        return;
++
++    ComputeSignExtendedLocals();
++
++    for (BasicBlock* const block : m_compiler->Blocks())
++    {
++        LIR::Range& range = LIR::AsRange(block);
++        for (GenTree* const node : range)
++        {
++            GenTree** uses[2] = {};
++            if (node->OperIsCmpCompare() || node->OperIs(GT_JCMP))
++            {
++                uses[0] = &node->AsOp()->gtOp1;
++                uses[1] = &node->AsOp()->gtOp2;
++            }
++            else if (node->isContained() || node->gtOverflowEx() || !node->TypeIs(TYP_LONG, TYP_BYREF))
++            {
++                continue;
++            }
++            else if (node->OperIs(GT_ADD, GT_SUB, GT_AND, GT_OR, GT_XOR, GT_SH1ADD, GT_SH2ADD, GT_SH3ADD))
++            {
++                uses[0] = &node->AsOp()->gtOp1;
++                uses[1] = &node->AsOp()->gtOp2;
++            }
++            else if (node->OperIs(GT_LSH, GT_RSH, GT_RSZ, GT_NEG, GT_NOT, GT_RETURN, GT_STORE_LCL_VAR))
++            {
++                uses[0] = &node->AsUnOp()->gtOp1;
++            }
++            else if (node->OperIs(GT_STOREIND))
++            {
++                uses[0] = &node->AsStoreInd()->Data();
++            }
++            else
++            {
++                continue;
++            }
++
++            for (GenTree** const use : uses)
++            {
++                if (use == nullptr)
++                    continue;
++
++                if (!(*use)->OperIs(GT_CAST) || (*use)->gtOverflow() ||
++                    (genTypeSize((*use)->AsCast()->CastToType()) != 8))
++                    continue;
++
++                GenTreeCast* const cast = (*use)->AsCast();
++                GenTree* const     src  = cast->CastOp();
++                if (!genActualTypeIsInt(src) || !varTypeIsIntegral(src))
++                    continue;
++
++                const bool redundant = cast->IsUnsigned() ? IsInt32NonNegativeInReg(m_compiler, src)
++                                                          : IsInt32SignExtendedInReg(m_compiler, src);
++                if (!redundant || (src->OperIs(GT_LCL_VAR) && IsLocalReferencedInRange(src, node)))
++                    continue;
++
++                range.Remove(cast);
++                *use = src;
++            }
++        }
++    }
++}
++
++//------------------------------------------------------------------------
+ // LowerBinaryArithmetic: lowers the given binary arithmetic node.
+ //
+ // Arguments:
+@@ -1308,7 +1668,30 @@
+ //
+ void Lowering::ContainCheckCast(GenTreeCast* node)
+ {
+-    // There are no contained operands for RISCV64.
++    // A zero-extended INT load becomes a single lwu. Casts that the Zba lowering may still fold into
++    // their ADD/LSH/MUL user keep the load in a register.
++    GenTree* const src = node->CastOp();
++    if (node->gtOverflow() || !node->IsUnsigned() || (genTypeSize(node->CastToType()) != 8) || !src->OperIs(GT_IND) ||
++        !src->TypeIs(TYP_INT) || src->AsIndir()->IsVolatile() || src->AsIndir()->IsUnaligned())
++    {
++        return;
++    }
++
++    GenTree* const addr = src->AsIndir()->Addr();
++    if (addr->isContained() && (!addr->OperIs(GT_LEA) || addr->AsAddrMode()->HasIndex() ||
++                                !emitter::isValidSimm12(addr->AsAddrMode()->Offset())))
++    {
++        return;
++    }
++
++    LIR::Use use;
++    if (!BlockRange().TryGetUse(node, &use) || use.User()->OperIs(GT_ADD, GT_LSH, GT_MUL) ||
++        !IsSafeToContainMem(node, src))
++    {
++        return;
++    }
++
++    MakeSrcContained(node, src);
+ }
+ 
+ //------------------------------------------------------------------------
+--- a/src/coreclr/jit/lsrabuild.cpp
++++ b/src/coreclr/jit/lsrabuild.cpp
+@@ -790,6 +790,16 @@
+ //
+ regMaskTP LinearScan::getKillSetForCall(GenTreeCall* call)
+ {
++#ifdef TARGET_RISCV64
++    // Nothing is live after a fast tail call, so its kills protect no value. They would only keep
++    // intervals that continue in a later block (e.g. an early exit path) out of the caller-saved
++    // registers, forcing a callee-saved register and its save/restore.
++    if (call->IsFastTailCall())
++    {
++        return RBM_NONE;
++    }
++#endif
++
+     regMaskTP killMask = RBM_CALLEE_TRASH;
+ #ifdef TARGET_X86
+     if (m_compiler->compFloatingPointUsed)
+--- a/src/coreclr/jit/lsrariscv64.cpp
++++ b/src/coreclr/jit/lsrariscv64.cpp
+@@ -1302,6 +1302,11 @@
+         {
+             case GenTreeBlk::BlkOpKindUnroll:
+                 buildInternalIntRegisterDefForNode(blkNode);
++                if (size >= 2 * REGSIZE_BYTES)
++                {
++                    // The wide copy moves register pairs (genRiscV64CpBlkUnrollWide).
++                    buildInternalIntRegisterDefForNode(blkNode);
++                }
+                 break;
+ 
+             default:
+@@ -1363,7 +1368,24 @@
+         buildInternalIntRegisterDefForNode(cast);
+     }
+     buildInternalRegisterUses();
+-    int srcCount = BuildOperandUses(cast->CastOp());
++
++    // An extension that codegen elides (see genIntToIntCast) is a copy: prefer the source register.
++    GenTree* const src = cast->CastOp();
++    int            srcCount;
++    if ((kind == CodeGen::GenIntCastDesc::CHECK_NONE) && !src->isContained() && varTypeIsIntegral(src) &&
++        varTypeIsIntegral(cast) &&
++        (((CodeGen::GenIntCastDesc(cast).ExtendKind() == CodeGen::GenIntCastDesc::ZERO_EXTEND_INT) &&
++          Lowering::IsInt32NonNegativeInReg(m_compiler, src)) ||
++         ((CodeGen::GenIntCastDesc(cast).ExtendKind() == CodeGen::GenIntCastDesc::SIGN_EXTEND_INT) &&
++          genActualTypeIsInt(src) && Lowering::IsInt32SignExtendedInReg(m_compiler, src))))
++    {
++        tgtPrefUse = BuildUse(src);
++        srcCount   = 1;
++    }
++    else
++    {
++        srcCount = BuildOperandUses(src);
++    }
+     BuildDef(cast);
+ 
+     if (varTypeIsFloating(cast->gtOp1) && !varTypeIsFloating(cast->TypeGet()))
+--- a/src/coreclr/jit/morph.cpp
++++ b/src/coreclr/jit/morph.cpp
+@@ -3471,7 +3471,13 @@
+         }
+         else
+         {
++#ifdef TARGET_RISCV64
++            // The bounds check proves the index non-negative, so both extensions agree; on RISC-V the sign
++            // extension is the cheaper one, as an INT register is usually already sign-extended.
++            index = gtNewCastNode(TYP_I_IMPL, index, !indexAddr->IsBoundsChecked(), TYP_I_IMPL);
++#else
+             index = gtNewCastNode(TYP_I_IMPL, index, true, TYP_I_IMPL);
++#endif
+         }
+     }
+ #endif // TARGET_64BIT
+@@ -9045,11 +9051,15 @@
+             cast->ClearOverflow();
+             cast->SetAllEffectsFlags(src);
+ 
++#ifndef TARGET_RISCV64
+             // Try and see if we can make this cast into a cheaper zero-extending version.
++            // (Not on RISC-V, where the sign extension is the cheaper one: an INT register is usually
++            // already sign-extended.)
+             if (genActualTypeIsInt(src) && cast->TypeIs(TYP_LONG) && srcRange.IsNonNegative())
+             {
+                 cast->SetUnsigned();
+             }
++#endif // !TARGET_RISCV64
+         }
+ 
+         // For checked casts, we're done.
