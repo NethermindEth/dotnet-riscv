@@ -1,0 +1,42 @@
+RISC-V zkVM guests: compile every P/Invoke without a GC transition frame. Applied after perf-43; JIT only.
+- A method with an inlined P/Invoke that is not SuppressGCTransition sets up an InlinedCallFrame, and RyuJIT
+  saves every callee-saved register in its prolog so the frame can describe them to the GC's stack walk. On a
+  zkVM guest nothing ever walks it: the guest is one hart, uGC never suspends a thread or scans a stack, and
+  bflat already wraps RhpPInvoke/RhpPInvokeReturn and the reverse transitions to no-ops. The frame and the
+  twelve register saves are pure cost, e.g. on every SpanHelpers.MemmoveNative call (~74K per mainnet block
+  in Nethermind's stateless guest, 26 memory operations each).
+- New knob JitRiscV64ZkvmSuppressGCTransition: 1 marks every P/Invoke GTF_CALL_M_SUPPRESS_GC_TRANSITION, 0
+  never does, -1 (default) does so when EnableRiscV64Atomic=0, the single-hart setting bflat passes for every
+  zkVM target and no other. Non-zkVM builds are unchanged.
+
+--- a/src/coreclr/jit/importercalls.cpp
++++ b/src/coreclr/jit/importercalls.cpp
+@@ -7669,6 +7669,16 @@
+         assert(!call->gtCallCookie);
+     }
+ 
++#ifdef TARGET_RISCV64
++    // A zkVM guest runs a single hart whose GC never suspends it or walks its stack, so no P/Invoke needs a
++    // transition frame, nor the callee-saved register saves the frame brings into its caller. Atomics lowered
++    // to plain memory operations (EnableRiscV64Atomic=0) mark that target unless the knob says otherwise.
++    int zkvmSuppress = JitConfig.JitRiscV64ZkvmSuppressGCTransition();
++    if ((zkvmSuppress > 0) || ((zkvmSuppress < 0) && (JitConfig.EnableRiscV64Atomic() == 0)))
++    {
++        suppressGCTransition = true;
++    }
++#endif
+     if (suppressGCTransition)
+     {
+         call->gtCallMoreFlags |= GTF_CALL_M_SUPPRESS_GC_TRANSITION;
+--- a/src/coreclr/jit/jitconfigvalues.h
++++ b/src/coreclr/jit/jitconfigvalues.h
+@@ -466,6 +466,9 @@
+ RELEASE_CONFIG_INTEGER(EnableRiscV64D,              "EnableRiscV64D",            1) // Allows the RiscV64 D (double-precision FP) instruction set to be disabled
+ RELEASE_CONFIG_INTEGER(EnableRiscV64Compressed,     "EnableRiscV64Compressed",   1) // Allows RiscV64 compressed (C) instruction emission to be disabled (0 for no-C zkVM targets)
+ RELEASE_CONFIG_INTEGER(EnableRiscV64Atomic,         "EnableRiscV64Atomic",       1) // Allows RiscV64 atomic (A: lr/sc, amo*) emission to be disabled; 0 lowers interlocked ops to plain load/modify/store (single-hart zkVM)
++// 1 treats every P/Invoke as SuppressGCTransition, 0 never does; -1 does so when atomics are disabled, i.e. on a
++// single-hart zkVM whose GC never suspends a thread.
++RELEASE_CONFIG_INTEGER(JitRiscV64ZkvmSuppressGCTransition, "JitRiscV64ZkvmSuppressGCTransition", -1)
+ // Skip the return-address (RA) spill/reload in leaf methods. Sound only on
+ // single-threaded deterministic targets with no GC thread suspension / return
+ // address hijacking (e.g. a zkVM guest such as ZisK). Off by default.
