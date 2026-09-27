@@ -1,0 +1,100 @@
+NativeAOT: with a whole-program scan, drop the fat function pointer check from static calli sites that no fat
+pointer can reach. Applied after perf-43; ILC only, not RISC-V specific.
+- A calli compiled for NativeAOT tests its target for the fat pointer bit and, when set, loads the real target
+  and passes the instantiation argument first. The JIT homes the arguments for that layout, so the common thin
+  path pays for it too: in Nethermind's interpreter, where every opcode handler ends by dispatching the next one,
+  POP's handler runs 35 instructions with the check (9 of them register moves) and 23 without.
+- ScannedDevirtualizationManager records the parameter count of every static method a fat pointer can target:
+  FatFunctionPointerNode (ldftn and delegate targets in unshared code, dictionary entries computed at compile
+  time, class constructor contexts), MethodEntry and ConstrainedDirectCall generic lookups in shared code (the
+  entries the type loader fills when it builds a dictionary at run time) and every reflectable method
+  (RuntimeMethodHandle.GetFunctionPointer; ldtoken of a method makes it reflectable).
+- IsFatPointerCandidate returns false for a calli in IL (an EcmaMethod) with a static signature whose parameter
+  count none of those targets has. Instance signatures and parameterless ones keep the check: instance fat
+  pointers also come from GVM resolution and value type methods, and ClassConstructorRunner calls class
+  constructors, fat for shared generic types, through a static parameterless calli. Compiler-generated stubs
+  and compilations without a scan keep it too.
+
+--- a/src/coreclr/tools/Common/Compiler/DevirtualizationManager.cs
++++ b/src/coreclr/tools/Common/Compiler/DevirtualizationManager.cs
+@@ -228,6 +228,12 @@
+         public virtual bool IsGenericDefinitionMethodTableReflectionVisible(TypeDesc type) => true;
+ 
+         /// <summary>
++        /// Gets a value indicating whether a fat function pointer might reach a <c>calli</c> through
++        /// <paramref name="calliSignature"/> in this compilation.
++        /// </summary>
++        public virtual bool CanCalliReceiveFatPointer(MethodSignature calliSignature) => true;
++
++        /// <summary>
+         /// Gets a value indicating whether it might be possible to obtain a constructed type data structure for the given type
+         /// in this compilation (i.e. is it possible to reference a constructed MethodTable symbol for this).
+         /// </summary>
+--- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ILScanner.cs
++++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ILScanner.cs
+@@ -463,6 +463,7 @@
+             private HashSet<TypeDesc> _disqualifiedTypes = new();
+             private HashSet<MethodDesc> _overriddenMethods = new();
+             private HashSet<MethodDesc> _generatedVirtualMethods = new();
++            private HashSet<int> _fatPointerStaticTargetArities = new();
+             private readonly bool _canHaveDynamicInterfaceImplementations;
+ 
+             public ScannedDevirtualizationManager(NodeFactory factory, ImmutableArray<DependencyNodeCore<NodeFactory>> markedNodes)
+@@ -482,6 +483,20 @@
+ 
+                 foreach (var node in markedNodes)
+                 {
++                    // Record the parameter count of every static method a fat pointer can target: fat pointers the
++                    // compilation materializes, ldftn lookups in shared code, whose dictionaries the type loader can
++                    // also build at run time, and methods reflection can hand out a function pointer to.
++                    MethodDesc fatPointerTarget = node switch
++                    {
++                        FatFunctionPointerNode fatPointer => fatPointer.Method,
++                        ReadyToRunGenericHelperNode { Id: ReadyToRunHelperId.MethodEntry, Target: MethodDesc lookupTarget } => lookupTarget,
++                        ReadyToRunGenericHelperNode { Id: ReadyToRunHelperId.ConstrainedDirectCall, Target: ConstrainedCallInfo constrainedCall } => constrainedCall.Method,
++                        ReflectedMethodNode reflected => reflected.Method,
++                        _ => null,
++                    };
++                    if (fatPointerTarget is { Signature.IsStatic: true })
++                        _fatPointerStaticTargetArities.Add(fatPointerTarget.Signature.Length);
++
+                     // Collect all non-generic virtual method bodies we compiled
+                     if (node is IMethodBodyNode { Method.IsVirtual: true, Method.HasInstantiation: false } virtualMethodBody)
+                     {
+@@ -769,6 +784,21 @@
+                 return _constructedMethodTables.Contains(type) || _canonConstructedMethodTables.Contains(type);
+             }
+ 
++            public override bool CanCalliReceiveFatPointer(Internal.TypeSystem.MethodSignature calliSignature)
++            {
++                // Only static signatures with parameters are tracked. Instance fat pointers also come from generic
++                // virtual method resolution and value type methods, which are not enumerated here, and the class
++                // constructor runner calls class constructors, fat for shared generic types, through a static
++                // parameterless calli.
++                if (!calliSignature.IsStatic || calliSignature.Length == 0)
++                    return true;
++
++                // A calli passes exactly its signature's parameters, so a fat pointer can only arrive at one whose
++                // parameter count is its target's. Comparing counts rather than types keeps shared canonical
++                // signatures (__Canon) matching the exact ones they are called through.
++                return _fatPointerStaticTargetArities.Contains(calliSignature.Length);
++            }
++
+             public override bool IsGenericDefinitionMethodTableReflectionVisible(TypeDesc type)
+             {
+                 Debug.Assert(type.IsGenericDefinition);
+--- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/Compilation.cs
++++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/Compilation.cs
+@@ -471,6 +471,12 @@
+                     return false;
+             }
+ 
++            // With a whole-program scan, a static calli in IL whose parameter count no static fat pointer target has
++            // cannot receive one. Compiler-generated stubs keep the check: they call targets the runtime resolves.
++            if (containingMethod.GetTypicalMethodDefinition() is EcmaMethod
++                && !NodeFactory.DevirtualizationManager.CanCalliReceiveFatPointer(signature))
++                return false;
++
+             return true;
+         }
+ 
