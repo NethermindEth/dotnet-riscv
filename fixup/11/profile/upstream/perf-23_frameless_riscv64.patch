@@ -394,10 +394,10 @@ diff --git a/src/coreclr/jit/compiler.cpp b/src/coreclr/jit/compiler.cpp
 diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
 --- a/src/coreclr/jit/jitconfigvalues.h
 +++ b/src/coreclr/jit/jitconfigvalues.h
-@@ -462,6 +462,14 @@
- RELEASE_CONFIG_INTEGER(EnableRiscV64D,              "EnableRiscV64D",            1) // Allows the RiscV64 D (double-precision FP) instruction set to be disabled
- RELEASE_CONFIG_INTEGER(EnableRiscV64Compressed,     "EnableRiscV64Compressed",   1) // Allows RiscV64 compressed (C) instruction emission to be disabled (0 for no-C zkVM targets)
- RELEASE_CONFIG_INTEGER(EnableRiscV64Atomic,         "EnableRiscV64Atomic",       1) // Allows RiscV64 atomic (A: lr/sc, amo*) emission to be disabled; 0 lowers interlocked ops to plain load/modify/store (single-hart zkVM)
+@@ -459,6 +459,14 @@
+ RELEASE_CONFIG_INTEGER(EnableRiscV64Zbs,            "EnableRiscV64Zbs",          1) // Allows RiscV64 Zbs hardware intrinsics to be disabled
+ RELEASE_CONFIG_INTEGER(EnableRiscV64Zicond,         "EnableRiscV64Zicond",       1) // Allows RiscV64 Zicond hardware intrinsics to be disabled
+ RELEASE_CONFIG_INTEGER(EnableRiscV64Compressed,     "EnableRiscV64Compressed",   1) // Allows RiscV64 compressed (C) instruction emission to be disabled
 +// Skip the return-address (RA) spill/reload in leaf methods. Sound only on
 +// single-threaded deterministic targets with no GC thread suspension / return
 +// address hijacking (e.g. a zkVM guest such as ZisK). Off by default.

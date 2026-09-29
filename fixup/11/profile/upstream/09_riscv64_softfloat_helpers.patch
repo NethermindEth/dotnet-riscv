@@ -1,4 +1,4 @@
-From b28e5de3153804899157ca0c11e6a0d5f68c5e1f Mon Sep 17 00:00:00 2001
+From ead175b5ddd8cedbfd4538d6b7f495bd09f571d9 Mon Sep 17 00:00:00 2001
 From: Maxim Menshikov <maksim.menshikov@nethermind.io>
 Date: Wed, 16 Sep 2026 15:26:14 +0100
 Subject: [PATCH] [RISC-V] Add the soft-float helpers and the riscv64-lp64

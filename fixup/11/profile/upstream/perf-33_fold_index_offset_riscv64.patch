@@ -79,7 +79,7 @@ diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
 diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
 --- a/src/coreclr/jit/jitconfigvalues.h
 +++ b/src/coreclr/jit/jitconfigvalues.h
-@@ -479,6 +479,13 @@
+@@ -476,6 +476,13 @@
  // the scalar unroll / managed call). OFF by default; enable only for ZisK targets
  // whose transpiler folds the idiom (a plain riscv64 CPU would mis-execute it).
  RELEASE_CONFIG_INTEGER(JitRiscV64DmaCompare,        "JitRiscV64DmaCompare",      0)

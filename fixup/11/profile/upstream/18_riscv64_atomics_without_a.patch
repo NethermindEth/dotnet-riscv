@@ -1,22 +1,24 @@
-[RISC-V] Lower Interlocked and CmpXchg without the A extension
+From d285f3ecdc39588f2e5d2b1ff2bdaf719217d615 Mon Sep 17 00:00:00 2001
+From: Maxim Menshikov <maksim.menshikov@nethermind.io>
+Date: Wed, 16 Sep 2026 16:10:39 +0100
+Subject: [PATCH] [RISC-V] Lower Interlocked and CmpXchg without the A
+ extension
 
 genLockedInstructions and genCodeForCmpXchg emit amo* and lr/sc
-unconditionally, so a build that selects an ISA without the A extension gets
+unconditionally. A build that selects an ISA without the A extension gets
 instructions the target cannot execute, on any Interlocked call.
 
 Gate them on InstructionSet_A. Without it, lower to a plain read/modify/write
-and, for CmpXchg, to a compare and store with no reservation pair. This is the
-only lowering the ISA allows, and it is correct when the target runs on one
-hart and is never preempted.
+and, for CmpXchg, to a compare and store with no reservation pair. This is
+the only lowering the ISA allows, and it is correct on a target with a single
+hart and no preemption.
 
 BuildNode in lsrariscv64 extends the address and data lifetimes for the plain
 sequence, which reuses both registers after the first instruction, and gives
 the arithmetic and bitwise forms one scratch register for the new value.
 
-Whether a plain read/modify/write is sufficient is a property of the execution
-environment, not of the ISA or the ABI - a soft-float lp64 image is normal on
-rv64imac hardware with threads. So it is asserted rather than inferred: ilc
-gains --single-hart, and an ISA without A is rejected unless it is passed.
+Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
+---
 
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 --- a/src/coreclr/jit/codegenriscv64.cpp
@@ -49,8 +51,8 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
 +        }
 +        else
 +        {
-+            regNumber tmpReg   = internalRegisters.GetSingle(treeNode);
-+            regNumber valueReg = (targetReg != REG_ZERO) ? targetReg : tmpReg;
++            regNumber   tmpReg   = internalRegisters.GetSingle(treeNode);
++            regNumber   valueReg = (targetReg != REG_ZERO) ? targetReg : tmpReg;
 +            instruction insOp;
 +            switch (treeNode->gtOper)
 +            {
@@ -126,6 +128,8 @@ diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
              GenTree* data = tree->gtGetOp2();
              assert(!addr->isContained());
  
+-            srcCount = 1;
+-            BuildUse(addr);
 +            // Without the A extension genLockedInstructions expands this to a
 +            // multi-instruction read/modify/write that reuses the address and data
 +            // registers after the first instruction, so their lifetimes have to be
@@ -133,8 +137,7 @@ diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
 +            // scratch register for the new value.
 +            const bool plainAtomic = !m_compiler->compOpportunisticallyDependsOn(InstructionSet_A);
 +
-             srcCount = 1;
--            BuildUse(addr);
++            srcCount             = 1;
 +            RefPosition* addrUse = BuildUse(addr);
 +            if (plainAtomic)
 +            {
@@ -165,64 +168,3 @@ diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
              if (dstCount == 1)
              {
                  BuildDef(tree);
-diff --git a/src/coreclr/tools/Common/InstructionSetHelpers.cs b/src/coreclr/tools/Common/InstructionSetHelpers.cs
---- a/src/coreclr/tools/Common/InstructionSetHelpers.cs
-+++ b/src/coreclr/tools/Common/InstructionSetHelpers.cs
-@@ -96,10 +96,11 @@ public static InstructionSetSupport ConfigureInstructionSetSupport(string instru
-             }
-             else if (targetArchitecture == TargetArchitecture.RiscV64)
-             {
--                // The rv64gc baseline: D implies F, so "d", "c" and "a" cover
--                // the G+C extensions. Reduced-ISA targets (e.g. zkVM guests)
--                // opt out with --instruction-set=-a,-c,-d,-f. The lp64 (soft-float)
--                // ABI target has no F/D by definition.
-+                // The rv64gc baseline: D implies F, so "d", "c" and "a" cover the G+C
-+                // extensions. The lp64 (soft-float) ABI target has no F/D by definition;
-+                // it still defaults to C and A, and a reduced-ISA target drops those with
-+                // --instruction-set=-a,-c. Dropping A also requires ilc's --single-hart,
-+                // because Interlocked is not atomic without it.
-                 instructionSetSupportBuilder.AddSupportedInstructionSet("base");
-                 if (targetAbi != TargetAbi.NativeAotRiscV64SoftFloat)
-                 {
-diff --git a/src/coreclr/tools/aot/ILCompiler/ILCompilerRootCommand.cs b/src/coreclr/tools/aot/ILCompiler/ILCompilerRootCommand.cs
---- a/src/coreclr/tools/aot/ILCompiler/ILCompilerRootCommand.cs
-+++ b/src/coreclr/tools/aot/ILCompiler/ILCompilerRootCommand.cs
-@@ -118,6 +118,8 @@ internal sealed class ILCompilerRootCommand : RootCommand
-             new("--parallelism") { CustomParser = MakeParallelism, DefaultValueFactory = MakeParallelism, Description = "Maximum number of threads to use during compilation" };
-         public Option<string> InstructionSet { get; } =
-             new("--instruction-set") { Description = "Instruction set to allow or disallow" };
-+        public Option<bool> SingleHart { get; } =
-+            new("--single-hart") { Description = "RISC-V: the target runs on one hart and is never preempted. Required to build without the A extension, because Interlocked then lowers to a non-atomic read/modify/write" };
-         public Option<int> MaxVectorTBitWidth { get; } =
-             new("--max-vectort-bitwidth") { Description = "Maximum width, in bits, that Vector<T> is allowed to be" };
-         public Option<string> Guard { get; } =
-@@ -243,6 +245,7 @@ public ILCompilerRootCommand(string[] args) : base(".NET Native IL Compiler")
-             Options.Add(RuntimeKnobs);
-             Options.Add(Parallelism);
-             Options.Add(InstructionSet);
-+            Options.Add(SingleHart);
-             Options.Add(MaxVectorTBitWidth);
-             Options.Add(Guard);
-             Options.Add(Dehydrate);
-diff --git a/src/coreclr/tools/aot/ILCompiler/Program.cs b/src/coreclr/tools/aot/ILCompiler/Program.cs
---- a/src/coreclr/tools/aot/ILCompiler/Program.cs
-+++ b/src/coreclr/tools/aot/ILCompiler/Program.cs
-@@ -112,6 +112,18 @@ public int Run()
-                 isReadyToRun: false,
-                 targetAbi: targetAbi);
- 
-+            if (targetArchitecture == TargetArchitecture.RiscV64 &&
-+                !instructionSetSupport.IsInstructionSetSupported(InstructionSet.RiscV64_A) &&
-+                !Get(_command.SingleHart))
-+            {
-+                // Without A there is no atomic memory operation to emit, so Interlocked and
-+                // CmpXchg lower to a plain read/modify/write. Whether that is sufficient is a
-+                // property of the execution environment, not of the ISA or the ABI, so it has
-+                // to be asserted rather than inferred.
-+                throw new CommandLineException(
-+                    "Building without the A extension requires --single-hart: Interlocked operations are not atomic without it.");
-+            }
-+
-             string systemModuleName = Get(_command.SystemModuleName);
-             string reflectionData = Get(_command.ReflectionData);
-             bool supportsReflection = reflectionData != "none" && systemModuleName == Helpers.DefaultSystemModule;

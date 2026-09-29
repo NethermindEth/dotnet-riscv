@@ -346,7 +346,7 @@ bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
 Only in jit11/src/coreclr/jit: emitriscv64.cpp
 --- a/src/coreclr/jit/jitconfigvalues.h	2026-09-11 15:20:11
 +++ b/src/coreclr/jit/jitconfigvalues.h	2026-09-11 15:20:12
-@@ -493,6 +493,14 @@
+@@ -490,6 +490,14 @@
  // sequences instead. On by default; set 0 on targets that tolerate unaligned access
  // to keep the faster wide accesses.
  RELEASE_CONFIG_INTEGER(JitNoUnalignedAccess,        "JitNoUnalignedAccess",      1)
