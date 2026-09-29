@@ -429,6 +429,15 @@ jobs:
         cd ${{ github.workspace }}
         SOFT_FLOAT=${{ inputs.soft_float_abi }} ./runtime_tests.sh run ${{ matrix.kind }}
 
+    - name: Upload CORE_ROOT on failure
+      # To reproduce a failure locally under qemu without rebuilding the runtime.
+      if: ${{ failure() && matrix.kind == 'coreclr' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: runtime-tests-core-root
+        path: ${{ github.workspace }}/runtime/artifacts/tests/coreclr/linux.riscv64.Checked/Tests/Core_Root
+        if-no-files-found: ignore
+
     - name: Upload test results
       if: ${{ always() }}
       uses: actions/upload-artifact@v4
