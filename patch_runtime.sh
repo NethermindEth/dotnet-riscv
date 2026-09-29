@@ -11,6 +11,10 @@ export TOP_DIR="$(cd "$(dirname "$(which "$0")")" ; pwd -P)"
 # zkVM-specific and never meant for submission.
 profile="${1:-minimal}"
 
+# The runtime tree to patch: the VMR's copy by default, or a plain dotnet/runtime
+# checkout (runtime_tests.sh builds the tests from one).
+runtime_dir="${RUNTIME_DIR:-dotnet/src/runtime}"
+
 # Each entry is <dir>:<glob>; globs are applied in order within a dir.
 case "$profile" in
     minimal)
@@ -31,17 +35,17 @@ case "$profile" in
         ;;
 esac
 
-if [ ! -d dotnet/src/runtime ] ; then
-    echo "dotnet/src/runtime not found: the cloned VMR branch has no runtime sources." >&2
+if [ ! -d "$runtime_dir" ] ; then
+    echo "$runtime_dir not found: the cloned VMR branch has no runtime sources." >&2
     echo "SDK-only feature bands (e.g. release/10.0.3xx/4xx) cannot source-build the runtime;" >&2
     echo "use a full-VMR ref such as release/10.0.1xx or a vN.n.nnn tag." >&2
     exit 1
 fi
 
 # Fixups are versioned per .NET major (fixup/<major>/profile/<profile>).
-major="$(sed -n 's/.*<MajorVersion>\([0-9][0-9]*\)<\/MajorVersion>.*/\1/p' dotnet/src/runtime/eng/Versions.props | head -n1)"
+major="$(sed -n 's/.*<MajorVersion>\([0-9][0-9]*\)<\/MajorVersion>.*/\1/p' "$runtime_dir/eng/Versions.props" | head -n1)"
 if [ -z "$major" ] ; then
-    echo "Cannot determine the .NET major version from dotnet/src/runtime/eng/Versions.props" >&2
+    echo "Cannot determine the .NET major version from $runtime_dir/eng/Versions.props" >&2
     exit 1
 fi
 echo "Detected .NET major version: $major"
@@ -54,7 +58,7 @@ for set in $profile_sets ; do
     fi
 done
 
-pushd dotnet/src/runtime
+pushd "$runtime_dir"
     for set in $profile_sets ; do
         dir="${set%%:*}"
         glob="${set#*:}"
@@ -74,4 +78,4 @@ popd
 # what upstream shipped and the GUID has to be rewritten. It is not done in a
 # patch: a patch names the old value, and upstream rolls that value constantly,
 # so it would stop applying on the next VMR bump.
-"${TOP_DIR}/bump_jitee_guid.sh" dotnet/src/runtime
+"${TOP_DIR}/bump_jitee_guid.sh" "$runtime_dir"

@@ -26,6 +26,10 @@ on:
         description: 'build the native runtime for the lp64/rv64im soft-float target (needs the custom Alpine rootfs)'
         type: boolean
         default: true
+      runtime_tests:
+        description: 'also build the dotnet/runtime tests (Checked) and run them under qemu-user, in separate jobs; soft_float_abi runs the NativeAOT ones only'
+        type: boolean
+        default: false
       tag:
         description: 'release tag name (default: SDK version, plus -perf for perf builds)'
         required: false
@@ -373,3 +377,66 @@ jobs:
         hub release create $artifacts --prerelease -m "$tag_name" "$tag_name"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # dotnet/runtime has no riscv64 Helix queue, so its CI only builds riscv64.
+  # These jobs run the runtime tests the SDK build's fixups would ship, built
+  # from dotnet/runtime at the commit the VMR pins, under qemu-user. They do not
+  # gate the release: the SDK build does not wait for them.
+  runtime-tests:
+    if: ${{ inputs.runtime_tests }}
+    name: runtime tests (${{ matrix.kind }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        # CoreCLR does not support the lp64 ABI, so a soft-float run has the
+        # NativeAOT tests only.
+        kind: ${{ fromJSON(inputs.soft_float_abi && '["nativeaot"]' || '["coreclr", "nativeaot"]') }}
+    steps:
+
+    - name: Maximize build space
+      uses: AdityaGarg8/remove-unwanted-software@v4.1
+      with:
+        remove-dotnet: 'true'
+        remove-android: 'true'
+        remove-haskell: 'true'
+        remove-codeql: 'true'
+        remove-cached-tools: 'true'
+
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Clone and patch dotnet/runtime
+      run: |
+        cd ${{ github.workspace }}
+        ./runtime_tests.sh source "${{ inputs.fork }}" "${{ inputs.branch }}" "${{ inputs.profile }}"
+
+    - name: Build rootfs
+      run: |
+        cd ${{ github.workspace }}
+        SOFT_FLOAT=${{ inputs.soft_float_abi }} ./runtime_tests.sh rootfs
+
+    - name: Build the runtime and the tests
+      run: |
+        cd ${{ github.workspace }}
+        SOFT_FLOAT=${{ inputs.soft_float_abi }} ./runtime_tests.sh build ${{ matrix.kind }}
+
+    - name: Register qemu-user for riscv64
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install -y qemu-user-static binfmt-support
+        cat /proc/sys/fs/binfmt_misc/qemu-riscv64
+
+    - name: Run the tests
+      run: |
+        cd ${{ github.workspace }}
+        SOFT_FLOAT=${{ inputs.soft_float_abi }} ./runtime_tests.sh run ${{ matrix.kind }}
+
+    - name: Upload test results
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: runtime-tests-${{ matrix.kind }}
+        path: ${{ github.workspace }}/runtime/artifacts/log
+        if-no-files-found: ignore
