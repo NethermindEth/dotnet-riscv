@@ -166,7 +166,9 @@ probe()
     local kind="$1" tests="${RUNTIME_DIR}/artifacts/tests/coreclr/linux.riscv64.Checked" bin
 
     if [ "$kind" = "nativeaot" ] ; then
-        bin="$(find "${tests}" -path '*/native/*' -type f -perm -u+x ! -name '*.dbg' ! -name '*.so' -print -quit)"
+        # A merged test runner: a single standalone test starting is not enough.
+        bin="${tests}/async/async/native/async"
+        [ -f "$bin" ] || bin="$(find "${tests}" -path '*/native/*' -type f -perm -u+x ! -name '*.dbg' ! -name '*.so' -print -quit)"
     else
         bin="${tests}/Tests/Core_Root/corerun"
     fi
