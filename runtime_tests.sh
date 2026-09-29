@@ -151,7 +151,65 @@ step_run()
         run_args=(--runnativeaottests)
     fi
 
-    in_container ./src/tests/run.sh riscv64 checked "${run_args[@]}"
+    probe "$kind"
+
+    local rc=0
+    in_container ./src/tests/run.sh riscv64 checked "${run_args[@]}" || rc=$?
+    report_runners
+    return $rc
+}
+
+# Starts one riscv64 binary directly, so a loader or qemu problem shows up as
+# itself rather than as every test runner exiting with an unexpected code.
+probe()
+{
+    local kind="$1" tests="${RUNTIME_DIR}/artifacts/tests/coreclr/linux.riscv64.Checked" bin
+
+    if [ "$kind" = "nativeaot" ] ; then
+        bin="$(find "${tests}" -path '*/native/*' -type f -perm -u+x ! -name '*.dbg' ! -name '*.so' | head -n1)"
+    else
+        bin="${tests}/Tests/Core_Root/corerun"
+    fi
+    echo "::group::probe: ${bin#${tests}/}"
+    [ -n "$bin" ] && in_container sh -c 'head -c 20 "$1" | od -An -tx1; timeout 120 "$1"; echo "exit code: $?"' sh "$bin" || true
+    echo "::endgroup::"
+}
+
+# run.py only records that a test runner crashed; what it printed is in the
+# runner's own log next to its script, which is not under artifacts/log. Show
+# the end of each crashed runner's log and keep all of them with the results.
+report_runners()
+{
+    local logs="${RUNTIME_DIR}/artifacts/log" crashed script log
+    local tests="${RUNTIME_DIR}/artifacts/tests/coreclr/linux.riscv64.Checked"
+
+    sudo_if_needed mkdir -p "${logs}/runners"
+    ( cd "${tests}" && find . -name '*.log' -print0 |
+        sudo_if_needed xargs -0 -r cp --parents -t "${logs}/runners" ) || true
+
+    for crashed in "${logs}"/*.testRun.xml.crashed ; do
+        [ -f "$crashed" ] || continue
+        script="$(sed -n 's/^Script=//p' "$crashed")"
+        log="${script%.sh}.log"
+        echo "::group::crashed runner ${script#${tests}/}"
+        if [ -f "$log" ] ; then
+            tail -n 60 "$log"
+        else
+            echo "(no log at ${log})"
+        fi
+        echo "::endgroup::"
+    done
+}
+
+# The build runs as root in the container, so the test tree on the host belongs
+# to root; use sudo for writing there when not already root.
+sudo_if_needed()
+{
+    if [ "$(id -u)" = "0" ] || ! command -v sudo > /dev/null ; then
+        "$@"
+    else
+        sudo "$@"
+    fi
 }
 
 step="${1:-}"
