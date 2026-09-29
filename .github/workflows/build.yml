@@ -428,9 +428,11 @@ jobs:
         SOFT_FLOAT=${{ inputs.soft_float_abi }} ./runtime_tests.sh build ${{ matrix.kind }}
 
     - name: Register qemu-user for riscv64
+      # Not Ubuntu's qemu-user-static: under its qemu 8.2 corerun segfaults at
+      # startup. tonistiigi/binfmt ships a current qemu, registered with the F
+      # flag so that it is reachable from inside the build container.
       run: |
-        sudo apt-get update -y
-        sudo apt-get install -y qemu-user-static binfmt-support
+        docker run --privileged --rm tonistiigi/binfmt --install riscv64
         cat /proc/sys/fs/binfmt_misc/qemu-riscv64
 
     - name: Run the tests
