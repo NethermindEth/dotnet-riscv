@@ -131,7 +131,10 @@ step_build()
     in_container ./build.sh -s "${subsets}" -c Release -rc Checked \
                             --cross --arch riscv64 --os linux-musl \
                             --bootstrap /p:RunAnalyzers=false
-    in_container ./src/tests/build.sh -cross -arch riscv64 -os linux-musl checked \
+    # No -os here: src/tests/build.sh would take "linux-musl" for the OS name and
+    # look for the product under linux-musl.riscv64.Checked. Without it, the musl
+    # RID is detected from the rootfs, as eng/build.sh passes it on.
+    in_container ./src/tests/build.sh -cross -arch riscv64 checked \
                                       "${tests_args[@]}" \
                                       -p:LibrariesConfiguration=Release --use-bootstrap
 }
