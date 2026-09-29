@@ -30,6 +30,10 @@ on:
         description: 'also build the dotnet/runtime tests (Checked) and run them under qemu-user, in separate jobs; soft_float_abi runs the NativeAOT ones only'
         type: boolean
         default: false
+      skip_sdk:
+        description: 'skip the SDK build and run only the runtime tests (to iterate on them)'
+        type: boolean
+        default: false
       tag:
         description: 'release tag name (default: SDK version, plus -perf for perf builds)'
         required: false
@@ -44,6 +48,7 @@ on:
 
 jobs:
   run:
+    if: ${{ ! inputs.skip_sdk }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
