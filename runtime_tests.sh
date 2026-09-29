@@ -166,12 +166,13 @@ probe()
     local kind="$1" tests="${RUNTIME_DIR}/artifacts/tests/coreclr/linux.riscv64.Checked" bin
 
     if [ "$kind" = "nativeaot" ] ; then
-        bin="$(find "${tests}" -path '*/native/*' -type f -perm -u+x ! -name '*.dbg' ! -name '*.so' | head -n1)"
+        bin="$(find "${tests}" -path '*/native/*' -type f -perm -u+x ! -name '*.dbg' ! -name '*.so' -print -quit)"
     else
         bin="${tests}/Tests/Core_Root/corerun"
     fi
     echo "::group::probe: ${bin#${tests}/}"
-    [ -n "$bin" ] && in_container sh -c 'head -c 20 "$1" | od -An -tx1; timeout 120 "$1"; echo "exit code: $?"' sh "$bin" || true
+    ls -l "${ROOTFS}"/lib/ld-musl-* || true
+    [ -n "$bin" ] && in_container sh -c 'env | grep ^QEMU; head -c 20 "$1" | od -An -tx1; timeout 120 "$1"; echo "exit code: $?"' sh "$bin" || true
     echo "::endgroup::"
 }
 
