@@ -1,4 +1,4 @@
-From 4747de6ece02102e636a4fdfda96d3f3615ab821 Mon Sep 17 00:00:00 2001
+From 58da6bb79e8b345244275ddbaf5043b39a025376 Mon Sep 17 00:00:00 2001
 From: Maxim Menshikov <maximmenshchikov@gmail.com>
 Date: Wed, 9 Sep 2026 11:27:22 +0100
 Subject: [PATCH] [RISC-V] Add the lp64 soft-float ABI to the JIT
@@ -39,7 +39,7 @@ diff --git a/src/coreclr/jit/compiler.cpp b/src/coreclr/jit/compiler.cpp
      {
          const CORINFO_FPSTRUCT_LOWERING* lowering = GetFpStructLowering(clsHnd);
          if (!lowering->byIntegerCallConv)
-@@ -2958,6 +2958,11 @@ void Compiler::compInitOptions(JitFlags* jitFlags)
+@@ -2943,6 +2943,11 @@ void Compiler::compInitOptions(JitFlags* jitFlags)
      }
  
      GlobalJitOptions::compFeatureHfa = !opts.compUseSoftFP;

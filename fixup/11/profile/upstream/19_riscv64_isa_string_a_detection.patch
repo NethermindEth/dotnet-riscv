@@ -1,0 +1,70 @@
+From fa4c8d0f88bc978f134fccb33dff709f4f44cca0 Mon Sep 17 00:00:00 2001
+From: Maxim Menshikov <maksim.menshikov@nethermind.io>
+Date: Wed, 16 Sep 2026 16:11:56 +0100
+Subject: [PATCH] [RISC-V] Detect the A extension from the ISA string, and bump
+ the JIT/EE GUID
+
+The A-extension test was a substring match for "a" against the whole -march
+string, which is wrong in both directions. rv64gc has the extension, through
+the "g" shorthand for imafd, but contains no letter "a". rv64im_zba does not
+have it, but contains "a" in the name of Zba. So the default baseline linked
+libatomic it does not need, and a build that really lacks A would fail on the
+atomic-alignment warning under -Werror.
+
+Match on the single-letter part of the string only, after stripping the rv<XLEN>
+prefix and any multi-letter extensions, and treat "g" as implying A.
+
+Also generate a new JITEEVersionIdentifier: the new CorInfoHelpFunc entries
+shift the values of every helper after them, so a JIT and an EE from different
+sides of this change must not be considered compatible.
+
+Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
+---
+
+diff --git a/eng/common/cross/toolchain.cmake b/eng/common/cross/toolchain.cmake
+--- a/eng/common/cross/toolchain.cmake
++++ b/eng/common/cross/toolchain.cmake
+@@ -372,8 +372,16 @@ elseif(TARGET_ARCH_NAME STREQUAL "riscv64")
+   # Without the A extension the compiler lowers C/C++ atomics to __atomic_*
+   # calls instead of emitting lr/sc, and those live in libatomic. Not every link
+   # in the tree passes -latomic on its own.
+-  if(DEFINED CLR_CMAKE_RISCV64_MARCH AND NOT CLR_CMAKE_RISCV64_MARCH MATCHES "a")
+-    add_toolchain_linker_flag("-latomic")
++  #
++  # Only the single-letter part of the ISA string counts: a multi-letter extension
++  # whose name contains "a" (Zba, for one) is not the A extension, and "g" is
++  # shorthand for imafd and so implies it.
++  if(DEFINED CLR_CMAKE_RISCV64_MARCH)
++    string(REGEX REPLACE "_.*$" "" _riscv_single_letter "${CLR_CMAKE_RISCV64_MARCH}")
++    string(REGEX REPLACE "^rv[0-9]+" "" _riscv_single_letter "${_riscv_single_letter}")
++    if(NOT _riscv_single_letter MATCHES "[ag]")
++      add_toolchain_linker_flag("-latomic")
++    endif()
+   endif()
+ 
+   # persist variables across multiple try_compile passes
+diff --git a/eng/native/configurecompiler.cmake b/eng/native/configurecompiler.cmake
+--- a/eng/native/configurecompiler.cmake
++++ b/eng/native/configurecompiler.cmake
+@@ -938,9 +938,20 @@ if(CLR_CMAKE_HOST_UNIX_RISCV64)
+     set(CLR_CMAKE_RISCV64_MABI "$ENV{CLR_CMAKE_RISCV64_MABI}")
+   endif()
+ 
++  # Decide whether the ISA string selects the A extension. Only the single-letter
++  # part counts: a multi-letter extension whose name contains "a" (Zba, for one)
++  # is not the A extension, and "g" is shorthand for imafd and so implies it.
++  string(REGEX REPLACE "_.*$" "" _riscv_single_letter "${CLR_CMAKE_RISCV64_MARCH}")
++  string(REGEX REPLACE "^rv[0-9]+" "" _riscv_single_letter "${_riscv_single_letter}")
++  if(_riscv_single_letter MATCHES "[ag]")
++    set(_riscv_has_a ON)
++  else()
++    set(_riscv_has_a OFF)
++  endif()
++
+   # Without the A extension every __atomic_* call is "not lock-free" and clang
+   # warns; the runtime builds with -Werror, which would make that fatal.
+-  if(NOT CLR_CMAKE_RISCV64_MARCH MATCHES "a")
++  if(NOT _riscv_has_a)
+     add_compile_options(-Wno-atomic-alignment)
+   endif()
+ 

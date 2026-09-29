@@ -1,4 +1,4 @@
-From 943043c74244316c0860a8f2227eeb49d43c2dae Mon Sep 17 00:00:00 2001
+From cf843027dd7fa91d273cddf0df1febd47d6e3bcb Mon Sep 17 00:00:00 2001
 From: Maxim Menshikov <maximmenshchikov@gmail.com>
 Date: Tue, 8 Sep 2026 23:39:42 +0100
 Subject: [PATCH] [RISC-V] Apply the ISA string and ABI to the cross toolchain
@@ -24,7 +24,7 @@ Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 diff --git a/eng/common/cross/toolchain.cmake b/eng/common/cross/toolchain.cmake
 --- a/eng/common/cross/toolchain.cmake
 +++ b/eng/common/cross/toolchain.cmake
-@@ -333,6 +333,59 @@ if(TARGET_ARCH_NAME MATCHES "^(arm|armel)$")
+@@ -333,6 +333,51 @@ if(TARGET_ARCH_NAME MATCHES "^(arm|armel)$")
    if(TARGET_ARCH_NAME STREQUAL "armel")
      add_compile_options(-mfloat-abi=softfp)
    endif()
@@ -67,16 +67,8 @@ diff --git a/eng/common/cross/toolchain.cmake b/eng/common/cross/toolchain.cmake
 +  # Without the A extension the compiler lowers C/C++ atomics to __atomic_*
 +  # calls instead of emitting lr/sc, and those live in libatomic. Not every link
 +  # in the tree passes -latomic on its own.
-+  #
-+  # Only the single-letter part of the ISA string counts: a multi-letter extension
-+  # whose name contains "a" (Zba, for one) is not the A extension, and "g" is
-+  # shorthand for imafd and so implies it.
-+  if(DEFINED CLR_CMAKE_RISCV64_MARCH)
-+    string(REGEX REPLACE "_.*$" "" _riscv_single_letter "${CLR_CMAKE_RISCV64_MARCH}")
-+    string(REGEX REPLACE "^rv[0-9]+" "" _riscv_single_letter "${_riscv_single_letter}")
-+    if(NOT _riscv_single_letter MATCHES "[ag]")
-+      add_toolchain_linker_flag("-latomic")
-+    endif()
++  if(DEFINED CLR_CMAKE_RISCV64_MARCH AND NOT CLR_CMAKE_RISCV64_MARCH MATCHES "a")
++    add_toolchain_linker_flag("-latomic")
 +  endif()
 +
 +  # persist variables across multiple try_compile passes

@@ -135,7 +135,7 @@ diff --git a/src/coreclr/jit/gtstructs.h b/src/coreclr/jit/gtstructs.h
 diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
 --- a/src/coreclr/jit/jitconfigvalues.h
 +++ b/src/coreclr/jit/jitconfigvalues.h
-@@ -470,6 +470,11 @@
+@@ -467,6 +467,11 @@
  // FP save/establish/restore, locals addressed off SP. FP (s0) then becomes an
  // ordinary allocatable callee-saved register. When 0, FP is forced as before.
  RELEASE_CONFIG_INTEGER(RiscV64FramelessFrames,      "RiscV64FramelessFrames",    1)

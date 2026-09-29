@@ -1,4 +1,4 @@
-From 7f768be6801d38215a6a68110247e8479f09418d Mon Sep 17 00:00:00 2001
+From 5e54eac899d6e5b7ac4756b7c0574e6354e2afbe Mon Sep 17 00:00:00 2001
 From: Maxim Menshikov <maximmenshchikov@gmail.com>
 Date: Wed, 9 Sep 2026 11:26:54 +0100
 Subject: [PATCH] [RISC-V] Guard FP and atomic instructions in the assembly

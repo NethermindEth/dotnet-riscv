@@ -1,4 +1,4 @@
-From dd13a04f92bd2702104e2bb14ff49871ebe253d2 Mon Sep 17 00:00:00 2001
+From 56e49ded7294c28c5c9718f7ac677cd9b9131ab1 Mon Sep 17 00:00:00 2001
 From: Maxim Menshikov <maksim.menshikov@nethermind.io>
 Date: Wed, 16 Sep 2026 15:26:33 +0100
 Subject: [PATCH] [RISC-V] Let a build select the lp64 ABI for NativeAOT

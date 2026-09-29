@@ -1,4 +1,4 @@
-From af8d26309b1d9f954490506d4350c6562ff8be86 Mon Sep 17 00:00:00 2001
+From 8a6cbe88613e42d10bca6134b3a777aaf52b311c Mon Sep 17 00:00:00 2001
 From: Maxim Menshikov <maksim.menshikov@nethermind.io>
 Date: Wed, 16 Sep 2026 15:26:34 +0100
 Subject: [PATCH] [RISC-V] Pass -mabi=lp64 to the native linker and the shim

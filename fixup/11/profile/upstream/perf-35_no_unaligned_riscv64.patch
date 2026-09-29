@@ -245,7 +245,7 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
 diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
 --- a/src/coreclr/jit/jitconfigvalues.h
 +++ b/src/coreclr/jit/jitconfigvalues.h
-@@ -486,6 +486,13 @@
+@@ -483,6 +483,13 @@
  // addi per bounds-checked array element load -- a cost reth/Rust slices never pay.
  // Prototype: default ON to measure; flip to 0 before shipping if the win is small.
  RELEASE_CONFIG_INTEGER(JitRiscV64FoldIndexOffset,   "JitRiscV64FoldIndexOffset", 1)
