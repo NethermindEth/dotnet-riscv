@@ -68,7 +68,7 @@ diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
 diff --git a/src/coreclr/jit/gentree.cpp b/src/coreclr/jit/gentree.cpp
 --- a/src/coreclr/jit/gentree.cpp
 +++ b/src/coreclr/jit/gentree.cpp
-@@ -34180,11 +34180,14 @@ void ReturnTypeDesc::InitializeStructReturnType(Compiler*                comp,
+@@ -34192,11 +34192,14 @@ void ReturnTypeDesc::InitializeStructReturnType(Compiler*                comp,
              m_regType[0] = returnType;
  
  #if defined(TARGET_RISCV64) || defined(TARGET_LOONGARCH64)
@@ -87,7 +87,7 @@ diff --git a/src/coreclr/jit/gentree.cpp b/src/coreclr/jit/gentree.cpp
              }
  #endif // defined(TARGET_RISCV64) || defined(TARGET_LOONGARCH64)
              break;
-@@ -34256,8 +34259,9 @@ void ReturnTypeDesc::InitializeStructReturnType(Compiler*                comp,
+@@ -34268,8 +34271,9 @@ void ReturnTypeDesc::InitializeStructReturnType(Compiler*                comp,
              assert(structSize <= (2 * TARGET_POINTER_SIZE));
              BYTE gcPtrs[2] = {TYPE_GC_NONE, TYPE_GC_NONE};
              comp->info.compCompHnd->getClassGClayout(retClsHnd, &gcPtrs[0]);

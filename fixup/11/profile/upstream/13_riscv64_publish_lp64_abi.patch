@@ -23,7 +23,7 @@ Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 diff --git a/src/coreclr/nativeaot/BuildIntegration/Microsoft.DotNet.ILCompiler.SingleEntry.targets b/src/coreclr/nativeaot/BuildIntegration/Microsoft.DotNet.ILCompiler.SingleEntry.targets
 --- a/src/coreclr/nativeaot/BuildIntegration/Microsoft.DotNet.ILCompiler.SingleEntry.targets
 +++ b/src/coreclr/nativeaot/BuildIntegration/Microsoft.DotNet.ILCompiler.SingleEntry.targets
-@@ -46,6 +46,12 @@
+@@ -44,6 +44,12 @@
      <!-- linux-bionic on ARM uses armel (softfp) ABI -->
      <_targetArchitectureWithAbi>$(_targetArchitecture)</_targetArchitectureWithAbi>
      <_targetArchitectureWithAbi Condition="'$(_linuxLibcFlavor)' == 'bionic' and '$(_targetArchitecture)' == 'arm'">armel</_targetArchitectureWithAbi>
