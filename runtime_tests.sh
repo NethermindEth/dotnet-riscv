@@ -172,6 +172,7 @@ probe()
     fi
     echo "::group::probe: ${bin#${tests}/}"
     ls -l "${ROOTFS}"/lib/ld-musl-* || true
+    in_container sh -c '"$1" --version | head -n1; "$1" echo "busybox from the rootfs runs"' sh "${ROOTFS}/bin/busybox" || true
     [ -n "$bin" ] && in_container sh -c 'env | grep ^QEMU; head -c 20 "$1" | od -An -tx1; timeout 120 "$1"; echo "exit code: $?"' sh "$bin" || true
     echo "::endgroup::"
 }
