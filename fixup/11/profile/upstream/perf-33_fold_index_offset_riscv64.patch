@@ -5,7 +5,7 @@ now a shifted bit next to IGF_OUT_OF_ORDER_HEAD).
 diff --git a/src/coreclr/jit/emit.cpp b/src/coreclr/jit/emit.cpp
 --- a/src/coreclr/jit/emit.cpp
 +++ b/src/coreclr/jit/emit.cpp
-@@ -10062,7 +10062,7 @@
+@@ -10062,7 +10062,7 @@ void emitter::emitNxtIG(bool extend)
  // NOTE: It is expected that the GC effect of the removed instruction will be handled by the newly
  // generated replacement(s).
  //
@@ -14,7 +14,7 @@ diff --git a/src/coreclr/jit/emit.cpp b/src/coreclr/jit/emit.cpp
  void emitter::emitRemoveLastInstruction()
  {
      assert(emitLastIns != nullptr);
-@@ -10123,7 +10123,7 @@
+@@ -10123,7 +10123,7 @@ void emitter::emitRemoveLastInstruction()
      emitLastIns   = nullptr;
      emitLastInsIG = nullptr;
  }
@@ -26,7 +26,7 @@ diff --git a/src/coreclr/jit/emit.cpp b/src/coreclr/jit/emit.cpp
 diff --git a/src/coreclr/jit/emit.h b/src/coreclr/jit/emit.h
 --- a/src/coreclr/jit/emit.h
 +++ b/src/coreclr/jit/emit.h
-@@ -310,7 +310,7 @@
+@@ -310,7 +310,7 @@ public:
  // without updating the IG's size/offsets.
  #define IGF_REMOVED_ALIGN     (1 << 11)
  #define IGF_HAS_REMOVABLE_JMP (1 << 12) // this group ends with an unconditional jump which is a candidate for removal
@@ -35,7 +35,7 @@ diff --git a/src/coreclr/jit/emit.h b/src/coreclr/jit/emit.h
  #define IGF_HAS_REMOVED_INSTR (1 << 13) // this group has an instruction that was removed.
  #endif
  #define IGF_OUT_OF_ORDER_HEAD (1 << 14) // first group (generated in-order) of a region generated out-of-order
-@@ -3087,7 +3087,7 @@
+@@ -3087,7 +3087,7 @@ private:
      insGroup* emitSavIG(bool emitAdd = false);
      void      emitNxtIG(bool extend = false);
  
@@ -47,7 +47,7 @@ diff --git a/src/coreclr/jit/emit.h b/src/coreclr/jit/emit.h
 diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
 --- a/src/coreclr/jit/emitriscv64.cpp
 +++ b/src/coreclr/jit/emitriscv64.cpp
-@@ -772,6 +772,28 @@
+@@ -772,6 +772,28 @@ void emitter::emitIns_R_R(
  void emitter::emitIns_R_R_I(
      instruction ins, emitAttr attr, regNumber reg1, regNumber reg2, ssize_t imm, insOpts opt /* = INS_OPTS_NONE */)
  {
@@ -79,7 +79,7 @@ diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
 diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
 --- a/src/coreclr/jit/jitconfigvalues.h
 +++ b/src/coreclr/jit/jitconfigvalues.h
-@@ -476,6 +476,13 @@
+@@ -489,6 +489,13 @@ RELEASE_CONFIG_INTEGER(RiscV64FramelessFrames,      "RiscV64FramelessFrames",
  // the scalar unroll / managed call). OFF by default; enable only for ZisK targets
  // whose transpiler folds the idiom (a plain riscv64 CPU would mis-execute it).
  RELEASE_CONFIG_INTEGER(JitRiscV64DmaCompare,        "JitRiscV64DmaCompare",      0)

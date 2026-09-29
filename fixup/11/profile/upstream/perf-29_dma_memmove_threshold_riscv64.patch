@@ -1,7 +1,7 @@
 diff --git a/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.ByteMemOps.cs b/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.ByteMemOps.cs
 --- a/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.ByteMemOps.cs
 +++ b/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.ByteMemOps.cs
-@@ -20,6 +20,13 @@
+@@ -20,6 +20,13 @@ internal static partial class SpanHelpers // .ByteMemOps
          private const ulong MemmoveNativeThreshold = ulong.MaxValue;
  #elif TARGET_ARM
          private const nuint MemmoveNativeThreshold = 512;

@@ -29,7 +29,7 @@ Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 diff --git a/eng/native/configurecompiler.cmake b/eng/native/configurecompiler.cmake
 --- a/eng/native/configurecompiler.cmake
 +++ b/eng/native/configurecompiler.cmake
-@@ -915,8 +915,39 @@ if(CLR_CMAKE_HOST_UNIX_ARMV6)
+@@ -925,8 +925,39 @@ if(CLR_CMAKE_HOST_UNIX_ARMV6)
  endif(CLR_CMAKE_HOST_UNIX_ARMV6)
  
  if(CLR_CMAKE_HOST_UNIX_RISCV64)

@@ -46,7 +46,7 @@ diff --git a/eng/common/cross/toolchain.cmake b/eng/common/cross/toolchain.cmake
 diff --git a/eng/native/configurecompiler.cmake b/eng/native/configurecompiler.cmake
 --- a/eng/native/configurecompiler.cmake
 +++ b/eng/native/configurecompiler.cmake
-@@ -938,9 +938,20 @@ if(CLR_CMAKE_HOST_UNIX_RISCV64)
+@@ -948,9 +948,20 @@ if(CLR_CMAKE_HOST_UNIX_RISCV64)
      set(CLR_CMAKE_RISCV64_MABI "$ENV{CLR_CMAKE_RISCV64_MABI}")
    endif()
  

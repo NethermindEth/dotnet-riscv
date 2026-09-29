@@ -8,7 +8,7 @@ across-call GC register set is derived from RBM_INT_CALLEE_SAVED).
 diff --git a/src/coreclr/jit/codegen.h b/src/coreclr/jit/codegen.h
 --- a/src/coreclr/jit/codegen.h
 +++ b/src/coreclr/jit/codegen.h
-@@ -835,6 +835,19 @@
+@@ -835,6 +835,19 @@ protected:
      void        genCodeForAddUw(GenTreeOp* tree);
      void        genCodeForSlliUw(GenTreeOp* tree);
      instruction getShxaddVariant(int scale, bool useUnsignedVariant);
@@ -31,21 +31,21 @@ diff --git a/src/coreclr/jit/codegen.h b/src/coreclr/jit/codegen.h
 diff --git a/src/coreclr/jit/codegencommon.cpp b/src/coreclr/jit/codegencommon.cpp
 --- a/src/coreclr/jit/codegencommon.cpp
 +++ b/src/coreclr/jit/codegencommon.cpp
-@@ -2397,6 +2397,13 @@
-     // memory from the VM.
+@@ -2398,6 +2398,13 @@ void CodeGen::genGenerateMachineCode()
  
      genFinalizeFrame();
-+
+ 
 +#ifdef TARGET_RISCV64
 +    // Decide leaf return-address elision now: the frame is final and the LIR is
 +    // final, but the function body (which contains the epilogs) has not been
 +    // emitted yet, so the decision must be available before genCodeForBBlist.
 +    genComputeLeafRaElision();
 +#endif
- 
++
      GetEmitter()->emitBegFN(isFramePointerUsed()
  #if defined(DEBUG)
-@@ -5158,7 +5165,7 @@
+                                 ,
+@@ -5158,7 +5165,7 @@ void CodeGen::genFinalizeFrame()
      maskCalleeRegsPushed &= ~RBM_FLT_CALLEE_SAVED;
  #endif // defined(TARGET_XARCH)
  
@@ -54,13 +54,13 @@ diff --git a/src/coreclr/jit/codegencommon.cpp b/src/coreclr/jit/codegencommon.c
      // This assert check that we are not using REG_FP
      assert(!regSet.rsRegsModified(RBM_FPBASE));
  
-@@ -5166,8 +5173,22 @@
+@@ -5166,7 +5173,21 @@ void CodeGen::genFinalizeFrame()
      // we always push FP/RA.  See genPushCalleeSavedRegisters
      maskCalleeRegsPushed |= (RBM_FPBASE | RBM_RA);
  
 -#endif // TARGET_LOONGARCH64 || TARGET_RISCV64
 +#endif // TARGET_LOONGARCH64
- 
++
 +#if defined(TARGET_RISCV64)
 +    // RA is always pushed (its frame slot is always reserved). FP is pushed and
 +    // established as the frame pointer only for framed methods; for a frameless
@@ -74,14 +74,13 @@ diff --git a/src/coreclr/jit/codegencommon.cpp b/src/coreclr/jit/codegencommon.c
 +        maskCalleeRegsPushed |= RBM_FPBASE;
 +    }
 +#endif // TARGET_RISCV64
-+
+ 
      m_compiler->compCalleeRegsPushed = genCountBits(maskCalleeRegsPushed);
  
- #ifdef DEBUG
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 --- a/src/coreclr/jit/codegenriscv64.cpp
 +++ b/src/coreclr/jit/codegenriscv64.cpp
-@@ -278,7 +278,9 @@
+@@ -278,7 +278,9 @@ void CodeGen::genRestoreCalleeSavedRegistersHelp(regMaskTP regsToRestoreMask,
      }
      int highestCalleeSavedOffset = (genCountBits(regsToRestoreMask) << 3) + lowestCalleeSavedOffset;
      assert((highestCalleeSavedOffset & 7) == 0);
@@ -92,7 +91,7 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
  
      emitter*  emit         = GetEmitter();
      regMaskTP regsMask     = regsToRestoreMask & RBM_FLT_CALLEE_SAVED;
-@@ -319,7 +321,9 @@
+@@ -319,7 +321,9 @@ void CodeGen::genRestoreCalleeSavedRegistersHelp(regMaskTP regsToRestoreMask,
          regNum -= 1;
      } while (maskSaveRegs != 0);
  
@@ -103,7 +102,7 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
  }
  
  //-----------------------------------------------------------------------------
-@@ -6359,6 +6363,201 @@
+@@ -6420,6 +6424,201 @@ void CodeGen::instGen_MemoryBarrier(BarrierKind barrierKind)
   *              V
   *
   */
@@ -305,7 +304,7 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
  void CodeGen::genPushCalleeSavedRegisters(regNumber initReg, bool* pInitRegZeroed)
  {
      assert(GetEmitter()->emitGeneratingPrologOrFuncletProlog());
-@@ -6372,7 +6571,15 @@
+@@ -6433,7 +6632,15 @@ void CodeGen::genPushCalleeSavedRegisters(regNumber initReg, bool* pInitRegZeroe
      }
  #endif
  
@@ -322,7 +321,7 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
      assert(isFramePointerUsed());
  
      //
-@@ -6463,8 +6670,14 @@
+@@ -6524,8 +6731,14 @@ void CodeGen::genPushCalleeSavedRegisters(regNumber initReg, bool* pInitRegZeroe
      GetEmitter()->emitIns_R_R_I(INS_sd, EA_PTRSIZE, REG_FP, REG_SPBASE, FP_offset);
      m_compiler->unwindSaveReg(REG_FP, FP_offset);
  
@@ -339,21 +338,21 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
  
      genSaveCalleeSavedRegistersHelp(rsPushRegs, FP_offset + 16);
  
-@@ -6489,6 +6702,13 @@
- void CodeGen::genPopCalleeSavedRegisters(bool jmpEpilog)
+@@ -6551,6 +6764,13 @@ void CodeGen::genPopCalleeSavedRegisters(bool jmpEpilog)
  {
      assert(GetEmitter()->emitGeneratingEpilogOrFuncletEpilog());
-+
+ 
 +    // A method without a frame pointer uses a dedicated, simpler epilog.
 +    if (!isFramePointerUsed())
 +    {
 +        genPopCalleeSavedRegistersFrameless();
 +        return;
 +    }
- 
++
      regMaskTP regsToRestoreMask = regSet.rsGetModifiedCalleeSavedRegsMask();
  
-@@ -6549,8 +6769,12 @@
+     assert(isFramePointerUsed());
+@@ -6610,8 +6830,12 @@ void CodeGen::genPopCalleeSavedRegisters(bool jmpEpilog)
      JITDUMP("    calleeSaveSPOffset=%d\n", FP_offset + 16);
      genRestoreCalleeSavedRegistersHelp(regsToRestoreMask, REG_SPBASE, FP_offset + 16, /* reportUnwindData */ true);
  
@@ -371,7 +370,7 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
 diff --git a/src/coreclr/jit/compiler.cpp b/src/coreclr/jit/compiler.cpp
 --- a/src/coreclr/jit/compiler.cpp
 +++ b/src/coreclr/jit/compiler.cpp
-@@ -3861,8 +3861,18 @@
+@@ -3846,7 +3846,17 @@ _SetMinOpts:
          // noinline to ensure the show up on in a stack walk. But for AMD64, we don't need a frame
          // pointer for the frame to show up in stack walk.
          if (opts.jitFlags->IsSet(JitFlags::JIT_FLAG_FRAMED))
@@ -382,19 +381,18 @@ diff --git a/src/coreclr/jit/compiler.cpp b/src/coreclr/jit/compiler.cpp
 +            // without a frame pointer. Don't let JIT_FLAG_FRAMED (set for noinline
 +            // methods, e.g. by NativeAOT) force a frame when frameless frames are on.
 +            if (JitConfig.RiscV64FramelessFrames() == 0)
- #endif
++#endif
 +            {
 +                codeGen->setFrameRequired(true);
 +            }
 +        }
-+#endif
+ #endif
  
          if (opts.OptimizationDisabled() || IsReadyToRun())
-         {
 diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
 --- a/src/coreclr/jit/jitconfigvalues.h
 +++ b/src/coreclr/jit/jitconfigvalues.h
-@@ -459,6 +459,14 @@
+@@ -459,6 +459,14 @@ RELEASE_CONFIG_INTEGER(EnableRiscV64Zbb,            "EnableRiscV64Zbb",
  RELEASE_CONFIG_INTEGER(EnableRiscV64Zbs,            "EnableRiscV64Zbs",          1) // Allows RiscV64 Zbs hardware intrinsics to be disabled
  RELEASE_CONFIG_INTEGER(EnableRiscV64Zicond,         "EnableRiscV64Zicond",       1) // Allows RiscV64 Zicond hardware intrinsics to be disabled
  RELEASE_CONFIG_INTEGER(EnableRiscV64Compressed,     "EnableRiscV64Compressed",   1) // Allows RiscV64 compressed (C) instruction emission to be disabled
@@ -412,7 +410,7 @@ diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues
 diff --git a/src/coreclr/jit/lclvars.cpp b/src/coreclr/jit/lclvars.cpp
 --- a/src/coreclr/jit/lclvars.cpp
 +++ b/src/coreclr/jit/lclvars.cpp
-@@ -4593,8 +4593,10 @@
+@@ -4593,8 +4593,10 @@ void Compiler::lvaFixVirtualFrameOffsets()
      // them. It turns out we always store these at +0 and +8 of the FP,
      // so instead of dealing with skipping adjustment just for them we just set
      // them here always.
@@ -425,7 +423,7 @@ diff --git a/src/coreclr/jit/lclvars.cpp b/src/coreclr/jit/lclvars.cpp
      if (lvaRetAddrVar != BAD_VAR_NUM)
      {
          lvaTable[lvaRetAddrVar].SetStackOffset(REGSIZE_BYTES);
-@@ -4902,7 +4904,12 @@
+@@ -4902,7 +4904,12 @@ void Compiler::lvaAssignVirtualFrameOffsetsToLocals()
  
  #elif defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
  
@@ -441,7 +439,7 @@ diff --git a/src/coreclr/jit/lclvars.cpp b/src/coreclr/jit/lclvars.cpp
 diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
 --- a/src/coreclr/jit/lower.cpp
 +++ b/src/coreclr/jit/lower.cpp
-@@ -13405,6 +13405,14 @@
+@@ -13414,6 +13414,14 @@ void Lowering::SetFramePointerFromArgSpaceSize()
  
      if (stackLevel >= 4)
      {
@@ -460,7 +458,7 @@ diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
 diff --git a/src/coreclr/jit/lsra.cpp b/src/coreclr/jit/lsra.cpp
 --- a/src/coreclr/jit/lsra.cpp
 +++ b/src/coreclr/jit/lsra.cpp
-@@ -943,8 +943,12 @@
+@@ -943,8 +943,12 @@ LinearScan::LinearScan(Compiler* theCompiler)
      //       Once that is addressed, we may consider allowing LR in availableIntRegs.
      availableIntRegs =
          (RBM_ALLINT & ~(RBM_PR | RBM_FP | RBM_LR) & ~m_compiler->codeGen->regSet.rsMaskResvd).GetIntRegSet();
@@ -477,7 +475,7 @@ diff --git a/src/coreclr/jit/lsra.cpp b/src/coreclr/jit/lsra.cpp
 diff --git a/src/coreclr/jit/regalloc.cpp b/src/coreclr/jit/regalloc.cpp
 --- a/src/coreclr/jit/regalloc.cpp
 +++ b/src/coreclr/jit/regalloc.cpp
-@@ -178,12 +178,19 @@
+@@ -178,12 +178,19 @@ bool Compiler::rpMustCreateEBPFrame(INDEBUG(const char** wbReason))
  #endif // TARGET_LOONGARCH64
  
  #ifdef TARGET_RISCV64
