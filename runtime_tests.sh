@@ -173,6 +173,13 @@ step_run()
 
     probe "$kind"
 
+    # run.py gives each merged test runner 30 minutes, which fits Helix hardware;
+    # under qemu the large CoreCLR runners (GC, JIT.opt, JIT.Regression_*,
+    # profiler, jit64_*) take longer and msbuild kills them (exit 137) while their
+    # tests are passing. There is no switch for it, so widen the value in place.
+    sed -i 's/^    per_test_timeout = 30\*60\*1000$/    per_test_timeout = 120*60*1000/' "${RUNTIME_DIR}/src/tests/run.py"
+    grep -q 'per_test_timeout = 120\*60\*1000' "${RUNTIME_DIR}/src/tests/run.py" || die "run.py: the per-test timeout was not where expected"
+
     local rc=0
     in_container ./src/tests/run.sh riscv64 checked "${run_args[@]}" || rc=$?
     report_runners
