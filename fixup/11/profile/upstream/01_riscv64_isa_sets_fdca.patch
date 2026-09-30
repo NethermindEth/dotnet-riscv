@@ -30,6 +30,11 @@ Defaults are unchanged: every riscv64 target still gets F, D, C and A
 unless something explicitly removes them, so this is a no-op for the
 supported rv64gc baseline.
 
+The VM seeds them outside the EnableHWIntrinsic check that gates the
+base and the Zb* sets: they are not hardware intrinsics, the JIT uses them
+for ordinary code under the lp64d ABI, and a run with EnableHWIntrinsic=0
+(several JIT tests set it) must keep them.
+
 Instruction set definitions are part of the JIT/EE contract, so the
 interface GUID has to change; the series bumps it once, in a later
 commit.
@@ -319,28 +324,30 @@ diff --git a/src/coreclr/tools/Common/JitInterface/ThunkGenerator/InstructionSet
 diff --git a/src/coreclr/vm/codeman.cpp b/src/coreclr/vm/codeman.cpp
 --- a/src/coreclr/vm/codeman.cpp
 +++ b/src/coreclr/vm/codeman.cpp
-@@ -1712,6 +1712,24 @@ void EEJitManager::SetCpuInfo()
-     if (g_pConfig->EnableHWIntrinsic())
-     {
+@@ -1714,6 +1714,26 @@ void EEJitManager::SetCpuInfo()
          CPUCompileFlags.Set(InstructionSet_RiscV64Base);
-+
-+        // F/D/C/A belong to the rv64gc baseline and are not reported through
-+        // hwprobe; the floor is the ISA this runtime itself was built for.
-+#if defined(__riscv_flen) && __riscv_flen >= 32
-+        CPUCompileFlags.Set(InstructionSet_F);
-+#endif
-+#if defined(__riscv_flen) && __riscv_flen >= 64
-+        CPUCompileFlags.Set(InstructionSet_D);
-+#endif
-+#ifdef __riscv_compressed
-+        if (CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableRiscV64Compressed))
-+        {
-+            CPUCompileFlags.Set(InstructionSet_C);
-+        }
-+#endif
-+#ifdef __riscv_atomic
-+        CPUCompileFlags.Set(InstructionSet_A);
-+#endif
      }
  
++    // F/D/C/A belong to the rv64gc baseline and are not reported through
++    // hwprobe; the floor is the ISA this runtime itself was built for. They
++    // are not hardware intrinsics: the JIT uses them for ordinary code under
++    // the lp64d ABI, so EnableHWIntrinsic=0 must not take them away.
++#if defined(__riscv_flen) && __riscv_flen >= 32
++    CPUCompileFlags.Set(InstructionSet_F);
++#endif
++#if defined(__riscv_flen) && __riscv_flen >= 64
++    CPUCompileFlags.Set(InstructionSet_D);
++#endif
++#ifdef __riscv_compressed
++    if (CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableRiscV64Compressed))
++    {
++        CPUCompileFlags.Set(InstructionSet_C);
++    }
++#endif
++#ifdef __riscv_atomic
++    CPUCompileFlags.Set(InstructionSet_A);
++#endif
++
      if (((cpuFeatures & RiscV64IntrinsicConstants_Zba) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableRiscV64Zba))
+     {
+         CPUCompileFlags.Set(InstructionSet_Zba);
