@@ -162,6 +162,15 @@ step_run()
                             printf "/usr/lib\n/lib\n/usr/local/lib\n" > "$1/etc/ld-musl-riscv64${abi}.path"
                         done' sh "${ROOTFS}"
 
+    # DwarfDump runs llvm-dwarfdump from a fixed place in CORE_ROOT, which the test
+    # build leaves empty. The build container's own copy reads riscv64 objects,
+    # and as a host binary it runs natively when the test starts it under qemu.
+    if [ "$kind" = "nativeaot" ] ; then
+        in_container sh -c 'dir="$1/Tests/Core_Root/SuperFileCheck/runtimes/linux-musl-riscv64/native"
+                            mkdir -p "$dir" && ln -sf "$(command -v llvm-dwarfdump)" "$dir/llvm-dwarfdump"' \
+                     sh "${RUNTIME_DIR}/artifacts/tests/coreclr/linux.riscv64.Checked"
+    fi
+
     probe "$kind"
 
     local rc=0
