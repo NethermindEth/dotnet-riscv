@@ -151,6 +151,17 @@ step_run()
         run_args=(--runnativeaottests)
     fi
 
+    # qemu-user resolves a path under QEMU_LD_PREFIX when the file exists there
+    # and falls back to the host path when it does not. musl searches /lib before
+    # /usr/lib, and Alpine keeps everything but libc in /usr/lib, so a lookup of
+    # /lib/libstdc++.so.6 missed the rootfs and loaded the build container's
+    # x86-64 copy: corerun crashed at startup, test runners crashed once they
+    # loaded ICU, and the lp64 ones stopped at the host's libatomic. Put /usr/lib
+    # first in the loader's search path, for both the lp64d and the lp64 loader.
+    in_container sh -c 'for abi in "" -sf ; do
+                            printf "/usr/lib\n/lib\n/usr/local/lib\n" > "$1/etc/ld-musl-riscv64${abi}.path"
+                        done' sh "${ROOTFS}"
+
     probe "$kind"
 
     local rc=0
