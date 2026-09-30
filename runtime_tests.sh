@@ -176,7 +176,34 @@ step_run()
     local rc=0
     in_container ./src/tests/run.sh riscv64 checked "${run_args[@]}" || rc=$?
     report_runners
+    # run.py fails only when a runner crashes; a failed test leaves it at 0.
+    count_failures || rc=1
     return $rc
+}
+
+# Lists the failed tests and crashed runners of the run; non-zero if any.
+count_failures()
+{
+    python3 - "${RUNTIME_DIR}/artifacts/log" <<'EOF_PY'
+import glob, os, sys
+import xml.etree.ElementTree as ET
+
+logs = sys.argv[1]
+failed = []
+for path in glob.glob(os.path.join(logs, "*.testRun.xml")):
+    for test in ET.parse(path).iter("test"):
+        if test.get("result") == "Fail":
+            failed.append(test.get("name"))
+crashed = [os.path.basename(p)[:-len(".testRun.xml.crashed")]
+           for p in glob.glob(os.path.join(logs, "*.testRun.xml.crashed"))]
+
+for name in sorted(failed):
+    print("failed test:", name)
+for name in sorted(crashed):
+    print("crashed runner:", name)
+print(f"{len(failed)} failed test(s), {len(crashed)} crashed runner(s)")
+sys.exit(1 if failed or crashed else 0)
+EOF_PY
 }
 
 # Starts one riscv64 binary directly, so a loader or qemu problem shows up as
