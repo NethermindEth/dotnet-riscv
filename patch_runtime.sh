@@ -29,8 +29,12 @@ case "$profile" in
     upstream-perf)
         profile_sets="upstream:[0-9]*.patch upstream:perf-*.patch"
         ;;
+    none)
+        # Nothing applied: the baseline the other profiles are compared with.
+        profile_sets=""
+        ;;
     *)
-        echo "Unknown fixup profile: $profile (expected minimal, perf, upstream or upstream-perf)" >&2
+        echo "Unknown fixup profile: $profile (expected minimal, perf, upstream, upstream-perf or none)" >&2
         exit 1
         ;;
 esac
@@ -78,4 +82,6 @@ popd
 # what upstream shipped and the GUID has to be rewritten. It is not done in a
 # patch: a patch names the old value, and upstream rolls that value constantly,
 # so it would stop applying on the next VMR bump.
-"${TOP_DIR}/bump_jitee_guid.sh" "$runtime_dir"
+if [ -n "$profile_sets" ] ; then
+    "${TOP_DIR}/bump_jitee_guid.sh" "$runtime_dir"
+fi
