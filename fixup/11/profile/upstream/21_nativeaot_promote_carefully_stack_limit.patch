@@ -1,0 +1,37 @@
+From 8c2d0d46d5b6a607aa052aab13a91eb093efa354 Mon Sep 17 00:00:00 2001
+From: Adeel Mujahid <3840695+am11@users.noreply.github.com>
+Date: Thu, 24 Sep 2026 08:01:02 +0300
+Subject: [PATCH] Honor stack_limit in NativeAOT PromoteCarefully (#134506)
+
+NativeAOT skipped any interior pointer within the thread's recorded
+stack bounds. Under QEMU, musl over-reports the main thread's stack, so
+heap byrefs were never reported and went stale when the GC moved
+objects. Also require the address to be above stack_limit, as CoreCLR
+does.
+
+Fixes #130999
+---
+ src/coreclr/nativeaot/Runtime/GcEnum.cpp | 11 ++++++++---
+ 1 file changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/src/coreclr/nativeaot/Runtime/GcEnum.cpp b/src/coreclr/nativeaot/Runtime/GcEnum.cpp
+--- a/src/coreclr/nativeaot/Runtime/GcEnum.cpp
++++ b/src/coreclr/nativeaot/Runtime/GcEnum.cpp
+@@ -26,9 +26,14 @@ static void PromoteCarefully(PTR_PTR_Object obj, uint32_t flags, ScanFunc* fnGcE
+     //
+     assert(flags & GC_CALL_INTERIOR);
+ 
+-    // If the object reference points into the stack, we
+-    // must not promote it, the GC cannot handle these.
+-    if (pSc->thread_under_crawl->IsWithinStackBounds(*obj))
++    // Note that the base is at a higher address than the limit, since the stack
++    // grows downwards.
++    // To check whether the object is in the stack or not, we also need to check the sc->stack_limit.
++    // The reason is that on Unix, the stack size can be unlimited. In such case, the system can
++    // shrink the current reserved stack space. That causes the real limit of the stack to move up and
++    // the range can be reused for other purposes. But the sc->stack_limit is stable during the scan.
++    // Even on Windows, we care just about the stack above the stack_limit.
++    if (pSc->thread_under_crawl->IsWithinStackBounds(*obj) && ((uintptr_t)*obj >= pSc->stack_limit))
+         return;
+ 
+     fnGcEnumRef(obj, pSc, flags);
