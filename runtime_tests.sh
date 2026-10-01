@@ -33,6 +33,9 @@ SOFT_FLOAT="${SOFT_FLOAT:-false}"
 # A subtree of src/tests to build and run instead of the usual set, to look at
 # one failure without the four-hour run; empty for the usual set.
 TEST_TREE="${TEST_TREE:-}"
+# Environment for the test run, as "NAME=VALUE NAME=VALUE" (DOTNET_* settings
+# the tests should run under, e.g. DOTNET_ReadyToRun=0); empty for none.
+TEST_ENV="${TEST_ENV:-}"
 
 # The trees the Checked NativeAOT leg of runtime.yml builds.
 NATIVEAOT_TREES=";nativeaot;Loader;Interop;async;"
@@ -48,10 +51,13 @@ die()
 # qemu-user find the musl loader of the rootfs when the tests run.
 in_container()
 {
-    local abi_env=()
+    local abi_env=() kv
     if [ "$SOFT_FLOAT" = "true" ] ; then
         abi_env=(-e CLR_CMAKE_RISCV64_MABI=lp64 -e CLR_CMAKE_RISCV64_MARCH=rv64im -e IlcRiscV64SoftFloat=true)
     fi
+    for kv in $TEST_ENV ; do
+        abi_env+=(-e "$kv")
+    done
     docker run --platform linux/amd64 --rm \
         "${abi_env[@]}" \
         -v "${TOP_DIR}:${TOP_DIR}" \

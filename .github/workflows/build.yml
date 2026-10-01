@@ -35,6 +35,16 @@ on:
         required: false
         type: string
         default: ''
+      patch_max:
+        description: 'runtime tests only: apply the numbered patches of the profile up to this number (to bisect a failure); empty for all'
+        required: false
+        type: string
+        default: ''
+      test_env:
+        description: 'runtime tests only: environment for the test run, e.g. DOTNET_ReadyToRun=0 DOTNET_TieredCompilation=0'
+        required: false
+        type: string
+        default: ''
       skip_sdk:
         description: 'skip the SDK build and run only the runtime tests (to iterate on them)'
         type: boolean
@@ -409,7 +419,7 @@ jobs:
     - name: Clone and patch dotnet/runtime
       run: |
         cd ${{ github.workspace }}
-        ./runtime_tests.sh source "${{ inputs.fork }}" "${{ inputs.branch }}" "${{ inputs.profile }}"
+        PATCH_MAX="${{ inputs.patch_max }}" ./runtime_tests.sh source "${{ inputs.fork }}" "${{ inputs.branch }}" "${{ inputs.profile }}"
 
     - name: Build rootfs
       run: |
@@ -432,7 +442,7 @@ jobs:
     - name: Run the tests
       run: |
         cd ${{ github.workspace }}
-        SOFT_FLOAT=${{ inputs.soft_float_abi }} TEST_TREE="${{ inputs.test_tree }}" ./runtime_tests.sh run ${{ matrix.kind }}
+        SOFT_FLOAT=${{ inputs.soft_float_abi }} TEST_TREE="${{ inputs.test_tree }}" TEST_ENV="${{ inputs.test_env }}" ./runtime_tests.sh run ${{ matrix.kind }}
 
     - name: Upload CORE_ROOT on failure
       # To reproduce a failure locally under qemu without rebuilding the runtime.

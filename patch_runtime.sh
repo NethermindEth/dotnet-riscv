@@ -67,6 +67,14 @@ pushd "$runtime_dir"
         dir="${set%%:*}"
         glob="${set#*:}"
         for file in $(ls ${TOP_DIR}/fixup/$major/profile/$dir/$glob | xargs) ; do
+            # PATCH_MAX=NN stops the numbered series after patch NN, to bisect a
+            # test failure against it (runtime_tests.sh); the perf-* patches are
+            # not numbered and are unaffected.
+            num="$(basename "$file" | sed -n 's/^\([0-9][0-9]*\)_.*/\1/p')"
+            if [ -n "${PATCH_MAX:-}" ] && [ -n "$num" ] && [ "$num" -gt "$PATCH_MAX" ] ; then
+                echo "Skipping $file (PATCH_MAX=$PATCH_MAX)"
+                continue
+            fi
             echo Applying $file
             patch -p1 < $file
             res="$?"
