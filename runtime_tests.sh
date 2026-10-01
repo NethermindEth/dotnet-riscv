@@ -30,6 +30,9 @@ RUNTIME_DIR="${TOP_DIR}/runtime"
 ROOTFS="${TOP_DIR}/crossrootfs/riscv64"
 IMAGE="${IMAGE:-mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-riscv64-musl}"
 SOFT_FLOAT="${SOFT_FLOAT:-false}"
+# A subtree of src/tests to build and run instead of the usual set, to look at
+# one failure without the four-hour run; empty for the usual set.
+TEST_TREE="${TEST_TREE:-}"
 
 # The trees the Checked NativeAOT leg of runtime.yml builds.
 NATIVEAOT_TREES=";nativeaot;Loader;Interop;async;"
@@ -121,10 +124,11 @@ step_build()
     case "$kind" in
         coreclr)
             subsets="clr+libs"
+            [ -z "$TEST_TREE" ] || tests_args=(tree "$TEST_TREE")
             ;;
         nativeaot)
             subsets="clr.aot+libs.native+libs.sfx"
-            tests_args=(nativeaot tree "${NATIVEAOT_TREES}")
+            tests_args=(nativeaot tree "${TEST_TREE:-$NATIVEAOT_TREES}")
             ;;
     esac
 
@@ -150,6 +154,7 @@ step_run()
     if [ "$kind" = "nativeaot" ] ; then
         run_args=(--runnativeaottests)
     fi
+    [ -z "$TEST_TREE" ] || run_args+=(--tree "$TEST_TREE")
 
     # qemu-user resolves a path under QEMU_LD_PREFIX when the file exists there
     # and falls back to the host path when it does not. musl searches /lib before
