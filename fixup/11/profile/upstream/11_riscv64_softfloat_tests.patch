@@ -1,4 +1,4 @@
-From fd913a79e9f9f0a9c2853a78f9787c871c5f4267 Mon Sep 17 00:00:00 2001
+From f47ec489fb43e124336ccb616909376f4005ed4f Mon Sep 17 00:00:00 2001
 From: Maxim Menshikov <maximmenshchikov@gmail.com>
 Date: Wed, 9 Sep 2026 11:27:26 +0100
 Subject: [PATCH] [RISC-V] Add a floating-point semantics test for the

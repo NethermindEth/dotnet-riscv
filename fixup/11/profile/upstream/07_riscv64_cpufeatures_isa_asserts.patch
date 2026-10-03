@@ -1,4 +1,4 @@
-From 1726ae4bbc89bfcb997e59d743a20824ed70b832 Mon Sep 17 00:00:00 2001
+From 7c3ab9c457d4d96ccdd635cc1e05a6c2811d39a8 Mon Sep 17 00:00:00 2001
 From: Maxim Menshikov <maximmenshchikov@gmail.com>
 Date: Wed, 9 Sep 2026 11:26:55 +0100
 Subject: [PATCH] [RISC-V] Tie the hwprobe assertion to the build's own -march

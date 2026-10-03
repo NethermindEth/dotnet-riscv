@@ -1,4 +1,4 @@
-From dd13a04f92bd2702104e2bb14ff49871ebe253d2 Mon Sep 17 00:00:00 2001
+From 56e49ded7294c28c5c9718f7ac677cd9b9131ab1 Mon Sep 17 00:00:00 2001
 From: Maxim Menshikov <maksim.menshikov@nethermind.io>
 Date: Wed, 16 Sep 2026 15:26:33 +0100
 Subject: [PATCH] [RISC-V] Let a build select the lp64 ABI for NativeAOT
@@ -23,7 +23,7 @@ Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 diff --git a/src/coreclr/nativeaot/BuildIntegration/Microsoft.DotNet.ILCompiler.SingleEntry.targets b/src/coreclr/nativeaot/BuildIntegration/Microsoft.DotNet.ILCompiler.SingleEntry.targets
 --- a/src/coreclr/nativeaot/BuildIntegration/Microsoft.DotNet.ILCompiler.SingleEntry.targets
 +++ b/src/coreclr/nativeaot/BuildIntegration/Microsoft.DotNet.ILCompiler.SingleEntry.targets
-@@ -46,6 +46,12 @@
+@@ -44,6 +44,12 @@
      <!-- linux-bionic on ARM uses armel (softfp) ABI -->
      <_targetArchitectureWithAbi>$(_targetArchitecture)</_targetArchitectureWithAbi>
      <_targetArchitectureWithAbi Condition="'$(_linuxLibcFlavor)' == 'bionic' and '$(_targetArchitecture)' == 'arm'">armel</_targetArchitectureWithAbi>

@@ -1,4 +1,4 @@
-From 6f962e035903f67b4a24829d385da29a06edd5e8 Mon Sep 17 00:00:00 2001
+From e80d484c91619f43d34e8a862eb4ab7554cc7099 Mon Sep 17 00:00:00 2001
 From: Maxim Menshikov <maximmenshchikov@gmail.com>
 Date: Tue, 8 Sep 2026 23:19:24 +0100
 Subject: [PATCH] [RISC-V] Make the native build's ISA string and ABI
@@ -21,6 +21,11 @@ ABI here is what makes the whole native build agree with its sysroot. The flags
 are passed at link time as well, so the driver selects the matching CRT and
 builtins.
 
+On musl an lp64 executable also has to name its loader: musl built for lp64
+installs it as /lib/ld-musl-riscv64-sf.so.1, which clang derives from -mabi only
+from LLVM 23 on. With an older driver the executables would ask for the lp64d
+loader, so pass it explicitly there.
+
 This mirrors how armel selects -mfloat-abi=softfp a few lines above.
 
 Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
@@ -29,7 +34,7 @@ Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 diff --git a/eng/native/configurecompiler.cmake b/eng/native/configurecompiler.cmake
 --- a/eng/native/configurecompiler.cmake
 +++ b/eng/native/configurecompiler.cmake
-@@ -915,8 +915,50 @@ if(CLR_CMAKE_HOST_UNIX_ARMV6)
+@@ -925,8 +925,46 @@ if(CLR_CMAKE_HOST_UNIX_ARMV6)
  endif(CLR_CMAKE_HOST_UNIX_ARMV6)
  
  if(CLR_CMAKE_HOST_UNIX_RISCV64)
@@ -58,20 +63,9 @@ diff --git a/eng/native/configurecompiler.cmake b/eng/native/configurecompiler.c
 +    set(CLR_CMAKE_RISCV64_MABI "$ENV{CLR_CMAKE_RISCV64_MABI}")
 +  endif()
 +
-+  # Decide whether the ISA string selects the A extension. Only the single-letter
-+  # part counts: a multi-letter extension whose name contains "a" (Zba, for one)
-+  # is not the A extension, and "g" is shorthand for imafd and so implies it.
-+  string(REGEX REPLACE "_.*$" "" _riscv_single_letter "${CLR_CMAKE_RISCV64_MARCH}")
-+  string(REGEX REPLACE "^rv[0-9]+" "" _riscv_single_letter "${_riscv_single_letter}")
-+  if(_riscv_single_letter MATCHES "[ag]")
-+    set(_riscv_has_a ON)
-+  else()
-+    set(_riscv_has_a OFF)
-+  endif()
-+
 +  # Without the A extension every __atomic_* call is "not lock-free" and clang
 +  # warns; the runtime builds with -Werror, which would make that fatal.
-+  if(NOT _riscv_has_a)
++  if(NOT CLR_CMAKE_RISCV64_MARCH MATCHES "a")
 +    add_compile_options(-Wno-atomic-alignment)
 +  endif()
 +
@@ -79,6 +73,13 @@ diff --git a/eng/native/configurecompiler.cmake b/eng/native/configurecompiler.c
 +  add_compile_options(-mabi=${CLR_CMAKE_RISCV64_MABI})
 +  add_link_options(-march=${CLR_CMAKE_RISCV64_MARCH})
 +  add_link_options(-mabi=${CLR_CMAKE_RISCV64_MABI})
++
++  # musl built for lp64 installs its loader as ld-musl-riscv64-sf.so.1, and clang
++  # only derives that name from -mabi from LLVM 23 on; older drivers give an lp64
++  # executable the lp64d loader, which a soft-float userspace does not have.
++  if(CLR_CMAKE_TARGET_LINUX_MUSL AND CLR_CMAKE_RISCV64_MABI STREQUAL "lp64")
++    add_link_options(LINKER:--dynamic-linker=/lib/ld-musl-riscv64-sf.so.1)
++  endif()
  endif(CLR_CMAKE_HOST_UNIX_RISCV64)
  
  if(CLR_CMAKE_HOST_UNIX_X86)

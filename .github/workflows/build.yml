@@ -20,12 +20,35 @@ on:
       profile:
         description: 'fixup profile to apply'
         type: choice
-        options: [minimal, perf, upstream, upstream-perf]
+        options: [minimal, perf, upstream, upstream-perf, none]
         default: minimal
       soft_float_abi:
         description: 'build the native runtime for the lp64/rv64im soft-float target (needs the custom Alpine rootfs)'
         type: boolean
         default: true
+      runtime_tests:
+        description: 'also build the dotnet/runtime tests (Checked) and run them under qemu-user, in separate jobs; soft_float_abi runs the NativeAOT ones only'
+        type: boolean
+        default: false
+      test_tree:
+        description: 'build and run only this subtree of the runtime tests (e.g. GC/API or JIT/Regression); empty for the usual set'
+        required: false
+        type: string
+        default: ''
+      patch_max:
+        description: 'runtime tests only: apply the numbered patches of the profile up to this number (to bisect a failure); empty for all'
+        required: false
+        type: string
+        default: ''
+      test_env:
+        description: 'runtime tests only: environment for the test run, e.g. DOTNET_ReadyToRun=0 DOTNET_TieredCompilation=0'
+        required: false
+        type: string
+        default: ''
+      skip_sdk:
+        description: 'skip the SDK build and run only the runtime tests (to iterate on them)'
+        type: boolean
+        default: false
       tag:
         description: 'release tag name (default: SDK version, plus -perf for perf builds)'
         required: false
@@ -37,9 +60,17 @@ on:
       whole_source_early:
         description: 'publish whole source early'
         type: boolean
+      suffix:
+        description: 'appended to the run name and the release tag'
+        required: false
+        type: string
+        default: ''
+
+run-name: Build .NET SDK ${{ inputs.branch }} ${{ inputs.profile }} ${{ inputs.suffix }}
 
 jobs:
   run:
+    if: ${{ ! inputs.skip_sdk }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -347,6 +378,10 @@ jobs:
           fi
         fi
 
+        if [ -n "${{ inputs.suffix }}" ] ; then
+          tag_name="$tag_name.${{ inputs.suffix }}"
+        fi
+
         # The SDK version of a servicing branch does not move between VMR
         # commits, so a rebuild of the same profile would collide with the
         # release already cut from it. Keep the tag distinct with the run number.
@@ -362,3 +397,77 @@ jobs:
         hub release create $artifacts --prerelease -m "$tag_name" "$tag_name"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # dotnet/runtime has no riscv64 Helix queue, so its CI only builds riscv64.
+  # These jobs run the runtime tests the SDK build's fixups would ship, built
+  # from dotnet/runtime at the commit the VMR pins, under qemu-user. They do not
+  # gate the release: the SDK build does not wait for them.
+  runtime-tests:
+    if: ${{ inputs.runtime_tests }}
+    name: runtime tests (${{ matrix.kind }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        # CoreCLR does not support the lp64 ABI, so a soft-float run has the
+        # NativeAOT tests only.
+        kind: ${{ fromJSON(inputs.soft_float_abi && '["nativeaot"]' || '["coreclr", "nativeaot"]') }}
+    steps:
+
+    - name: Maximize build space
+      uses: AdityaGarg8/remove-unwanted-software@v4.1
+      with:
+        remove-dotnet: 'true'
+        remove-android: 'true'
+        remove-haskell: 'true'
+        remove-codeql: 'true'
+        remove-cached-tools: 'true'
+
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Clone and patch dotnet/runtime
+      run: |
+        cd ${{ github.workspace }}
+        PATCH_MAX="${{ inputs.patch_max }}" ./runtime_tests.sh source "${{ inputs.fork }}" "${{ inputs.branch }}" "${{ inputs.profile }}"
+
+    - name: Build rootfs
+      run: |
+        cd ${{ github.workspace }}
+        SOFT_FLOAT=${{ inputs.soft_float_abi }} ./runtime_tests.sh rootfs
+
+    - name: Build the runtime and the tests
+      run: |
+        cd ${{ github.workspace }}
+        SOFT_FLOAT=${{ inputs.soft_float_abi }} TEST_TREE="${{ inputs.test_tree }}" ./runtime_tests.sh build ${{ matrix.kind }}
+
+    - name: Register qemu-user for riscv64
+      # Not Ubuntu's qemu-user-static: under its qemu 8.2 corerun segfaults at
+      # startup. tonistiigi/binfmt ships a current qemu, registered with the F
+      # flag so that it is reachable from inside the build container.
+      run: |
+        docker run --privileged --rm tonistiigi/binfmt --install riscv64
+        cat /proc/sys/fs/binfmt_misc/qemu-riscv64
+
+    - name: Run the tests
+      run: |
+        cd ${{ github.workspace }}
+        SOFT_FLOAT=${{ inputs.soft_float_abi }} TEST_TREE="${{ inputs.test_tree }}" TEST_ENV="${{ inputs.test_env }}" ./runtime_tests.sh run ${{ matrix.kind }}
+
+    - name: Upload CORE_ROOT on failure
+      # To reproduce a failure locally under qemu without rebuilding the runtime.
+      if: ${{ failure() && matrix.kind == 'coreclr' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: runtime-tests-core-root
+        path: ${{ github.workspace }}/runtime/artifacts/tests/coreclr/linux.riscv64.Checked/Tests/Core_Root
+        if-no-files-found: ignore
+
+    - name: Upload test results
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: runtime-tests-${{ matrix.kind }}
+        path: ${{ github.workspace }}/runtime/artifacts/log
+        if-no-files-found: ignore

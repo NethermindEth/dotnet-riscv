@@ -1,13 +1,12 @@
 diff --git a/src/coreclr/jit/inline.cpp b/src/coreclr/jit/inline.cpp
 --- a/src/coreclr/jit/inline.cpp
 +++ b/src/coreclr/jit/inline.cpp
-@@ -873,56 +873,43 @@
- {
+@@ -874,55 +874,42 @@ InlineStrategy::InlineStrategy(Compiler* compiler)
      // Verify compiler is a root compiler instance
      assert(m_compiler->impInlineRoot() == m_compiler);
--
--#ifdef DEBUG
  
+-#ifdef DEBUG
+-
 -    // Possibly modify the max inline size.
 +    // Possibly modify the max inline size / depth / force-inline depth from config.
      //
@@ -33,15 +32,15 @@ diff --git a/src/coreclr/jit/inline.cpp b/src/coreclr/jit/inline.cpp
      {
          m_MaxInlineSize = IMPLEMENTATION_MAX_INLINE_SIZE;
      }
--
--    // Verify: not too small, not too big.
--    assert(m_MaxInlineSize >= ALWAYS_INLINE_SIZE);
--    assert(m_MaxInlineSize <= IMPLEMENTATION_MAX_INLINE_SIZE);
 +    if (m_MaxInlineSize < ALWAYS_INLINE_SIZE)
 +    {
 +        m_MaxInlineSize = ALWAYS_INLINE_SIZE;
 +    }
  
+-    // Verify: not too small, not too big.
+-    assert(m_MaxInlineSize >= ALWAYS_INLINE_SIZE);
+-    assert(m_MaxInlineSize <= IMPLEMENTATION_MAX_INLINE_SIZE);
+-
 -    // Possibly modify the max inline depth
 -    //
 -    // Default value of JitInlineDepth is the same as our default.
@@ -73,7 +72,7 @@ diff --git a/src/coreclr/jit/inline.cpp b/src/coreclr/jit/inline.cpp
 diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
 --- a/src/coreclr/jit/jitconfigvalues.h
 +++ b/src/coreclr/jit/jitconfigvalues.h
-@@ -128,10 +128,14 @@
+@@ -128,10 +128,14 @@ CONFIG_INTEGER(JitHashBreak, "JitHashBreak", -1)        // Same as JitBreak, but
  CONFIG_INTEGER(JitHashHalt, "JitHashHalt", -1)          // Same as JitHalt, but for a method hash
  CONFIG_INTEGER(JitInlineAdditionalMultiplier, "JitInlineAdditionalMultiplier", 0)
  CONFIG_INTEGER(JitInlinePrintStats, "JitInlinePrintStats", 0)
