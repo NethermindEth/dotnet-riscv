@@ -1,0 +1,283 @@
+Extends perf-23/perf-31's leaf return-address elision (RiscV64ElideLeafRaSave) to methods whose only calls
+are fast tail calls. A fast tail call leaves through `jalr zero` with RA untouched, so the callee returns
+to our caller through the incoming RA and the method needs no RA save - but genComputeLeafRaElision
+rejected every GT_CALL, fast tail calls included. It also rejected every compare shape
+(GT_JCMP/LT/LE/GT/GE/MULHI), a rule carried over from .NET 10, where compare codegen used RA as a scratch
+register; in .NET 11 compares use REG_ZERO or LSRA registers and mul-high uses an internal register, so
+the rule is dropped and GT_RETURNTRAP and overflow-checked GT_MUL (which do write RA) are screened instead.
+The decision moves into genFinalizeFrame, before frame layout, so a frameless method whose save is elided
+reserves no RA slot, and a method with nothing to save and no locals gets no frame at all. The frameless
+epilog's large-frame SP adjustment uses rsGetRsvdReg() (t6) instead of REG_SCRATCH (t0), which can hold an
+indirect fast tail call target.
+Same precondition as the knob: no GC thread suspension or return-address hijacking (zkVM targets only).
+
+RISC-V64: elide the RA save (and the RA slot) in methods whose only calls are
+fast tail calls; drop the stale .NET 10 compare screen. Requires the
+upstream-perf profile (perf-23_frameless + perf-31_elide_leaf_ra_fp_guard) and
+the RiscV64ElideLeafRaSave=1 knob that bflat passes for zkVM targets.
+
+- genComputeLeafRaElision accepts GT_CALL nodes that are fast tail calls (a jump
+  through jalr zero; the callee returns to our caller through the incoming RA).
+- The GT_JCMP/GT_LT/GT_LE/GT_GT/GT_GE/GT_MULHI screen is removed: in .NET 11
+  genCodeForCompare/genCodeForJumpCompare use REG_ZERO or LSRA registers and
+  genCodeForMulHi an internal register. GT_RETURNTRAP (helper call) and
+  overflow-checked GT_MUL (emitter uses RA) are screened instead.
+- The decision moves into genFinalizeFrame, before frame layout, so a frameless
+  method whose RA save is elided reserves no RA slot and, with nothing else to
+  save and no locals, gets no frame at all (no addi sp pair). Framed methods keep
+  the slot; the >2040-byte guard is applied after layout for them only.
+- The frameless epilog's large-frame SP adjustment uses the reserved register
+  (t6) instead of REG_SCRATCH (t0), which can hold a fast tail call target.
+
+diff --git a/src/coreclr/jit/codegencommon.cpp b/src/coreclr/jit/codegencommon.cpp
+--- a/src/coreclr/jit/codegencommon.cpp
++++ b/src/coreclr/jit/codegencommon.cpp
+@@ -2398,13 +2398,6 @@
+ 
+     genFinalizeFrame();
+ 
+-#ifdef TARGET_RISCV64
+-    // Decide leaf return-address elision now: the frame is final and the LIR is
+-    // final, but the function body (which contains the epilogs) has not been
+-    // emitted yet, so the decision must be available before genCodeForBBlist.
+-    genComputeLeafRaElision();
+-#endif
+-
+     GetEmitter()->emitBegFN(isFramePointerUsed()
+ #if defined(DEBUG)
+                                 ,
+@@ -5176,11 +5169,18 @@
+ #endif // TARGET_LOONGARCH64
+ 
+ #if defined(TARGET_RISCV64)
+-    // RA is always pushed (its frame slot is always reserved). FP is pushed and
++    // Decide return-address elision here: the LIR is final, and a frameless method
++    // whose RA save is elided needs no RA slot, which the frame layout below must see.
++    genComputeLeafRaElision();
++
++    // RA is pushed unless its save is elided in a frameless method. FP is pushed and
+     // established as the frame pointer only for framed methods; for a frameless
+     // method FP - if used as an ordinary callee-saved register - is already part
+     // of maskCalleeRegsPushed via the modified-callee-saved set computed above.
+-    maskCalleeRegsPushed |= RBM_RA;
++    if (!genRiscV64ElideRaSave || isFramePointerUsed())
++    {
++        maskCalleeRegsPushed |= RBM_RA;
++    }
+     if (isFramePointerUsed())
+     {
+         // When FP is the frame pointer it must not have been allocated as a register.
+@@ -5205,6 +5205,15 @@
+ 
+     m_compiler->lvaAssignFrameOffsets(Compiler::FINAL_FRAME_LAYOUT);
+ 
++#if defined(TARGET_RISCV64)
++    // The framed epilog of a frame over 2040 bytes uses RA as a temporary. Such a
++    // method kept its RA slot, so the elision can still be withdrawn.
++    if (genRiscV64ElideRaSave && isFramePointerUsed() && (genTotalFrameSize() > 2040))
++    {
++        genRiscV64ElideRaSave = false;
++    }
++#endif // TARGET_RISCV64
++
+ #ifdef DEBUG
+     if (m_compiler->opts.dspCode || m_compiler->opts.disAsm || m_compiler->opts.disAsm2 || verbose)
+     {
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -334,8 +334,9 @@
+     int highestCalleeSavedOffset = (genCountBits(regsToRestoreMask) << 3) + lowestCalleeSavedOffset;
+     assert((highestCalleeSavedOffset & 7) == 0);
+     // The callee-saved regs are always above the saved RA (+ saved FP, when the
+-    // method has a frame pointer). A frameless method only reserves RA below them.
+-    assert(highestCalleeSavedOffset >= (isFramePointerUsed() ? 16 : 8));
++    // method has a frame pointer). A frameless method only reserves RA below them,
++    // and only when RA is saved.
++    assert(highestCalleeSavedOffset >= (isFramePointerUsed() ? 16 : (genRiscV64ElideRaSave ? 0 : 8)));
+ 
+     emitter*  emit         = GetEmitter();
+     regMaskTP regsMask     = regsToRestoreMask & RBM_FLT_CALLEE_SAVED;
+@@ -377,8 +378,9 @@
+     } while (maskSaveRegs != 0);
+ 
+     // The callee-saved regs are always above the saved RA (+ saved FP, when the
+-    // method has a frame pointer). A frameless method only reserves RA below them.
+-    assert(highestCalleeSavedOffset >= (isFramePointerUsed() ? 16 : 8));
++    // method has a frame pointer). A frameless method only reserves RA below them,
++    // and only when RA is saved.
++    assert(highestCalleeSavedOffset >= (isFramePointerUsed() ? 16 : (genRiscV64ElideRaSave ? 0 : 8)));
+ }
+ 
+ //-----------------------------------------------------------------------------
+@@ -6939,16 +6941,19 @@
+ //   single-threaded deterministic target (e.g. the ZisK zkVM guest) there is no
+ //   thread suspension and therefore no hijacking, so a leaf method - one that
+ //   makes no calls and hence never clobbers RA - gains nothing from the spill.
++//   The same holds when every call is a fast tail call: that is a jump, and the
++//   callee returns to our caller through the RA we were entered with.
+ //
+ //   Opt-in via the RiscV64ElideLeafRaSave config knob; must not be enabled on a
+ //   target with concurrent GC.
+ //
+ // Notes:
+-//   The RA stack slot is still reserved (it remains part of compCalleeRegsPushed),
+-//   so frame layout and offsets are unchanged; only the `sd ra` / `ld ra`
+-//   instructions and their unwind records are dropped. A leaf frame is always
+-//   the topmost frame when walked, so the unwinder recovers RA from the live
+-//   register context. Classification is deliberately conservative.
++//   Called by genFinalizeFrame before the frame is laid out. A frameless method
++//   whose RA save is elided gets no RA slot, so it may need no frame at all. A
++//   framed method keeps the slot, and genFinalizeFrame withdraws the elision when
++//   its frame exceeds 2040 bytes because that epilog uses RA as a temporary.
++//   Such a frame is never walked as a caller frame, so the unwinder recovers RA
++//   from the live register context. Classification is deliberately conservative.
+ //
+ void CodeGen::genComputeLeafRaElision()
+ {
+@@ -6966,7 +6971,7 @@
+         // FP casts lower to HELPER CALLS in the backend with no GT_CALL node in the LIR
+         // scan below, so an FP method is not really a leaf - eliding its RA save lets the
+         // soft-float jalr clobber ra and ret to garbage. Exclude any FP user.
+-        m_compiler->compFloatingPointUsed || (genTotalFrameSize() > 2040))
++        m_compiler->compFloatingPointUsed)
+     {
+         return;
+     }
+@@ -6975,27 +6980,19 @@
+     {
+         for (GenTree* const node : LIR::AsRange(block))
+         {
+-            if (node->OperIs(GT_CALL, GT_JMP, GT_INTRINSIC))
++            if ((node->OperIs(GT_CALL) && !node->AsCall()->IsFastTailCall()) || node->OperIs(GT_JMP, GT_INTRINSIC))
+             {
+                 return;
+             }
+ 
+-            // zkVM: RyuJIT riscv64 uses REG_RA as a HARDCODED scratch (not via LSRA) in
+-            // several paths - materializing a branch/compare constant (genCodeForJumpCompare
+-            // instGen_Set_Reg_To_Imm into REG_RA; genCodeForCompare 4-byte sext temp), the
+-            // far-jump target (auipc/jalr REG_RA), and 64-bit mul-high. In a leaf with the
+-            // RA save elided that scratch use destroys the live return address -> ret to
+-            // garbage. The elision is decided before codegen so these backend register
+-            // choices are invisible; conservatively refuse to elide any method whose LIR
+-            // contains the shapes that lead to a REG_RA scratch. (GT_EQ/GT_NE do not - they
+-            // use REG_ZERO / an LSRA reg - so pure-integer getters like get_AsSpan and
+-            // UInt256.IsZero/IsOne still qualify.)
+-            if (node->OperIs(GT_JCMP, GT_LT, GT_LE, GT_GT, GT_GE, GT_MULHI))
+-            {
+-                return;
+-            }
+-            // genCodeForShift emits a rotate as srl/sll + or using REG_RA as the temp.
+-            if (node->OperIs(GT_ROL, GT_ROR))
++            // zkVM: RyuJIT riscv64 uses REG_RA as a HARDCODED scratch (not via LSRA) in a
++            // few paths; with the RA save elided that destroys the live return address. The
++            // decision precedes codegen, so refuse the LIR shapes that reach one: the GC poll
++            // helper call (genCodeForReturnTrap), a 32-bit overflow-checked multiply
++            // (emitInsTernary) and a rotate (genCodeForShift). Compares and GT_MULHI do not:
++            // genCodeForCompare/genCodeForJumpCompare use REG_ZERO or LSRA registers and
++            // genCodeForMulHi an internal register (the .NET 10 compare codegen used RA).
++            if (node->OperIs(GT_RETURNTRAP, GT_ROL, GT_ROR) || (node->OperIs(GT_MUL) && node->gtOverflowEx()))
+             {
+                 return;
+             }
+@@ -7030,9 +7027,11 @@
+     assert(GetEmitter()->emitGeneratingPrologOrFuncletProlog());
+     assert(!isFramePointerUsed());
+ 
+-    // FP, if allocated as an ordinary register, is part of rsPushRegs already.
+-    regSet.rsMaskCalleeSaved = rsPushRegs | RBM_RA;
+-    assert(m_compiler->compCalleeRegsPushed == genCountBits(rsPushRegs | RBM_RA));
++    // FP, if allocated as an ordinary register, is part of rsPushRegs already. RA has
++    // a slot only when it is saved (see genFinalizeFrame).
++    const regMaskTP raMask   = genRiscV64ElideRaSave ? RBM_NONE : RBM_RA;
++    regSet.rsMaskCalleeSaved = rsPushRegs | raMask;
++    assert(m_compiler->compCalleeRegsPushed == genCountBits(rsPushRegs | raMask));
+ 
+     int totalFrameSize = genTotalFrameSize();
+     int localFrameSize = m_compiler->compLclFrameSize;
+@@ -7047,7 +7046,11 @@
+     int raOffset      = localFrameSize;
+     int leftFrameSize = 0;
+ 
+-    if (totalFrameSize <= 2040)
++    if (totalFrameSize == 0)
++    {
++        // Nothing to save and no locals: no frame at all.
++    }
++    else if (totalFrameSize <= 2040)
+     {
+         GetEmitter()->emitIns_R_R_I(INS_addi, EA_PTRSIZE, REG_SPBASE, REG_SPBASE, -totalFrameSize);
+         m_compiler->unwindAllocStack(totalFrameSize);
+@@ -7069,7 +7072,7 @@
+         m_compiler->unwindSaveReg(REG_RA, raOffset);
+     }
+ 
+-    genSaveCalleeSavedRegistersHelp(rsPushRegs, raOffset + 8);
++    genSaveCalleeSavedRegistersHelp(rsPushRegs, raOffset + (genRiscV64ElideRaSave ? 0 : REGSIZE_BYTES));
+ 
+     if (m_compiler->info.compIsVarArgs)
+     {
+@@ -7111,16 +7114,18 @@
+         if ((localFrameSize + (m_compiler->compCalleeRegsPushed << 3)) > 2040)
+         {
+             remainingSPSize = localFrameSize & -16;
+-            // REG_SCRATCH (not RA, which the framed path reuses here) - RA may be
+-            // live when its save was elided.
+-            genStackPointerAdjustment(remainingSPSize, REG_SCRATCH, nullptr, /* reportUnwindData */ true);
++            // Not RA, which the framed path reuses here: RA may be live when its save
++            // was elided. Not REG_SCRATCH either: it may hold a fast tail call target.
++            genStackPointerAdjustment(remainingSPSize, rsGetRsvdReg(), nullptr, /* reportUnwindData */ true);
+ 
+             remainingSPSize = totalFrameSize - remainingSPSize;
+             raOffset        = localFrameSize & 0xf;
+         }
+     }
+ 
+-    genRestoreCalleeSavedRegistersHelp(regsToRestoreMask, REG_SPBASE, raOffset + 8, /* reportUnwindData */ true);
++    genRestoreCalleeSavedRegistersHelp(regsToRestoreMask, REG_SPBASE,
++                                       raOffset + (genRiscV64ElideRaSave ? 0 : REGSIZE_BYTES),
++                                       /* reportUnwindData */ true);
+ 
+     if (!genRiscV64ElideRaSave)
+     {
+@@ -7128,17 +7133,22 @@
+         m_compiler->unwindSaveReg(REG_RA, raOffset);
+     }
+ 
+-    if (emitter::isValidUimm11(remainingSPSize))
++    if (remainingSPSize == 0)
++    {
++        // No frame was allocated.
++    }
++    else if (emitter::isValidUimm11(remainingSPSize))
+     {
+         emit->emitIns_R_R_I(INS_addi, EA_PTRSIZE, REG_SPBASE, REG_SPBASE, remainingSPSize);
++        m_compiler->unwindAllocStack(remainingSPSize);
+     }
+     else
+     {
+         regNumber tempReg = rsGetRsvdReg();
+         emit->emitLoadImmediate<true>(EA_PTRSIZE, tempReg, remainingSPSize);
+         emit->emitIns_R_R_R(INS_add, EA_PTRSIZE, REG_SPBASE, REG_SPBASE, tempReg);
++        m_compiler->unwindAllocStack(remainingSPSize);
+     }
+-    m_compiler->unwindAllocStack(remainingSPSize);
+ 
+     assert(!m_compiler->opts.IsOSR()); // OSR forces a frame pointer
+ }
+diff --git a/src/coreclr/jit/lclvars.cpp b/src/coreclr/jit/lclvars.cpp
+--- a/src/coreclr/jit/lclvars.cpp
++++ b/src/coreclr/jit/lclvars.cpp
+@@ -4905,8 +4905,9 @@
+ #elif defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
+ 
+ #if defined(TARGET_RISCV64)
+-    // RA is always pushed; FP is pushed only for methods with a frame pointer.
+-    assert(compCalleeRegsPushed >= (codeGen->isFramePointerUsed() ? 2 : 1));
++    // FP and RA are pushed for methods with a frame pointer. A frameless method
++    // pushes RA unless its save is elided (see genFinalizeFrame).
++    assert(compCalleeRegsPushed >= (codeGen->isFramePointerUsed() ? 2 : 0));
+ #else
+     assert(compCalleeRegsPushed >= 2); // always FP/RA.
+ #endif
