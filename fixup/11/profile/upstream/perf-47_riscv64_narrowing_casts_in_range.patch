@@ -1,0 +1,183 @@
+RISC-V: no sext.w for a LONG-to-INT cast whose operand is already in int32 range. Applied after perf-43; JIT only.
+- genIntToIntCast sign-extends every LONG-to-INT cast (sext.w). New Lowering::IsInt64InInt32RangeInReg
+  recognises LONG values whose register is already the sign extension of its low 32 bits (optionally in
+  [0, INT32_MAX]): srli by 33..63, srai by 32..63, casts from INT (sign-extending, or zero-extending a
+  value IsInt32NonNegativeInReg accepts), AND with an operand in [0, INT32_MAX], AND/OR/XOR/NOT of
+  in-range operands, integer min/max of in-range operands and the Zbb bit counts. Such a cast is a copy,
+  in codegen and in LSRA (which prefers the source register), and IsInt32NonNegativeInReg now also
+  accepts a narrowing cast of a value in [0, INT32_MAX].
+- "(int)(x >>> 32)", the high half of a hash fold, lowers to "x >> 32" (srai), which is that sign
+  extension, so it also needs no sext.w.
+
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -6320,7 +6320,9 @@
+         if (((desc.ExtendKind() == GenIntCastDesc::ZERO_EXTEND_INT) &&
+              Lowering::IsInt32NonNegativeInReg(m_compiler, src)) ||
+             ((desc.ExtendKind() == GenIntCastDesc::SIGN_EXTEND_INT) && (srcType == TYP_INT) &&
+-             Lowering::IsInt32SignExtendedInReg(m_compiler, src)))
++             Lowering::IsInt32SignExtendedInReg(m_compiler, src)) ||
++            ((desc.ExtendKind() == GenIntCastDesc::SIGN_EXTEND_INT) && (srcType == TYP_LONG) &&
++             Lowering::IsInt64InInt32RangeInReg(m_compiler, src, /* nonNegative */ false)))
+         {
+             emit->emitIns_Mov(INS_mov, EA_PTRSIZE, dstReg, srcReg, /* canSkip */ true);
+             genProduceReg(cast);
+--- a/src/coreclr/jit/lower.h
++++ b/src/coreclr/jit/lower.h
+@@ -50,6 +50,7 @@
+ #ifdef TARGET_RISCV64
+     static bool IsInt32NonNegativeInReg(Compiler* comp, GenTree* node, unsigned depth = 0);
+     static bool IsInt32SignExtendedInReg(Compiler* comp, GenTree* node, unsigned depth = 0);
++    static bool IsInt64InInt32RangeInReg(Compiler* comp, GenTree* node, bool nonNegative, unsigned depth = 0);
+ #endif
+ 
+ private:
+--- a/src/coreclr/jit/lowerriscv64.cpp
++++ b/src/coreclr/jit/lowerriscv64.cpp
+@@ -331,9 +331,16 @@
+             return node->TypeIs(TYP_UBYTE, TYP_USHORT);
+ 
+         case GT_CAST:
++        {
++            GenTree* const src = node->AsCast()->CastOp();
++            if (node->gtOverflow() || !varTypeIsIntegral(src))
++                return false;
++            // From LONG: a copy of a register already in [0, INT32_MAX] (see genIntToIntCast).
++            if (src->TypeIs(TYP_LONG) && !varTypeIsSmall(node->AsCast()->CastToType()))
++                return !src->isContained() && IsInt64InInt32RangeInReg(comp, src, /* nonNegative */ true, depth + 1);
+             // andi 0xff / zext.h / slli+srli.
+-            return !node->gtOverflow() && varTypeIsIntegral(node->AsCast()->CastOp()) &&
+-                   varTypeIsSmall(node->AsCast()->CastToType()) && varTypeIsUnsigned(node->AsCast()->CastToType());
++            return varTypeIsSmall(node->AsCast()->CastToType()) && varTypeIsUnsigned(node->AsCast()->CastToType());
++        }
+ 
+         case GT_AND:
+             return IsInt32NonNegativeInReg(comp, node->gtGetOp1(), depth + 1) ||
+@@ -429,6 +436,99 @@
+ }
+ 
+ //------------------------------------------------------------------------
++// IsInt64InInt32RangeInReg: whether the register holding the value of a LONG node is known to be the
++// sign extension of its low 32 bits (with nonNegative: to lie in [0, INT32_MAX]), so that a narrowing
++// cast to INT, which RISC-V implements as sext.w, is a copy of it.
++//
++// Arguments:
++//    comp        - the compiler
++//    node        - the LONG node (a GT_COPY/GT_RELOAD of one is looked through)
++//    nonNegative - require [0, INT32_MAX] rather than [INT32_MIN, INT32_MAX]
++//    depth       - recursion depth
++//
++// Notes:
++//    srli by 33..63 leaves at most 31 significant bits and srai by 32..63 at most 32 sign bits. A cast
++//    from INT holds its sign extension (sext.w, or the source register when that is already extended)
++//    or, zero-extending, its source register when that is in [0, INT32_MAX] (see genIntToIntCast).
++//    AND, OR, XOR and NOT keep bits 63..31 equal when they are equal in the operands, and an AND with an
++//    operand in [0, INT32_MAX] is in that range itself. Min/max return one of their operands and the
++//    bit counts are at most 64.
++//
++bool Lowering::IsInt64InInt32RangeInReg(Compiler* comp, GenTree* node, bool nonNegative, unsigned depth)
++{
++    node = node->gtSkipReloadOrCopy();
++    if (!node->TypeIs(TYP_LONG) || (depth > 4))
++        return false;
++
++    if (node->IsCnsIntOrI())
++    {
++        const ssize_t value = node->AsIntCon()->IconValue();
++        return !node->IsIconHandle() && (value <= INT32_MAX) && (value >= (nonNegative ? 0 : INT32_MIN));
++    }
++
++    if (node->isContained() || node->gtOverflowEx())
++        return false;
++
++    switch (node->OperGet())
++    {
++        case GT_RSZ:
++        case GT_RSH:
++        {
++            GenTree* const shiftBy = node->gtGetOp2();
++            if (!shiftBy->IsCnsIntOrI())
++                return false;
++            const ssize_t shift = shiftBy->AsIntCon()->IconValue() & 63;
++            return node->OperIs(GT_RSZ) ? (shift >= 33) : (!nonNegative && (shift >= 32));
++        }
++
++        case GT_CAST:
++        {
++            GenTree* const src = node->AsCast()->CastOp();
++            if (!varTypeIsIntegral(src) || !genActualTypeIsInt(src))
++                return false;
++            if (nonNegative || node->IsUnsigned())
++                return IsInt32NonNegativeInReg(comp, src, depth + 1);
++            return true;
++        }
++
++        case GT_AND:
++            if (IsInt64InInt32RangeInReg(comp, node->gtGetOp1(), true, depth + 1) ||
++                IsInt64InInt32RangeInReg(comp, node->gtGetOp2(), true, depth + 1))
++                return true;
++            FALLTHROUGH;
++        case GT_OR:
++        case GT_XOR:
++            return IsInt64InInt32RangeInReg(comp, node->gtGetOp1(), nonNegative, depth + 1) &&
++                   IsInt64InInt32RangeInReg(comp, node->gtGetOp2(), nonNegative, depth + 1);
++
++        case GT_NOT:
++            return !nonNegative && IsInt64InInt32RangeInReg(comp, node->gtGetOp1(), false, depth + 1);
++
++        case GT_INTRINSIC:
++            switch (node->AsIntrinsic()->gtIntrinsicName)
++            {
++                case NI_System_Math_Min:
++                case NI_System_Math_Max:
++                case NI_System_Math_MinUnsigned:
++                case NI_System_Math_MaxUnsigned:
++                    return IsInt64InInt32RangeInReg(comp, node->gtGetOp1(), nonNegative, depth + 1) &&
++                           IsInt64InInt32RangeInReg(comp, node->gtGetOp2(), nonNegative, depth + 1);
++
++                case NI_PRIMITIVE_LeadingZeroCount:
++                case NI_PRIMITIVE_TrailingZeroCount:
++                case NI_PRIMITIVE_PopCount:
++                    return true;
++
++                default:
++                    return false;
++            }
++
++        default:
++            return false;
++    }
++}
++
++//------------------------------------------------------------------------
+ // ComputeSignExtendedLocals: find the locals whose register always holds a value sign-extended from 32
+ // bits, or one in [0, INT32_MAX], and record them in LclVarDsc::lvSignExtendedInt / lvNonNegativeInt.
+ //
+@@ -1031,6 +1131,14 @@
+ 
+     assert(!varTypeIsSmall(srcType));
+ 
++    // "(int)(x >>> 32)" is the sign extension of the high half, which "x >> 32" (srai) computes directly,
++    // and genIntToIntCast then needs no sext.w. The shift has no other user.
++    if (!tree->gtOverflow() && (srcType == TYP_LONG) && (genActualType(dstType) == TYP_INT) && op1->OperIs(GT_RSZ) &&
++        op1->gtGetOp2()->IsCnsIntOrI() && ((op1->gtGetOp2()->AsIntCon()->IconValue() & 63) == 32))
++    {
++        op1->SetOper(GT_RSH);
++    }
++
+     // Now determine if we have operands that should be contained.
+     ContainCheckCast(tree->AsCast());
+ }
+--- a/src/coreclr/jit/lsrariscv64.cpp
++++ b/src/coreclr/jit/lsrariscv64.cpp
+@@ -1377,7 +1377,9 @@
+         (((CodeGen::GenIntCastDesc(cast).ExtendKind() == CodeGen::GenIntCastDesc::ZERO_EXTEND_INT) &&
+           Lowering::IsInt32NonNegativeInReg(m_compiler, src)) ||
+          ((CodeGen::GenIntCastDesc(cast).ExtendKind() == CodeGen::GenIntCastDesc::SIGN_EXTEND_INT) &&
+-          genActualTypeIsInt(src) && Lowering::IsInt32SignExtendedInReg(m_compiler, src))))
++          genActualTypeIsInt(src) && Lowering::IsInt32SignExtendedInReg(m_compiler, src)) ||
++         ((CodeGen::GenIntCastDesc(cast).ExtendKind() == CodeGen::GenIntCastDesc::SIGN_EXTEND_INT) &&
++          src->TypeIs(TYP_LONG) && Lowering::IsInt64InInt32RangeInReg(m_compiler, src, /* nonNegative */ false))))
+     {
+         tgtPrefUse = BuildUse(src);
+         srcCount   = 1;
