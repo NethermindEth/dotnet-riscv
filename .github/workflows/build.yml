@@ -60,6 +60,13 @@ on:
       whole_source_early:
         description: 'publish whole source early'
         type: boolean
+      suffix:
+        description: 'appended to the run name and the release tag'
+        required: false
+        type: string
+        default: ''
+
+run-name: Build .NET SDK ${{ inputs.branch }} ${{ inputs.profile }} ${{ inputs.suffix }}
 
 jobs:
   run:
@@ -369,6 +376,10 @@ jobs:
           if [ "${{ inputs.profile }}" != "minimal" ] ; then
             tag_name="$tag_name-${{ inputs.profile }}"
           fi
+        fi
+
+        if [ -n "${{ inputs.suffix }}" ] ; then
+          tag_name="$tag_name.${{ inputs.suffix }}"
         fi
 
         # The SDK version of a servicing branch does not move between VMR
