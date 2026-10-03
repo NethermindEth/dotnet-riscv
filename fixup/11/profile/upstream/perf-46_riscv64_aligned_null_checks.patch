@@ -1,0 +1,65 @@
+RISC-V: probe object references with an aligned ld. Applied after perf-43; JIT only.
+- An explicit null check of an object reference (GT_NULLCHECK at offset 0 of a TYP_REF, typically an
+  array before its data address is formed) loads its method table pointer, which is 8-byte aligned and
+  always present, so it can be ld zero rather than lb zero. The "this" check before an instance call loads
+  ld zero instead of lw zero when "this" is an object, and the localloc stack probes (sp-relative, 16-byte
+  aligned) use ld zero as well.
+- Same fault behaviour: the probed address is unchanged and every byte read lies inside the method table
+  pointer. A byref (interior pointer, struct "this") keeps its narrow load, as nothing bounds or aligns it.
+- ZisK emulates sub-word loads by extracting from a 64-bit word (~100 memory cost) where an aligned ld
+  costs ~17; on real hardware the two are equivalent.
+
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -1679,7 +1679,7 @@
+             // the alloc, not after.
+ 
+             // tickle the page - this triggers a page fault when on the guard page
+-            emit->emitIns_R_R_I(INS_lw, EA_4BYTE, REG_R0, REG_SP, 0);
++            emit->emitIns_R_R_I(INS_ld, EA_8BYTE, REG_R0, REG_SP, 0);
+ 
+             lastTouchDelta = amount;
+             imm            = -(ssize_t)amount;
+@@ -1786,7 +1786,7 @@
+         // tickle the page - this triggers a page fault when on the guard page
+         BasicBlock* loop = genCreateTempLabel();
+         genDefineTempLabel(loop);
+-        emit->emitIns_R_R_I(INS_lw, EA_4BYTE, REG_R0, tempReg, 0);
++        emit->emitIns_R_R_I(INS_ld, EA_8BYTE, REG_R0, tempReg, 0);
+         emit->emitIns_R_R_R(INS_sub, EA_4BYTE, tempReg, tempReg, rPageSize);
+ 
+         emit->emitIns_J_cond_la(INS_bgeu, loop, tempReg, regCnt);
+@@ -5103,7 +5103,20 @@
+ 
+     genConsumeRegs(tree->gtOp1);
+ 
+-    GetEmitter()->emitInsLoadStoreOp(ins_Load(tree->TypeGet()), emitActualTypeSize(tree), REG_R0, tree);
++    var_types type = tree->TypeGet();
++
++    // An object reference points at the object's method table pointer, which is 8-byte aligned and always there,
++    // so the probe can be an aligned ld: zkVMs such as ZisK emulate the narrow loads by extracting from a 64-bit
++    // word, and the probe never needs the value.
++    GenTree* const addr = tree->Addr();
++    GenTree* const base = addr->isContained() ? (addr->OperIs(GT_LEA) ? tree->Base() : nullptr) : addr;
++    if (varTypeIsIntegral(type) && (genTypeSize(type) < TARGET_POINTER_SIZE) && (base != nullptr) &&
++        base->TypeIs(TYP_REF) && (tree->Index() == nullptr) && (tree->Offset() == 0))
++    {
++        type = TYP_LONG;
++    }
++
++    GetEmitter()->emitInsLoadStoreOp(ins_Load(type), emitActualTypeSize(type), REG_R0, tree);
+ }
+ 
+ //------------------------------------------------------------------------
+@@ -5876,7 +5889,10 @@
+     {
+         const regNumber regThis = genGetThisArgReg(call);
+ 
+-        GetEmitter()->emitIns_R_R_I(INS_lw, EA_4BYTE, REG_R0, regThis, 0);
++        // An object's first word is its method table pointer: probe it with an aligned ld (see genCodeForNullCheck).
++        const bool thisIsObject = call->gtArgs.GetThisArg()->GetNode()->TypeIs(TYP_REF);
++        GetEmitter()->emitIns_R_R_I(thisIsObject ? INS_ld : INS_lw, thisIsObject ? EA_8BYTE : EA_4BYTE, REG_R0, regThis,
++                                    0);
+     }
+ 
+     // If fast tail call, then we are done here, we just have to load the call
