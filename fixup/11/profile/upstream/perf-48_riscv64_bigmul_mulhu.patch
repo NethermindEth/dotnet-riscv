@@ -1,0 +1,197 @@
+RISC-V: Math.BigMul(ulong, ulong, out ulong) as mul + mulhu. Applied after perf-43; JIT and CoreLib.
+- RV64M has mulhu, but Math.BigMul only special-cases x64 and arm64, so on RISC-V every 64x64->128
+  multiply runs the out-of-line Hacker's Delight fallback (four 32x32 multiplies plus the carries), and
+  UInt128 and Int128 multiplication with it.
+- CoreLib: Math.BigMul(ulong, ulong, out ulong) becomes [Intrinsic]. Other targets do not expand it, so
+  it stays an ordinary call there.
+- JIT: on RISC-V the importer expands it into a mul of the factors stored through the out parameter and
+  a GT_INTRINSIC (NI_System_Math_BigMul) for the high half, which codegen emits as mulhu (GT_MULHI is not
+  valid in HIR). The factors are spilled to temps first, so "BigMul(a, b, out a)" still multiplies the
+  original a and evaluation order (factors, then the address) is kept. VN gives the high half its own
+  commutative function (VNF_MulHi_UN), so repeated products CSE.
+
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -4741,6 +4741,9 @@
+         case NI_System_Math_MaxUnsigned:
+             instr = INS_maxu;
+             break;
++        case NI_System_Math_BigMul:
++            instr = INS_mulhu;
++            break;
+         case NI_PRIMITIVE_LeadingZeroCount:
+             instr = is4 ? INS_clzw : INS_clz;
+             break;
+--- a/src/coreclr/jit/gentree.cpp
++++ b/src/coreclr/jit/gentree.cpp
+@@ -7067,6 +7067,14 @@
+                             break;
+                         }
+ 
++#if defined(TARGET_RISCV64)
++                        case NI_System_Math_BigMul:
++                            // mulhu
++                            costEx = 3;
++                            costSz = 4;
++                            break;
++#endif // TARGET_RISCV64
++
+                         case NI_System_Object_GetType:
+                             // Giving intrinsics a large fixed execution cost is because we'd like to CSE
+                             // them, even if they are implemented by calls. This is different from modeling
+@@ -14705,6 +14713,9 @@
+                     printf(" log10");
+                     break;
+ #if defined(TARGET_RISCV64)
++                case NI_System_Math_BigMul:
++                    printf(" bigMulHigh");
++                    break;
+                 case NI_System_Math_Max:
+                     printf(" max");
+                     break;
+--- a/src/coreclr/jit/importercalls.cpp
++++ b/src/coreclr/jit/importercalls.cpp
+@@ -5168,6 +5168,57 @@
+                 break;
+             }
+ 
++#ifdef TARGET_RISCV64
++            case NI_System_Math_BigMul:
++            {
++                // BigMul(ulong, ulong, out ulong): the low half is a mul stored through the out parameter and the
++                // high half, the value returned, a mulhu (GT_INTRINSIC, as GT_MULHI is not valid in HIR).
++                if ((sig->numArgs != 3) || (sig->retType != CORINFO_TYPE_ULONG))
++                {
++                    break;
++                }
++
++                CORINFO_ARG_LIST_HANDLE arg           = sig->args;
++                CORINFO_CLASS_HANDLE    argClass      = NO_CLASS_HANDLE;
++                bool                    ulongFactors  = true;
++                for (unsigned i = 0; i < 2; i++)
++                {
++                    ulongFactors &= (strip(info.compCompHnd->getArgType(sig, arg, &argClass)) == CORINFO_TYPE_ULONG);
++                    arg = info.compCompHnd->getArgNext(arg);
++                }
++
++                if (!ulongFactors)
++                {
++                    break;
++                }
++
++                GenTree* const lowAddr = impPopStack().val;
++                GenTree*       factors[2];
++                factors[1] = impPopStack().val;
++                factors[0] = impPopStack().val;
++
++                // Both halves read the factors, the high one after the low half is stored, which may overwrite a
++                // factor ("BigMul(a, b, out a)"). Temps also keep the evaluation order: factors, then the address.
++                for (GenTree*& factor : factors)
++                {
++                    if (!factor->IsIntegralConst())
++                    {
++                        const unsigned tmpNum = lvaGrabTemp(true DEBUGARG("BigMul factor"));
++                        impStoreToTemp(tmpNum, factor, CHECK_SPILL_ALL);
++                        factor = gtNewLclvNode(tmpNum, genActualType(lvaGetDesc(tmpNum)->TypeGet()));
++                    }
++                }
++
++                GenTree* const low = gtNewOperNode(GT_MUL, TYP_LONG, factors[0], factors[1]);
++                impAppendTree(gtNewStoreIndNode(TYP_LONG, lowAddr, low), CHECK_SPILL_ALL, impCurStmtDI);
++
++                retNode = new (this, GT_INTRINSIC)
++                    GenTreeIntrinsic(TYP_LONG, gtCloneExpr(factors[0]), gtCloneExpr(factors[1]), ni,
++                                     nullptr R2RARG(CORINFO_CONST_LOOKUP{IAT_VALUE}));
++                break;
++            }
++#endif // TARGET_RISCV64
++
+             case NI_System_Math_Max:
+             {
+                 isMinMaxIntrinsic = true;
+@@ -9576,6 +9627,7 @@
+     switch (intrinsicName)
+     {
+         case NI_System_Math_Abs:
++        case NI_System_Math_BigMul:
+         case NI_System_Math_Sqrt:
+         case NI_System_Math_Max:
+         case NI_System_Math_MaxNumber:
+@@ -11664,6 +11716,13 @@
+                     if ((strcmp(className, "Math") == 0) || (strcmp(className, "MathF") == 0))
+                     {
+                         result = lookupPrimitiveFloatNamedIntrinsic(method, methodName);
++
++#ifdef TARGET_RISCV64
++                        if ((result == NI_Illegal) && (strcmp(methodName, "BigMul") == 0))
++                        {
++                            result = NI_System_Math_BigMul;
++                        }
++#endif // TARGET_RISCV64
+                     }
+                     else if (strcmp(className, "MemoryExtensions") == 0)
+                     {
+--- a/src/coreclr/jit/lsrariscv64.cpp
++++ b/src/coreclr/jit/lsrariscv64.cpp
+@@ -419,6 +419,12 @@
+                     assert(varTypeIsFloating(tree));
+                     break;
+ 
++                // High half of the unsigned 128-bit product
++                case NI_System_Math_BigMul:
++                    assert(op2 != nullptr);
++                    assert(op1->TypeIs(TYP_LONG) && op2->TypeIs(TYP_LONG) && tree->TypeIs(TYP_LONG));
++                    break;
++
+                 // Integer Min/Max
+                 case NI_System_Math_Min:
+                 case NI_System_Math_Max:
+--- a/src/coreclr/jit/namedintrinsiclist.h
++++ b/src/coreclr/jit/namedintrinsiclist.h
+@@ -103,6 +103,8 @@
+     NI_System_Math_Truncate,
+     NI_SYSTEM_MATH_END,
+ 
++    NI_System_Math_BigMul,
++
+     NI_System_Collections_Generic_Comparer_get_Default,
+     NI_System_Collections_Generic_EqualityComparer_get_Default,
+     NI_System_Buffers_Binary_BinaryPrimitives_ReverseEndianness,
+--- a/src/coreclr/jit/valuenum.cpp
++++ b/src/coreclr/jit/valuenum.cpp
+@@ -14096,6 +14096,14 @@
+     {
+         intrinsic->gtVNPair = vnStore->VNPUniqueWithExc(intrinsic->TypeGet(), arg0VNPx);
+     }
++#ifdef TARGET_RISCV64
++    else if (intrinsic->gtIntrinsicName == NI_System_Math_BigMul)
++    {
++        ValueNumPair excSet = vnStore->VNPExcSetUnion(arg0VNPx, arg1VNPx);
++        intrinsic->gtVNPair =
++            vnStore->VNPWithExc(vnStore->VNPairForFunc(TYP_LONG, VNF_MulHi_UN, arg0VNP, arg1VNP), excSet);
++    }
++#endif // TARGET_RISCV64
+     else
+     {
+         assert(intrinsic->gtIntrinsicName == NI_System_Object_GetType);
+--- a/src/coreclr/jit/valuenumfuncs.h
++++ b/src/coreclr/jit/valuenumfuncs.h
+@@ -219,6 +219,8 @@
+     ValueNumFuncDef(MaxInt, 2, true, false)
+     ValueNumFuncDef(MinInt_UN, 2, true, false)
+     ValueNumFuncDef(MaxInt_UN, 2, true, false)
++    // High 64 bits of the unsigned 128-bit product (Math.BigMul)
++    ValueNumFuncDef(MulHi_UN, 2, true, false)
+ #endif // TARGET_RISCV64
+ 
+ // clang-format on
+--- a/src/libraries/System.Private.CoreLib/src/System/Math.cs
++++ b/src/libraries/System.Private.CoreLib/src/System/Math.cs
+@@ -195,6 +195,7 @@
+         /// <param name="b">The second number to multiply.</param>
+         /// <param name="low">The low 64-bit of the product of the specified numbers.</param>
+         /// <returns>The high 64-bit of the product of the specified numbers.</returns>
++        [Intrinsic]
+         [CLSCompliant(false)]
+         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+         public static unsafe ulong BigMul(ulong a, ulong b, out ulong low)
