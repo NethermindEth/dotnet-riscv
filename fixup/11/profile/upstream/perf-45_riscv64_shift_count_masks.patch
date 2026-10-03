@@ -1,0 +1,99 @@
+RISC-V: drop shift-count masks the shift instructions already apply. Applied after perf-43; JIT only.
+- sll/srl/sra read the low 6 bits of the count and sllw/srlw/sraw the low 5, the same masking the IR's
+  shift semantics assume (gtFoldExprConst and VN mask the count too). Lowering's TryRemoveShiftRotateMask
+  removes such an AND only while it is still the shift's direct operand; C# emits "& 63" at every long
+  shift, so a count shared by several shifts is CSE'd with its mask into a local and keeps an andi (and
+  often a callee-saved register) per use. Global morph now drops an AND whose constant keeps every count
+  bit before CSE runs (an over-mask such as "& 15" stays).
+- Lowering also drops an ADD/SUB of a multiple of the width from the count: "x >> ((64 - s) & 63)" becomes
+  "x >> -s" (negw instead of negw + addiw). Rotate recognition in morph still sees "-y + N".
+- VN's folding of a 32-bit shift by a constant now masks the count with 0x1F, as gtFoldExprConst does; a
+  count that used to arrive masked can now be propagated to it as a constant of 32 or more.
+
+--- a/src/coreclr/jit/lower.cpp
++++ b/src/coreclr/jit/lower.cpp
+@@ -8977,6 +8977,27 @@
+         // The parent was replaced, clear contain and regOpt flag.
+         op->gtOp2->ClearContained();
+     }
++
++#ifdef TARGET_RISCV64
++    // Adding or subtracting a multiple of the width leaves the count bits alone: "x >> ((-y + 64) & 63)" needs
++    // only the negation.
++    while (op->gtGetOp2()->OperIs(GT_ADD, GT_SUB) && !op->gtGetOp2()->gtOverflow())
++    {
++        GenTree* addOp  = op->gtGetOp2();
++        GenTree* addend = addOp->gtGetOp2();
++
++        if (!addend->IsCnsIntOrI() || addend->AsIntCon()->ImmedValNeedsReloc(m_compiler) ||
++            ((static_cast<size_t>(addend->AsIntCon()->IconValue()) & mask) != 0))
++        {
++            break;
++        }
++
++        op->gtOp2 = addOp->gtGetOp1();
++        BlockRange().Remove(addOp);
++        BlockRange().Remove(addend);
++        op->gtOp2->ClearContained();
++    }
++#endif
+ }
+ 
+ //------------------------------------------------------------------------
+--- a/src/coreclr/jit/morph.cpp
++++ b/src/coreclr/jit/morph.cpp
+@@ -11791,6 +11791,25 @@
+ 
+ #endif
+ 
++#ifdef TARGET_RISCV64
++    // sll/srl/sra use the low 6 bits of the count and their W forms the low 5, the same masking the IR's shift
++    // semantics assume (constant folding and VN mask the count too). Drop an AND that keeps all of those bits now,
++    // before CSE can share the masked count between several shifts and keep the AND alive in a register; lowering
++    // (TryRemoveShiftRotateMask) only sees an AND that is still the shift's direct operand.
++    if (fgGlobalMorph && tree->OperIs(GT_LSH, GT_RSH, GT_RSZ))
++    {
++        const ssize_t countMask = varTypeIsLong(typ) ? 0x3f : 0x1f;
++        while (op2->OperIs(GT_AND) && op2->gtGetOp2()->IsCnsIntOrI() &&
++               ((op2->gtGetOp2()->AsIntCon()->IconValue() & countMask) == countMask))
++        {
++            GenTree* const maskedCount = op2->gtGetOp1();
++            DEBUG_DESTROY_NODE(op2->gtGetOp2());
++            DEBUG_DESTROY_NODE(op2);
++            tree->gtOp2 = op2 = maskedCount;
++        }
++    }
++#endif
++
+     /*-------------------------------------------------------------------------
+      * Perform optional oper-specific postorder morphing
+      */
+--- a/src/coreclr/jit/valuenum.cpp
++++ b/src/coreclr/jit/valuenum.cpp
+@@ -734,7 +734,7 @@
+                 }
+                 else
+                 {
+-                    return v0 << v1;
++                    return v0 << (v1 & 0x1F);
+                 }
+             case GT_RSH:
+                 if (sizeof(T) == 8)
+@@ -743,7 +743,7 @@
+                 }
+                 else
+                 {
+-                    return v0 >> v1;
++                    return v0 >> (v1 & 0x1F);
+                 }
+             case GT_RSZ:
+                 if (sizeof(T) == 8)
+@@ -752,7 +752,7 @@
+                 }
+                 else
+                 {
+-                    return UINT32(v0) >> v1;
++                    return UINT32(v0) >> (v1 & 0x1F);
+                 }
+             case GT_ROL:
+                 if (sizeof(T) == 8)
