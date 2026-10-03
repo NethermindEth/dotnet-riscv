@@ -1,0 +1,43 @@
+Imports BitOperations.Log2 (uint, ulong, int, long) as `(bits - 1) ^ clz(value | 1)` on riscv64 when Zbb
+is available - the expansion arm64 and x64 get from their hardware intrinsics. Without this the managed
+Log2 body, which has no RISC-V path, runs its de Bruijn software fallback (~25 instructions, reached from
+128 functions of the Nethermind guest; UInt256 bit-length and BigInteger code sit on it). Without Zbb
+nothing changes. The signed overloads keep the rewritable-intrinsic fallback for negative inputs, as on
+the other targets.
+
+RISC-V64: import BitOperations.Log2 as clz (Zbb) instead of calling the software fallback.
+
+
+diff --git a/src/coreclr/jit/importercalls.cpp b/src/coreclr/jit/importercalls.cpp
+--- a/src/coreclr/jit/importercalls.cpp
++++ b/src/coreclr/jit/importercalls.cpp
+@@ -6992,7 +6992,15 @@ GenTree* Compiler::impPrimitiveNamedIntrinsic(NamedIntrinsic        intrinsic,
+                 break;
+             }
+ #endif // !TARGET_64BIT
+-#if defined(FEATURE_HW_INTRINSICS) && !defined(TARGET_WASM)
++#if (defined(FEATURE_HW_INTRINSICS) && !defined(TARGET_WASM)) || defined(TARGET_RISCV64)
++#if defined(TARGET_RISCV64)
++            // RISC-V: Log2 is (bits - 1) ^ clz(value | 1); clz needs Zbb. Without it the
++            // managed BitOperations.Log2 (and its software fallback) is called as before.
++            if (!compOpportunisticallyDependsOn(InstructionSet_Zbb))
++            {
++                break;
++            }
++#endif // TARGET_RISCV64
+             impPopStack();
+ 
+             GenTree* op1Dup = nullptr;
+@@ -7029,6 +7037,12 @@ GenTree* Compiler::impPrimitiveNamedIntrinsic(NamedIntrinsic        intrinsic,
+             hwintrinsic = varTypeIsLong(baseType) ? NI_ArmBase_Arm64_LeadingZeroCount : NI_ArmBase_LeadingZeroCount;
+             result      = gtNewScalarHWIntrinsicNode(TYP_INT, op1, hwintrinsic);
+             baseType    = TYP_INT;
++#elif defined(TARGET_RISCV64)
++            // Zbb clz/clzw, selected by the operand width in codegen (genIntrinsic); the
++            // result is a small int either way, like the arm64 node above.
++            result   = new (this, GT_INTRINSIC) GenTreeIntrinsic(TYP_INT, op1, NI_PRIMITIVE_LeadingZeroCount,
++                                                               nullptr R2RARG(CORINFO_CONST_LOOKUP{IAT_VALUE}));
++            baseType = TYP_INT;
+ #else
+ #error Unsupported platform
+ #endif
