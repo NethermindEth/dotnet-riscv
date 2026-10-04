@@ -1,0 +1,167 @@
+RISC-V: INT arguments and results are sign-extended by the side that produces them. Applied after perf-48; JIT only.
+- The RV64 psABI has the caller sign-extend a 32-bit integer argument and the callee its 32-bit integer
+  result, but the JIT did neither: genPutArgReg and genSimpleReturn skipped the move, and with it the
+  sext.w, whenever the value was already in the ABI register. So every callee that took an INT parameter
+  or call result to be sign-extended (perf-43) re-extended it in place: a sext.w in the prolog per such
+  parameter, and one after the call per such result.
+- genPutArgReg and genSimpleReturn now sign-extend an INT in place unless Lowering::IsInt32SignExtendedInReg
+  already knows it is. In return, an INT parameter is taken to be extended as it arrives, and
+  IsInt32SignExtendedInReg accepts the result of an INT call (IsInt32ResultSignExtended): compiled code
+  extends it by the rule above and native code by the psABI. Helper calls and struct returns, whose
+  register holds a struct's bytes, are not relied on; a local mapped from a struct parameter's register
+  keeps its prolog sext.w.
+- Native callees gain the extension the psABI asks of their callers; native callers already provide it.
+
+--- a/src/coreclr/jit/codegencommon.cpp
++++ b/src/coreclr/jit/codegencommon.cpp
+@@ -3720,32 +3720,25 @@
+ 
+ #ifdef TARGET_RISCV64
+     // Lowering took these INT locals to be sign-extended (see Lowering::ComputeSignExtendedLocals). One homed
+-    // in its incoming register still holds whatever the caller left in the upper half.
++    // in the register a struct parameter came in still holds whatever the caller left in the upper half; an
++    // INT parameter was extended by its caller (see genPutArgReg).
+     for (unsigned lclNum = 0; lclNum < m_compiler->lvaCount; lclNum++)
+     {
+         const LclVarDsc* const varDsc = m_compiler->lvaGetDesc(lclNum);
+-        if (!varDsc->lvSignExtendedInt || !varDsc->lvIsInReg() || (!varDsc->lvIsParam && !varDsc->lvIsParamRegTarget))
++        if (!varDsc->lvSignExtendedInt || !varDsc->lvIsInReg() || !varDsc->lvIsParamRegTarget)
+         {
+             continue;
+         }
+ 
+         regNumber incomingReg = REG_NA;
+-        if (varDsc->lvIsParamRegTarget)
++        for (int i = 0; i < m_compiler->m_paramRegLocalMappings->Height(); i++)
+         {
+-            for (int i = 0; i < m_compiler->m_paramRegLocalMappings->Height(); i++)
++            const ParameterRegisterLocalMapping& mapping = m_compiler->m_paramRegLocalMappings->BottomRef(i);
++            if (mapping.LclNum == lclNum)
+             {
+-                const ParameterRegisterLocalMapping& mapping = m_compiler->m_paramRegLocalMappings->BottomRef(i);
+-                if (mapping.LclNum == lclNum)
+-                {
+-                    incomingReg = mapping.RegisterSegment->GetRegister();
+-                }
++                incomingReg = mapping.RegisterSegment->GetRegister();
+             }
+         }
+-        else if ((lclNum < m_compiler->info.compArgsCount) &&
+-                 m_compiler->lvaGetParameterABIInfo(lclNum).HasExactlyOneRegisterSegment())
+-        {
+-            incomingReg = m_compiler->lvaGetParameterABIInfo(lclNum).Segment(0).GetRegister();
+-        }
+ 
+         if ((incomingReg == varDsc->GetRegNum()) && ((calleeRegArgMaskLiveIn & genRegMask(incomingReg)) != 0))
+         {
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -1476,7 +1476,8 @@
+ #ifdef TARGET_RISCV64
+                 // Lowering took the local to be sign-extended (see Lowering::ComputeSignExtendedLocals), which
+                 // the move gives a call result unless it was skipped.
+-                if (varDsc->lvSignExtendedInt && (targetReg == dataReg) && data->gtSkipReloadOrCopy()->IsCall())
++                if (varDsc->lvSignExtendedInt && (targetReg == dataReg) && data->gtSkipReloadOrCopy()->IsCall() &&
++                    !isSignExtended)
+                 {
+                     emit->emitIns_R_R(INS_sext_w, EA_4BYTE, targetReg, targetReg);
+                 }
+@@ -1498,7 +1499,10 @@
+ 
+     regNumber retReg = varTypeUsesFloatArgReg(treeNode) ? REG_FLOATRET : REG_INTRET;
+ 
+-    bool movRequired = (op1->GetRegNum() != retReg);
++    // An INT result is returned sign-extended, as the psABI asks: callers rely on it (see
++    // Lowering::IsInt32ResultSignExtended).
++    bool movRequired = (op1->GetRegNum() != retReg) ||
++                       ((genActualType(targetType) == TYP_INT) && !Lowering::IsInt32SignExtendedInReg(m_compiler, op1));
+ 
+     if (!movRequired)
+     {
+@@ -5007,15 +5011,24 @@
+         targetType = emitActualTypeSize(targetType) == EA_4BYTE ? TYP_INT : TYP_LONG;
+     }
+ 
+-    // An INT already sign-extended moves with mv, which costs ZisK no ALU operation.
+-    if ((targetType == TYP_INT) && Lowering::IsInt32SignExtendedInReg(m_compiler, op1))
++    // An INT already sign-extended moves with mv, which costs ZisK no ALU operation. Any other INT is
++    // sign-extended even in place: callees rely on it (see Lowering::ComputeSignExtendedLocals).
++    bool canSkip = true;
++    if (targetType == TYP_INT)
+     {
+-        targetType = TYP_LONG;
++        if (Lowering::IsInt32SignExtendedInReg(m_compiler, op1))
++        {
++            targetType = TYP_LONG;
++        }
++        else
++        {
++            canSkip = false;
++        }
+     }
+ 
+     // If child node is not already in the register we need, move it
+     GetEmitter()->emitIns_Mov(ins_Copy(op1->GetRegNum(), targetType), emitActualTypeSize(targetType), targetReg,
+-                              op1->GetRegNum(), true);
++                              op1->GetRegNum(), canSkip);
+     genProduceReg(tree);
+ }
+ 
+--- a/src/coreclr/jit/lower.h
++++ b/src/coreclr/jit/lower.h
+@@ -49,6 +49,7 @@
+ 
+ #ifdef TARGET_RISCV64
+     static bool IsInt32NonNegativeInReg(Compiler* comp, GenTree* node, unsigned depth = 0);
++    static bool IsInt32ResultSignExtended(const GenTreeCall* call);
+     static bool IsInt32SignExtendedInReg(Compiler* comp, GenTree* node, unsigned depth = 0);
+     static bool IsInt64InInt32RangeInReg(Compiler* comp, GenTree* node, bool nonNegative, unsigned depth = 0);
+ #endif
+--- a/src/coreclr/jit/lowerriscv64.cpp
++++ b/src/coreclr/jit/lowerriscv64.cpp
+@@ -363,6 +363,19 @@
+ }
+ 
+ //------------------------------------------------------------------------
++// IsInt32ResultSignExtended: whether an INT call returns its result sign-extended from 32 bits.
++//
++// Notes:
++//    The RV64 psABI has the callee sign-extend a 32-bit integer result, and every INT return of
++//    compiled code is extended (see genSimpleReturn), so the caller can rely on it. Helpers and
++//    struct returns, whose register holds a struct's bytes, are not relied on.
++//
++bool Lowering::IsInt32ResultSignExtended(const GenTreeCall* call)
++{
++    return genActualTypeIsInt(call) && !call->IsHelperCall() && varTypeIsIntegral(call->gtReturnType);
++}
++
++//------------------------------------------------------------------------
+ // IsInt32SignExtendedInReg: whether the register holding the value of an INT node is known to be the
+ // sign extension of its low 32 bits.
+ //
+@@ -422,6 +435,9 @@
+         case GT_NOT:
+             return IsInt32SignExtendedInReg(comp, node->gtGetOp1(), depth + 1);
+ 
++        case GT_CALL:
++            return IsInt32ResultSignExtended(node->AsCall());
++
+         case GT_LCL_VAR:
+         {
+             // A local that lives on the frame is loaded at every use, with lw/lh/lb/lhu/lbu for these node types.
+@@ -535,10 +551,11 @@
+ // Notes:
+ //    Runs on the final LIR. A local qualifies when every definition is a GT_STORE_LCL_VAR of a value
+ //    IsInt32SignExtendedInReg (IsInt32NonNegativeInReg) accepts, other locals included, hence the
+-//    optimistic fixed point. An INT parameter, or an INT local a parameter register maps to from its
+-//    low bits, is also defined by its incoming register, which the caller need not have extended:
+-//    genHomeRegisterParams sign-extends it in place if the local keeps lvSignExtendedInt (a moved one is
+-//    extended by the move, a spilled one reloaded by lw). Likewise a store of an INT call result, which
++//    optimistic fixed point. An INT parameter is also defined by its incoming register, which its caller
++//    sign-extended (see genPutArgReg). An INT local a parameter register maps to from its low bits is
++//    defined by a register that holds a struct's bytes: genHomeRegisterParams sign-extends it in place if
++//    the local keeps lvSignExtendedInt (a moved one is extended by the move, a spilled one reloaded by lw).
++//    Likewise a store of a call result IsInt32ResultSignExtended does not vouch for, which
+ //    genCodeForStoreLclVar sign-extends in place. A promoted field qualifies only while its struct is
+ //    never defined as a whole.
+ //
