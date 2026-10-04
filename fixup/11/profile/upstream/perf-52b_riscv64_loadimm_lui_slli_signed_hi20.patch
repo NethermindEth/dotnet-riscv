@@ -1,0 +1,22 @@
+riscv64 zkVM: store the lui immediate of the lui+slli load form signed
+
+perf-52's two-instruction immediate form kept the lui operand masked to 20 unsigned bits,
+so a negative hi20 failed the Checked JIT's isValidSimm20 assertion at emit time. The
+encoder masks the stored value, so Release output is identical; the value is now stored
+sign-extended like every other lui immediate.
+
+diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
+index 1b038c7bf..3c7734c3e 100644
+--- a/src/coreclr/jit/emitriscv64.cpp
++++ b/src/coreclr/jit/emitriscv64.cpp
+@@ -1637,7 +1637,9 @@ int emitter::emitLoadImmediate(emitAttr size, regNumber reg, ssize_t imm)
+                     instrDescLoadImm* id = static_cast<instrDescLoadImm*>(emitNewInstrLoadImm(size, imm));
+                     id->idReg1(reg);
+                     id->ins[0]    = INS_lui;
+-                    id->values[0] = (int32_t)(((uint64_t)v >> 12) & WordMask(20));
++                    // Signed, like every other lui immediate the emitter stores: v fits in 32 bits with
++                    // its low 12 bits zero, so v >> 12 is a valid simm20 (the encoder masks it).
++                    id->values[0] = (int32_t)(v >> 12);
+                     id->ins[1]    = INS_slli;
+                     id->values[1] = k;
+                     id->idCodeSize(2 * 4);
