@@ -1,59 +1,46 @@
-RISC-V: INT arguments and results are sign-extended by the side that produces them. Applied after perf-48; JIT only.
+RISC-V: INT arguments and results are sign-extended by the side that produces them. Applied after perf-48; JIT, plus one runtime stub.
 - The RV64 psABI has the caller sign-extend a 32-bit integer argument and the callee its 32-bit integer
   result, but the JIT did neither: genPutArgReg and genSimpleReturn skipped the move, and with it the
   sext.w, whenever the value was already in the ABI register. So every callee that took an INT parameter
   or call result to be sign-extended (perf-43) re-extended it in place: a sext.w in the prolog per such
   parameter, and one after the call per such result.
 - genPutArgReg and genSimpleReturn now sign-extend an INT in place unless Lowering::IsInt32SignExtendedInReg
-  already knows it is. In return, an INT parameter is taken to be extended as it arrives, and
-  IsInt32SignExtendedInReg accepts the result of an INT call (IsInt32ResultSignExtended): compiled code
-  extends it by the rule above and native code by the psABI. Helper calls and struct returns, whose
-  register holds a struct's bytes, are not relied on; a local mapped from a struct parameter's register
-  keeps its prolog sext.w.
-- Native callees gain the extension the psABI asks of their callers; native callers already provide it.
+  already knows it is, for every target.
+- Under NativeAOT, and only there, the other side relies on it: an INT parameter is taken to be extended
+  as it arrives, and IsInt32SignExtendedInReg accepts the result of an INT call into managed code
+  (IsInt32ResultSignExtended). NativeAOT compiles all managed code with this JIT; on CoreCLR, R2R code
+  from another JIT and the runtime's own callers (CallDescrWorker, stubs) are not known to extend.
+- Calls into native code keep the extension of their results: P/Invokes (GTF_CALL_UNMANAGED) and internal
+  calls (FCalls and RuntimeImports, which carry GTF_CALL_M_NOGCCHECK), whose native declaration may be
+  wider than the managed one (e.g. RhGetGenerationSize returns int64_t to a managed int). Helper calls and
+  struct returns are not relied on, and a local mapped from a struct parameter's register keeps its
+  prolog sext.w.
+- Native-to-managed transitions in the riscv64 NativeAOT runtime were audited for INT arguments: native C/C++
+  callers (reverse P/Invoke, InitializeModules, RhpCalculateStackTraceWorker, GC callouts) declare them as
+  32-bit and extend them per the psABI; UniversalTransition, RhCommonStub and the dispatch stubs pass the
+  managed caller's registers through; the catch/filter/finally funclets take no INT. The exception is
+  RhpThrowHwEx, which passes RhThrowHwEx(uint, ...) the fault code RhpHardwareExceptionHandler stored
+  zero-extended (e.g. 0xC0000005): it now sign-extends a0 first.
 
 --- a/src/coreclr/jit/codegencommon.cpp
 +++ b/src/coreclr/jit/codegencommon.cpp
-@@ -3720,32 +3720,25 @@
+@@ -3720,11 +3720,14 @@
  
  #ifdef TARGET_RISCV64
      // Lowering took these INT locals to be sign-extended (see Lowering::ComputeSignExtendedLocals). One homed
 -    // in its incoming register still holds whatever the caller left in the upper half.
-+    // in the register a struct parameter came in still holds whatever the caller left in the upper half; an
-+    // INT parameter was extended by its caller (see genPutArgReg).
++    // in its incoming register still holds whatever the caller left in the upper half, unless it is an INT
++    // parameter its callers extended (see Lowering::IsInt32ResultSignExtended for when they are known to).
++    const bool intParamsExtended = m_compiler->IsTargetAbi(CORINFO_NATIVEAOT_ABI);
      for (unsigned lclNum = 0; lclNum < m_compiler->lvaCount; lclNum++)
      {
          const LclVarDsc* const varDsc = m_compiler->lvaGetDesc(lclNum);
 -        if (!varDsc->lvSignExtendedInt || !varDsc->lvIsInReg() || (!varDsc->lvIsParam && !varDsc->lvIsParamRegTarget))
-+        if (!varDsc->lvSignExtendedInt || !varDsc->lvIsInReg() || !varDsc->lvIsParamRegTarget)
++        if (!varDsc->lvSignExtendedInt || !varDsc->lvIsInReg() ||
++            (!varDsc->lvIsParamRegTarget && (!varDsc->lvIsParam || intParamsExtended)))
          {
              continue;
          }
- 
-         regNumber incomingReg = REG_NA;
--        if (varDsc->lvIsParamRegTarget)
-+        for (int i = 0; i < m_compiler->m_paramRegLocalMappings->Height(); i++)
-         {
--            for (int i = 0; i < m_compiler->m_paramRegLocalMappings->Height(); i++)
-+            const ParameterRegisterLocalMapping& mapping = m_compiler->m_paramRegLocalMappings->BottomRef(i);
-+            if (mapping.LclNum == lclNum)
-             {
--                const ParameterRegisterLocalMapping& mapping = m_compiler->m_paramRegLocalMappings->BottomRef(i);
--                if (mapping.LclNum == lclNum)
--                {
--                    incomingReg = mapping.RegisterSegment->GetRegister();
--                }
-+                incomingReg = mapping.RegisterSegment->GetRegister();
-             }
-         }
--        else if ((lclNum < m_compiler->info.compArgsCount) &&
--                 m_compiler->lvaGetParameterABIInfo(lclNum).HasExactlyOneRegisterSegment())
--        {
--            incomingReg = m_compiler->lvaGetParameterABIInfo(lclNum).Segment(0).GetRegister();
--        }
- 
-         if ((incomingReg == varDsc->GetRegNum()) && ((calleeRegArgMaskLiveIn & genRegMask(incomingReg)) != 0))
-         {
 --- a/src/coreclr/jit/codegenriscv64.cpp
 +++ b/src/coreclr/jit/codegenriscv64.cpp
 @@ -1476,7 +1476,8 @@
@@ -113,55 +100,76 @@ RISC-V: INT arguments and results are sign-extended by the side that produces th
  
  #ifdef TARGET_RISCV64
      static bool IsInt32NonNegativeInReg(Compiler* comp, GenTree* node, unsigned depth = 0);
-+    static bool IsInt32ResultSignExtended(const GenTreeCall* call);
++    static bool IsInt32ResultSignExtended(Compiler* comp, const GenTreeCall* call);
      static bool IsInt32SignExtendedInReg(Compiler* comp, GenTree* node, unsigned depth = 0);
      static bool IsInt64InInt32RangeInReg(Compiler* comp, GenTree* node, bool nonNegative, unsigned depth = 0);
  #endif
 --- a/src/coreclr/jit/lowerriscv64.cpp
 +++ b/src/coreclr/jit/lowerriscv64.cpp
-@@ -363,6 +363,19 @@
+@@ -363,6 +363,29 @@
  }
  
  //------------------------------------------------------------------------
 +// IsInt32ResultSignExtended: whether an INT call returns its result sign-extended from 32 bits.
 +//
++// Arguments:
++//    comp - the compiler
++//    call - the INT call
++//
 +// Notes:
 +//    The RV64 psABI has the callee sign-extend a 32-bit integer result, and every INT return of
-+//    compiled code is extended (see genSimpleReturn), so the caller can rely on it. Helpers and
-+//    struct returns, whose register holds a struct's bytes, are not relied on.
++//    compiled code is extended (see genSimpleReturn), as is every INT argument (see genPutArgReg).
++//    Both are relied on only under NativeAOT, where all managed code comes from this JIT and the
++//    runtime's native-to-managed transitions extend what they pass (RhpThrowHwEx), and only for calls
++//    into managed code: P/Invokes and internal calls (FCalls, RuntimeImports) reach native code whose
++//    declared return type may be wider than the managed one. Helpers and struct returns, whose
++//    register holds a struct's bytes, are not relied on either.
 +//
-+bool Lowering::IsInt32ResultSignExtended(const GenTreeCall* call)
++bool Lowering::IsInt32ResultSignExtended(Compiler* comp, const GenTreeCall* call)
 +{
-+    return genActualTypeIsInt(call) && !call->IsHelperCall() && varTypeIsIntegral(call->gtReturnType);
++    return comp->IsTargetAbi(CORINFO_NATIVEAOT_ABI) && genActualTypeIsInt(call) && !call->IsHelperCall() &&
++           !call->IsUnmanaged() && ((call->gtCallMoreFlags & GTF_CALL_M_NOGCCHECK) == 0) &&
++           varTypeIsIntegral(call->gtReturnType);
 +}
 +
 +//------------------------------------------------------------------------
  // IsInt32SignExtendedInReg: whether the register holding the value of an INT node is known to be the
  // sign extension of its low 32 bits.
  //
-@@ -422,6 +435,9 @@
+@@ -422,6 +445,9 @@
          case GT_NOT:
              return IsInt32SignExtendedInReg(comp, node->gtGetOp1(), depth + 1);
  
 +        case GT_CALL:
-+            return IsInt32ResultSignExtended(node->AsCall());
++            return IsInt32ResultSignExtended(comp, node->AsCall());
 +
          case GT_LCL_VAR:
          {
              // A local that lives on the frame is loaded at every use, with lw/lh/lb/lhu/lbu for these node types.
-@@ -535,10 +551,11 @@
- // Notes:
+@@ -536,9 +562,11 @@
  //    Runs on the final LIR. A local qualifies when every definition is a GT_STORE_LCL_VAR of a value
  //    IsInt32SignExtendedInReg (IsInt32NonNegativeInReg) accepts, other locals included, hence the
--//    optimistic fixed point. An INT parameter, or an INT local a parameter register maps to from its
+ //    optimistic fixed point. An INT parameter, or an INT local a parameter register maps to from its
 -//    low bits, is also defined by its incoming register, which the caller need not have extended:
--//    genHomeRegisterParams sign-extends it in place if the local keeps lvSignExtendedInt (a moved one is
++//    low bits, is also defined by its incoming register. Under NativeAOT the caller sign-extended an INT
++//    parameter (see IsInt32ResultSignExtended); otherwise, and for a struct parameter's register,
+ //    genHomeRegisterParams sign-extends it in place if the local keeps lvSignExtendedInt (a moved one is
 -//    extended by the move, a spilled one reloaded by lw). Likewise a store of an INT call result, which
-+//    optimistic fixed point. An INT parameter is also defined by its incoming register, which its caller
-+//    sign-extended (see genPutArgReg). An INT local a parameter register maps to from its low bits is
-+//    defined by a register that holds a struct's bytes: genHomeRegisterParams sign-extends it in place if
-+//    the local keeps lvSignExtendedInt (a moved one is extended by the move, a spilled one reloaded by lw).
++//    extended by the move, a spilled one reloaded by lw).
 +//    Likewise a store of a call result IsInt32ResultSignExtended does not vouch for, which
  //    genCodeForStoreLclVar sign-extends in place. A promoted field qualifies only while its struct is
  //    never defined as a whole.
  //
+--- a/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S
++++ b/src/coreclr/nativeaot/Runtime/riscv64/ExceptionHandling.S
+@@ -298,7 +298,9 @@
+         addi   a2, sp, rsp_offsetof_Context                  // a2 <- PAL_LIMITED_CONTEXT*
+         sd     a2, OFFSETOF__ExInfo__m_pExContext(a1)        // pExInfo->m_pExContext = pContext
+ 
+-        // a0[31:0]: exception code
++        // a0[31:0]: exception code, zero-extended by RhpHardwareExceptionHandler; the psABI has a 32-bit
++        // argument sign-extended, which the managed callee relies on
++        sext.w a0, a0
+         // a1: ExInfo*
+         call  C_FUNC(RhThrowHwEx)
+ 
