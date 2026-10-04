@@ -1,0 +1,55 @@
+riscv64 zkVM: fix two Checked-JIT-only assertions in earlier perf patches
+
+Release JITs were unaffected (codegen and the guest's outputs are unchanged), but a Checked
+JIT - needed for JitDump/inlining diagnostics - aborted on either of these:
+
+- perf-50 marked the GPR temps of an unrolled Memmove delay-free to keep them off the
+  address registers. The temps' defs precede the address uses at the same location, so
+  LSRA already allocates them while those registers are busy, and a block store has no
+  def at the next location for a delayed free to wait on: "Found a delayRegFree
+  associated with Location with no reference".
+- The integer Math.Min/Max (Zbb) build asserted both operands have the node's exact
+  type and that the node is 64-bit; 32-bit forms reach it, and perf-40 may contain a
+  widening cast of an operand. Only the integral kind is asserted now.
+
+diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
+index 5ac0efd35..b070bc229 100644
+--- a/src/coreclr/jit/lsrariscv64.cpp
++++ b/src/coreclr/jit/lsrariscv64.cpp
+@@ -424,11 +424,12 @@ int LinearScan::BuildNode(GenTree* tree)
+                 case NI_System_Math_Max:
+                 case NI_System_Math_MinUnsigned:
+                 case NI_System_Math_MaxUnsigned:
++                    // Both 32- and 64-bit forms reach here, and a widening cast of an operand may be
++                    // contained (perf-40), so only the integral kind is checked.
+                     assert(m_compiler->compOpportunisticallyDependsOn(InstructionSet_Zbb));
+                     assert(op2 != nullptr);
+-                    assert(op2->TypeIs(tree->TypeGet()));
+-                    assert(op1->TypeIs(tree->TypeGet()));
+-                    assert(tree->TypeIs(TYP_I_IMPL));
++                    assert(varTypeIsIntegral(op1) && varTypeIsIntegral(op2));
++                    assert(varTypeIsIntegral(tree));
+                     break;
+ 
+                 // High half of a 64x64 product: mulh / mulhu, two register operands.
+@@ -1325,8 +1326,10 @@ int LinearScan::BuildBlockStore(GenTreeBlk* blkNode)
+                 // (a remainder is covered by an overlapping 8-byte access), two GPRs for
+                 // a 3..7 byte block (two overlapping accesses), one for 1/2/4 bytes. The
+                 // size is capped by getUnrollThreshold(Memmove) at MaxInternalCount * 8.
+-                // The temps must not alias the address registers, which stay live across
+-                // the loads: delay-free them.
++                // The temps cannot alias the address registers: their defs precede the
++                // address uses at this location, so they are allocated while those are
++                // still busy. They are not delay-freed - a store has no def at the next
++                // location for a delayed free to wait on (LSRA asserts on that).
+                 assert(size > 0);
+                 unsigned temps;
+                 if (size >= REGSIZE_BYTES)
+@@ -1342,7 +1345,6 @@ int LinearScan::BuildBlockStore(GenTreeBlk* blkNode)
+                 {
+                     buildInternalIntRegisterDefForNode(blkNode);
+                 }
+-                setInternalRegsDelayFree = true;
+                 break;
+             }
+ 
