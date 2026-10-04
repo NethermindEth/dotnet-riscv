@@ -1,0 +1,75 @@
+riscv64 zkVM: JitInlineAdditionalMultiplier is release-settable and applied in release
+
+The inliner's profitability model weighs code growth against an estimated call-site
+benefit; on the zkVM code size is free and every avoided call saves the executed call
+sequence, prolog/epilog and argument moves (about a fifth of all steps in the traced
+Nethermind block are call ABI overhead). The Checked-JIT inlining dump of the guest shows
+"call site: unprofitable inline" as the dominant failure (12.9k sites), including hot
+small callees in the trie and RLP code.
+
+JitInlineAdditionalMultiplier already existed as a DEBUG-only knob added to the
+multiplier of both the default and the extended policy. It is now RELEASE_CONFIG and the
+addition happens in release builds too; the default stays 0 (no behaviour change). bflat
+passes it for the zisk libc.
+
+Measured on nine mainnet blocks with ziskemu, same JIT with the knob at 0 vs 3:
+-2.2% executed steps (-35.3M), identical outputs; guest code grew 3%.
+
+diff --git a/src/coreclr/jit/inlinepolicy.cpp b/src/coreclr/jit/inlinepolicy.cpp
+index 2641cc168..b0c6731d2 100644
+--- a/src/coreclr/jit/inlinepolicy.cpp
++++ b/src/coreclr/jit/inlinepolicy.cpp
+@@ -820,8 +820,7 @@ double DefaultPolicy::DetermineMultiplier()
+             break;
+     }
+ 
+-#ifdef DEBUG
+-
++    // RELEASE-settable (zkVM guest build): see JitInlineAdditionalMultiplier in jitconfigvalues.h.
+     int additionalMultiplier = JitConfig.JitInlineAdditionalMultiplier();
+ 
+     if (additionalMultiplier != 0)
+@@ -830,6 +829,8 @@ double DefaultPolicy::DetermineMultiplier()
+         JITDUMP("\nmultiplier increased via JitInlineAdditionalMultiplier=%d to %g.", additionalMultiplier, multiplier);
+     }
+ 
++#ifdef DEBUG
++
+     if (m_RootCompiler->compInlineStress())
+     {
+         multiplier += 10;
+@@ -1931,8 +1932,7 @@ double ExtendedDefaultPolicy::DetermineMultiplier()
+         JITDUMP("\nCallsite is in a no-return region.  Multiplier limited to %g.", multiplier);
+     }
+ 
+-#ifdef DEBUG
+-
++    // RELEASE-settable (zkVM guest build): see JitInlineAdditionalMultiplier in jitconfigvalues.h.
+     int additionalMultiplier = JitConfig.JitInlineAdditionalMultiplier();
+ 
+     if (additionalMultiplier != 0)
+@@ -1941,6 +1941,8 @@ double ExtendedDefaultPolicy::DetermineMultiplier()
+         JITDUMP("\nmultiplier increased via JitInlineAdditionalMultiplier=%d to %g.", additionalMultiplier, multiplier);
+     }
+ 
++#ifdef DEBUG
++
+     if (m_RootCompiler->compInlineStress())
+     {
+         multiplier += 10;
+diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
+index fa87f5eff..9a0db562b 100644
+--- a/src/coreclr/jit/jitconfigvalues.h
++++ b/src/coreclr/jit/jitconfigvalues.h
+@@ -126,7 +126,10 @@ CONFIG_INTEGER(JitGCChecks, "JitGCChecks", 0)
+ CONFIG_INTEGER(JitGCInfoLogging, "JitGCInfoLogging", 0) // If true, prints GCInfo-related output to standard output.
+ CONFIG_INTEGER(JitHashBreak, "JitHashBreak", -1)        // Same as JitBreak, but for a method hash
+ CONFIG_INTEGER(JitHashHalt, "JitHashHalt", -1)          // Same as JitHalt, but for a method hash
+-CONFIG_INTEGER(JitInlineAdditionalMultiplier, "JitInlineAdditionalMultiplier", 0)
++// RELEASE-settable for the zkVM guest build (see JitInlineSize below): every avoided call saves
++// executed instructions there and code size is free, so the build may add to the profitability
++// multiplier. Default 0 -> no behaviour change.
++RELEASE_CONFIG_INTEGER(JitInlineAdditionalMultiplier, "JitInlineAdditionalMultiplier", 0)
+ CONFIG_INTEGER(JitInlinePrintStats, "JitInlinePrintStats", 0)
+ // RELEASE-settable (were DEBUG-only) so the ZisK riscv64 guest build can raise the inline
+ // size/depth: the target has no icache and proving cost == executed-instruction count, so the
