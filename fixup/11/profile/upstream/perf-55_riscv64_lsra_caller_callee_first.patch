@@ -1,0 +1,80 @@
+riscv64 zkVM: LSRA picks the register class before range coverage
+
+On the zkVM targets every callee-saved register a method touches costs two executed
+instructions per invocation (prolog save, epilog restore) and nothing hides them. The
+stock register-selection order applies COVERS (a register free for the interval's whole
+range) before CALLER_CALLEE (a register in the right save class), so an interval that
+never spans a call still lands in an sN register whenever the argument registers look
+busy. The traced Nethermind guest showed this in leaf EVM handlers (SWAP saving s1..s4
+for a value swap) and in call-free hot paths of trie methods; callee-save traffic was
+10.5% of all executed instructions, 1.05% of it in methods that make no call at all.
+
+JitRiscV64LsraCallerCalleeFirst (default 1) applies CALLER_CALLEE right after FREE,
+CONST_AVAILABLE and THIS_ASSIGNED, in release through an explicit prefix to the default
+sequence (each try_* is idempotent, so the default sequence then re-applies them as
+no-ops) and in checked builds through the default JitLsraOrdering string. Intervals that
+span a call keep preferring callee-saved registers exactly as before.
+
+diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
+index fd3f839c3..7799772bd 100644
+--- a/src/coreclr/jit/jitconfigvalues.h
++++ b/src/coreclr/jit/jitconfigvalues.h
+@@ -519,6 +519,16 @@ RELEASE_CONFIG_INTEGER(JitRiscV64StrictAlign,       "JitRiscV64StrictAlign",
+ // Interlocked.MemoryBarrier / Volatile.* call. When 1, the riscv64 JIT emits no
+ // `fence` at all. Set 0 on any target where another agent can observe memory.
+ RELEASE_CONFIG_INTEGER(JitRiscV64NoMemoryBarriers,  "JitRiscV64NoMemoryBarriers", 1)
++// riscv64 zkVM (ZisK): every callee-saved register a method touches costs two executed
++// instructions per invocation (prolog save + epilog restore), and there is no icache or
++// store buffer to hide them. LSRA's default heuristic order prefers a register that covers
++// the whole interval (COVERS) over one in the right save class (CALLER_CALLEE), so leaf
++// methods and non-call-spanning intervals often land in sN registers merely because the
++// argument registers looked busy. Non-zero applies CALLER_CALLEE right after FREE,
++// CONST_AVAILABLE and THIS_ASSIGNED, so an interval that does not span a call takes a
++// caller-saved register whenever one is free, and only call-spanning intervals pay for
++// callee-saved ones.
++RELEASE_CONFIG_INTEGER(JitRiscV64LsraCallerCalleeFirst, "JitRiscV64LsraCallerCalleeFirst", 1)
+ #endif
+ 
+ RELEASE_CONFIG_INTEGER(EnableEmbeddedBroadcast,     "EnableEmbeddedBroadcast",   1) // Allows embedded broadcasts to be disabled
+diff --git a/src/coreclr/jit/lsra.cpp b/src/coreclr/jit/lsra.cpp
+index 1b541dc41..030cb6084 100644
+--- a/src/coreclr/jit/lsra.cpp
++++ b/src/coreclr/jit/lsra.cpp
+@@ -12517,6 +12517,13 @@ LinearScan::RegisterSelection::RegisterSelection(LinearScan* linearScan)
+     if (ordering == nullptr)
+     {
+         ordering = "ABCDEFGHIJKLMNOPQ";
++#ifdef TARGET_RISCV64
++        // Mirror the release-mode zkVM order: CALLER_CALLEE right after THIS_ASSIGNED.
++        if (JitConfig.JitRiscV64LsraCallerCalleeFirst() != 0)
++        {
++            ordering = "ABCHDEFGIJKLMNOPQ";
++        }
++#endif // TARGET_RISCV64
+ 
+         if (!linearScan->enregisterLocalVars && linearScan->m_compiler->opts.OptimizationDisabled()
+ #ifdef TARGET_ARM64
+@@ -13803,6 +13810,23 @@ SingleTypeRegSet LinearScan::RegisterSelection::select(Interval*
+     // In release, just invoke the default order
+     if (freeCandidates != RBM_NONE)
+     {
++#ifdef TARGET_RISCV64
++        // zkVM: a callee-saved register costs two executed instructions per invocation, so
++        // decide the save class before any range-coverage heuristic can pull a non-call-spanning
++        // interval into an sN register. Each try_* is idempotent, so the default sequence below
++        // simply re-applies them as no-ops. See JitRiscV64LsraCallerCalleeFirst.
++        if (JitConfig.JitRiscV64LsraCallerCalleeFirst() != 0)
++        {
++            try_FREE();
++            IF_FOUND_GOTO_DONE
++            try_CONST_AVAILABLE();
++            IF_FOUND_GOTO_DONE
++            try_THIS_ASSIGNED();
++            IF_FOUND_GOTO_DONE
++            try_CALLER_CALLEE();
++            IF_FOUND_GOTO_DONE
++        }
++#endif // TARGET_RISCV64
+ #define REG_SEL_DEF(stat, value, shortname, orderSeqId)                                                                \
+     try_##stat();                                                                                                      \
+     IF_FOUND_GOTO_DONE

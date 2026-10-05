@@ -1,0 +1,210 @@
+riscv64 zkVM: zero fills as the ZisK memset precompile idiom
+
+Zeroing memory cost one `sd zero` per eight bytes: prolog initialization of must-init
+frame slots (a four-store loop above 96 bytes, straight stores below), unrolled zero
+block stores (`= default` of structs, InitBlock) and the looped variant for larger
+blocks. libziskos' memset is the precompile idiom `csrs 0x816, <address>; addi x0,
+<length>, <fill>`, which the emulator executes as two instructions whatever the length.
+JitZkMemsetCsr=<bytes> (default 0 = off; bflat passes 0x18) emits a zero fill of at
+least that many bytes as `[lea/addi address;] li length; csrrs x0, 0x816, address;
+addi x0, length, 0`: in genZeroInitFrameUsingBlockInit for the whole must-init range,
+and for zero-constant GT_STORE_BLK of the unrolled and looped kinds (LSRA reserves
+the one or two temporaries; address modes with an index or an offset outside simm12
+and unaligned stores in strict-alignment mode keep the stores). Non-zero fills are
+unchanged.
+
+Measured on nine mainnet blocks on top of perf-62/63: block stores alone -0.15%
+executed steps, with the prolog range -1.51% (1,500,368,434 steps = -2.70% versus
+perf-61, -11.93% versus master); 24- and 32-byte minimums are indistinguishable.
+Outputs identical. In the traced block 3.6% of all steps were zero stores, 0.7% of
+them in runs of five or more.
+
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+index c81546843..7e20c9681 100644
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -839,6 +839,20 @@ void CodeGen::genZeroInitFrameUsingBlockInit(int untrLclHi, int untrLclLo, regNu
+     }
+ 
+     ssize_t uLclBytes = untrLclHi - untrLclLo;
++
++    // zkVM (JitZkMemsetCsr): zero the whole range with the ZisK memset precompile idiom,
++    // csrrs x0, 0x816, <address>; addi x0, <length>, 0 - four instructions whatever the size.
++    if ((JitConfig.JitZkMemsetCsr() > 0) && (uLclBytes >= (ssize_t)JitConfig.JitZkMemsetCsr()))
++    {
++        noway_assert(availMask != RBM_NONE);
++        regMaskTP lenMask = genFindLowestBit(availMask);
++        regNumber rLen    = genRegNumFromMask(lenMask);
++        assert((genRegMask(rLen) & calleeRegArgMaskLiveIn) == 0);
++        instGen_Set_Reg_To_Imm(EA_PTRSIZE, rLen, uLclBytes);
++        GetEmitter()->emitIns_R_R_I(INS_csrrs, EA_8BYTE, REG_ZERO, rAddr, 0x816);
++        GetEmitter()->emitIns_R_R_I(INS_addi, EA_8BYTE, REG_ZERO, rLen, 0);
++        return;
++    }
+     assert((uLclBytes % 4) == 0); // The smallest stack slot is always 4 bytes.
+     ssize_t padding = untrLclLo & 0x7;
+ 
+@@ -2259,6 +2273,34 @@ void CodeGen::genCodeForInitBlkUnroll(GenTreeBlk* node)
+     assert(size <= INT32_MAX);
+     assert(dstOffset < INT32_MAX - static_cast<int>(size));
+ 
++    bool zkNeedsAddrReg = false;
++    if ((srcReg == REG_R0) && m_compiler->zkInitBlkUsesMemsetCsr(node, &zkNeedsAddrReg))
++    {
++        // ZisK memset precompile (JitZkMemsetCsr): csrrs x0, 0x816, <address>; addi x0, <length>, <fill>
++        regNumber lenReg  = internalRegisters.Extract(node);
++        regNumber addrReg = dstAddrBaseReg;
++        if (zkNeedsAddrReg)
++        {
++            addrReg = internalRegisters.Extract(node);
++            if (dstLclNum != BAD_VAR_NUM)
++            {
++                emit->emitIns_R_S(INS_lea, EA_PTRSIZE, addrReg, dstLclNum, dstOffset);
++            }
++            else
++            {
++                emit->emitIns_R_R_I(INS_addi, EA_PTRSIZE, addrReg, dstAddrBaseReg, dstOffset);
++            }
++        }
++        else
++        {
++            assert((dstLclNum == BAD_VAR_NUM) && (dstOffset == 0));
++        }
++        instGen_Set_Reg_To_Imm(EA_PTRSIZE, lenReg, (ssize_t)size);
++        emit->emitIns_R_R_I(INS_csrrs, EA_8BYTE, REG_ZERO, addrReg, 0x816);
++        emit->emitIns_R_R_I(INS_addi, EA_8BYTE, REG_ZERO, lenReg, 0);
++        return;
++    }
++
+     if (genRiscV64NoUnalignedAccess() && node->IsUnaligned())
+     {
+         // Unaligned access is forbidden here: spill the (already byte-replicated) fill
+@@ -5858,6 +5900,19 @@ void CodeGen::genCodeForInitBlkLoop(GenTreeBlk* initBlkNode)
+     // Although, we zero the first pointer before the loop (the loop doesn't zero it)
+     // it works as a nullcheck, otherwise the first iteration would try to access
+     // "null + potentially large offset" and hit AV.
++
++    bool zkNeedsAddrReg = false;
++    if (m_compiler->zkInitBlkUsesMemsetCsr(initBlkNode, &zkNeedsAddrReg))
++    {
++        // ZisK memset precompile (JitZkMemsetCsr): csrrs x0, 0x816, <address>; addi x0, <length>, 0
++        assert(!zkNeedsAddrReg);
++        const regNumber lenReg = internalRegisters.GetSingle(initBlkNode);
++        instGen_Set_Reg_To_Imm(EA_PTRSIZE, lenReg, (ssize_t)size);
++        GetEmitter()->emitIns_R_R_I(INS_csrrs, EA_8BYTE, REG_ZERO, dstReg, 0x816);
++        GetEmitter()->emitIns_R_R_I(INS_addi, EA_8BYTE, REG_ZERO, lenReg, 0);
++        return;
++    }
++
+     GetEmitter()->emitIns_R_R_I(INS_sd, EA_PTRSIZE, REG_R0, dstReg, 0);
+     if (size > TARGET_POINTER_SIZE)
+     {
+diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
+index 43867319c..948b571e8 100644
+--- a/src/coreclr/jit/compiler.h
++++ b/src/coreclr/jit/compiler.h
+@@ -7393,6 +7393,7 @@ private:
+ #if defined(TARGET_RISCV64)
+     GenTree* fgRiscV64TryInlineNewArr(GenTreeCall* call);
+     int      zkCsrForPInvoke(GenTreeCall* call);
++    bool     zkInitBlkUsesMemsetCsr(GenTreeBlk* blk, bool* needsAddrReg);
+ #endif
+     GenTree* fgExpandVirtualVtableCallTarget(GenTreeCall* call);
+ 
+diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
+index 407ad45ff..c74447aac 100644
+--- a/src/coreclr/jit/jitconfigvalues.h
++++ b/src/coreclr/jit/jitconfigvalues.h
+@@ -555,6 +555,11 @@ RELEASE_CONFIG_INTEGER(JitZkSynthesizeCounts, "JitZkSynthesizeCounts", 0)
+ // through join resolution on the edge leaving the call's block, i.e. only on paths that executed the
+ // call, instead of at the next use on every path. Default 0.
+ RELEASE_CONFIG_INTEGER(JitZkSpillKeepReg, "JitZkSpillKeepReg", 0)
++// zkVM (ZisK): a zero fill of at least this many bytes (0 = never) that would otherwise be
++// unrolled into stores is emitted as the memset precompile idiom of libziskos,
++// `csrrs x0, 0x816, <address>; addi x0, <length>, 0`: three or four instructions whatever
++// the size, against one store per eight bytes.
++RELEASE_CONFIG_INTEGER(JitZkMemsetCsr, "JitZkMemsetCsr", 0)
+ // riscv64 zkVM (ZisK): a precompile runs when a CSR is written with the address of its
+ // operand block. libziskos wraps each one in a two-instruction function (csrs; ret) that
+ // managed code reaches through a P/Invoke, so one keccak-f costs the call pair, the stub,
+diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
+index b070bc229..10d544aa4 100644
+--- a/src/coreclr/jit/lsrariscv64.cpp
++++ b/src/coreclr/jit/lsrariscv64.cpp
+@@ -1273,6 +1273,18 @@ int LinearScan::BuildBlockStore(GenTreeBlk* blkNode)
+         {
+             case GenTreeBlk::BlkOpKindUnroll:
+             {
++                bool zkNeedsAddrReg = false;
++                if (m_compiler->zkInitBlkUsesMemsetCsr(blkNode, &zkNeedsAddrReg))
++                {
++                    // ZisK memset idiom: a register for the length, one for the address if it is not
++                    // already in a register.
++                    buildInternalIntRegisterDefForNode(blkNode);
++                    if (zkNeedsAddrReg)
++                    {
++                        buildInternalIntRegisterDefForNode(blkNode);
++                    }
++                    break;
++                }
+                 if (dstAddr->isContained())
+                 {
+                     // Since the dstAddr is contained the address will be computed in CodeGen.
+diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
+index 2ce456d43..057f7d546 100644
+--- a/src/coreclr/jit/morph.cpp
++++ b/src/coreclr/jit/morph.cpp
+@@ -6373,6 +6373,53 @@ void Compiler::fgMorphTailCallViaJitHelper(GenTreeCall* call)
+ //    again at each consumer (LSRA kills, call codegen, the leaf RA-elision scan) rather than
+ //    carried on the node.
+ //
++//------------------------------------------------------------------------
++// zkInitBlkUsesMemsetCsr: does this unrolled or looped zero-fill block store become the ZisK memset
++//   precompile idiom (JitZkMemsetCsr)? Also reports whether codegen needs a register to
++//   materialize the destination address (a contained local address or a based offset).
++//
++bool Compiler::zkInitBlkUsesMemsetCsr(GenTreeBlk* blk, bool* needsAddrReg)
++{
++    *needsAddrReg = false;
++    const int minSize = JitConfig.JitZkMemsetCsr();
++    if ((minSize <= 0) || !blk->OperIs(GT_STORE_BLK) || !blk->OperIsInitBlkOp() ||
++        ((blk->gtBlkOpKind != GenTreeBlk::BlkOpKindUnroll) && (blk->gtBlkOpKind != GenTreeBlk::BlkOpKindLoop)) ||
++        (blk->Size() < (unsigned)minSize))
++    {
++        return false;
++    }
++    GenTree* src = blk->Data();
++    if (src->OperIs(GT_INIT_VAL))
++    {
++        src = src->gtGetOp1();
++    }
++    if (!src->isContained() || !src->IsIntegralConst(0))
++    {
++        return false;
++    }
++    if (blk->IsUnaligned() && (JitConfig.JitNoUnalignedAccess() != 0))
++    {
++        return false;
++    }
++    GenTree* dstAddr = blk->Addr();
++    if (dstAddr->isContained())
++    {
++        if (dstAddr->OperIsAddrMode())
++        {
++            if (dstAddr->AsAddrMode()->HasIndex() || !emitter::isValidSimm12(dstAddr->AsAddrMode()->Offset()))
++            {
++                return false;
++            }
++            *needsAddrReg = (dstAddr->AsAddrMode()->Offset() != 0);
++        }
++        else
++        {
++            *needsAddrReg = true; // GT_LCL_ADDR: lea into a register
++        }
++    }
++    return true;
++}
++
+ int Compiler::zkCsrForPInvoke(GenTreeCall* call)
+ {
+     if (!call->IsUnmanaged() || (call->gtCallType != CT_USER_FUNC) || (call->gtCallMethHnd == nullptr) ||

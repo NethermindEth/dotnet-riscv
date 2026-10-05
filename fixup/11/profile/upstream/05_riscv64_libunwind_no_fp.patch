@@ -1,4 +1,4 @@
-From 3912f96e1dc27f7e12c86bd12e6a69ab4d0eefec Mon Sep 17 00:00:00 2001
+From 7a6dc9515396333a734f06d594513917096de0a5 Mon Sep 17 00:00:00 2001
 From: Maxim Menshikov <maximmenshchikov@gmail.com>
 Date: Wed, 9 Sep 2026 00:01:40 +0100
 Subject: [PATCH] [RISC-V] Build libunwind for targets without the F/D

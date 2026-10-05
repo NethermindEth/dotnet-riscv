@@ -1,0 +1,134 @@
+NativeAOT: tell the JIT which methods never return
+
+The JIT only learns that a callee never returns while scanning it as an inline candidate,
+and a [DoesNotReturn] throw helper is NoInlining, so every value live after such a call
+was treated as live across a call and kept in a callee-saved register - two executed
+instructions per invocation of the caller on the zkVM, in methods whose hot path makes
+no call at all. ILC now reports CORINFO_FLG_DOES_NOT_RETURN (a previously unused method
+attribute bit) for methods carrying the attribute, matched on the typical method
+definition so generic instantiations qualify, and the importer marks a direct call to
+such a method no-return; morph then ends the block in a throw and liveness drops.
+
+diff --git a/src/coreclr/inc/corinfo.h b/src/coreclr/inc/corinfo.h
+index bbd2bfc1c..8a509cc3b 100644
+--- a/src/coreclr/inc/corinfo.h
++++ b/src/coreclr/inc/corinfo.h
+@@ -763,7 +763,7 @@ enum CorInfoFlag
+     CORINFO_FLG_FINAL                 = 0x00000010,
+     CORINFO_FLG_SYNCH                 = 0x00000020,
+     CORINFO_FLG_VIRTUAL               = 0x00000040,
+-//  CORINFO_FLG_UNUSED                = 0x00000080,
++    CORINFO_FLG_DOES_NOT_RETURN       = 0x00000080, // NativeAOT zkVM: the method is [DoesNotReturn]; the JIT treats a direct call to it as a throw
+ //  CORINFO_FLG_UNUSED                = 0x00000100,
+     CORINFO_FLG_INTRINSIC_TYPE        = 0x00000200, // This type is marked by [Intrinsic]
+     CORINFO_FLG_ABSTRACT              = 0x00000400,
+diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
+index 6168202c2..67d9a3c46 100644
+--- a/src/coreclr/jit/compiler.h
++++ b/src/coreclr/jit/compiler.h
+@@ -8362,6 +8362,8 @@ public:
+         optNoReturnCallCount++;
+     }
+ 
++    void impMarkCallDoesNotReturnFromAttribs(GenTreeCall* call, unsigned mflags);
++
+     void setCallDoesNotReturn(GenTreeCall* const call)
+     {
+         assert(call != nullptr);
+diff --git a/src/coreclr/jit/fgbasic.cpp b/src/coreclr/jit/fgbasic.cpp
+index fdf799209..0aa7ef2dd 100644
+--- a/src/coreclr/jit/fgbasic.cpp
++++ b/src/coreclr/jit/fgbasic.cpp
+@@ -2432,7 +2432,7 @@ void Compiler::fgFindJumpTargets(const BYTE* codeAddr, IL_OFFSET codeSize, Fixed
+ 
+         compInlineResult->NoteBool(InlineObservation::CALLEE_DOES_NOT_RETURN, doesNotReturn);
+ 
+-        if (doesNotReturn && isInlining &&
++        if (doesNotReturn && isInlining && !impInlineInfo->iciCall->IsNoReturn() &&
+             info.compCompHnd->notifyMethodInfoUsage(impInlineInfo->iciCall->gtCallMethHnd))
+         {
+             // Mark the call node as "no return" as it can impact caller's code quality.
+diff --git a/src/coreclr/jit/importercalls.cpp b/src/coreclr/jit/importercalls.cpp
+index b2a25602e..aa9ab0073 100644
+--- a/src/coreclr/jit/importercalls.cpp
++++ b/src/coreclr/jit/importercalls.cpp
+@@ -236,6 +236,30 @@ void Compiler::impTryOptimizeAwaitAwaiter(GenTreeCall*            call,
+     call->gtArgs.PushBack(this, NewCallArg::Primitive(offset));
+ }
+ 
++//------------------------------------------------------------------------
++// impMarkCallDoesNotReturnFromAttribs: mark a direct call to a [DoesNotReturn] method as no-return.
++//
++// Arguments:
++//    call   - the call node
++//    mflags - the callee's method attributes
++//
++// Notes:
++//    The EE reports CORINFO_FLG_DOES_NOT_RETURN (NativeAOT) for methods carrying the attribute. The
++//    inliner also discovers no-return callees, but only for the ones it scans; a NoInlining throw
++//    helper is never scanned, and every value live after the call then has to be kept in a callee-saved
++//    register, which on the zkVM costs two executed instructions per invocation of the caller.
++//
++void Compiler::impMarkCallDoesNotReturnFromAttribs(GenTreeCall* call, unsigned mflags)
++{
++    if (((mflags & CORINFO_FLG_DOES_NOT_RETURN) == 0) || call->IsNoReturn() || call->IsVirtual() ||
++        call->IsTailPrefixedCall() || compIsAsync())
++    {
++        return;
++    }
++    JITDUMP("Call [%06u] targets a [DoesNotReturn] method; marking it no-return\n", dspTreeID(call));
++    setCallDoesNotReturn(call);
++}
++
+ //------------------------------------------------------------------------
+ // impImportCall: import a call-inspiring opcode
+ //
+@@ -1241,6 +1265,8 @@ DEVIRT:
+                 // Keep track of the raw IL offset of the call
+                 INDEBUG(call->AsCall()->gtRawILOffset = rawILOffset);
+ 
++                impMarkCallDoesNotReturnFromAttribs(call->AsCall(), mflags);
++
+                 // Is it an inline candidate?
+                 impMarkInlineCandidate(call, exactContextHnd, callInfo, compInlineContext);
+             }
+@@ -1468,6 +1494,8 @@ DONE:
+         // Keep track of the raw IL offset of the call
+         INDEBUG(call->AsCall()->gtRawILOffset = rawILOffset);
+ 
++        impMarkCallDoesNotReturnFromAttribs(call->AsCall(), mflags);
++
+         // Is it an inline candidate?
+         impMarkInlineCandidate(call, exactContextHnd, callInfo, compInlineContext);
+ 
+diff --git a/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs b/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
+index 687d16104..539662cc1 100644
+--- a/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
++++ b/src/coreclr/tools/Common/JitInterface/CorInfoImpl.cs
+@@ -1120,6 +1120,13 @@ private uint getMethodAttribsInternal(MethodDesc method)
+             if (method.Signature.IsStatic)
+                 result |= CorInfoFlag.CORINFO_FLG_STATIC;
+ 
++            // The JIT only learns that a callee never returns by scanning it as an inline candidate, which a
++            // NoInlining throw helper never is; every value live after such a call then has to survive a call
++            // in a callee-saved register. The attribute states the fact directly.
++            if (method.GetTypicalMethodDefinition() is EcmaMethod doesNotReturnCandidate &&
++                doesNotReturnCandidate.HasCustomAttribute("System.Diagnostics.CodeAnalysis", "DoesNotReturnAttribute"))
++                result |= CorInfoFlag.CORINFO_FLG_DOES_NOT_RETURN;
++
+             if (method.IsSynchronized)
+                 result |= CorInfoFlag.CORINFO_FLG_SYNCH;
+             if (method.IsIntrinsic)
+diff --git a/src/coreclr/tools/Common/JitInterface/CorInfoTypes.cs b/src/coreclr/tools/Common/JitInterface/CorInfoTypes.cs
+index 3ffc55a2b..58d831b1d 100644
+--- a/src/coreclr/tools/Common/JitInterface/CorInfoTypes.cs
++++ b/src/coreclr/tools/Common/JitInterface/CorInfoTypes.cs
+@@ -643,7 +643,7 @@ public enum CorInfoFlag : uint
+         CORINFO_FLG_FINAL = 0x00000010,
+         CORINFO_FLG_SYNCH = 0x00000020,
+         CORINFO_FLG_VIRTUAL = 0x00000040,
+-        //  CORINFO_FLG_UNUSED                = 0x00000080,
++        CORINFO_FLG_DOES_NOT_RETURN = 0x00000080, // NativeAOT zkVM: the method is [DoesNotReturn]; the JIT treats a direct call to it as a throw
+         //  CORINFO_FLG_UNUSED                = 0x00000100,
+         CORINFO_FLG_INTRINSIC_TYPE = 0x00000200, // This type is marked by [Intrinsic]
+         CORINFO_FLG_ABSTRACT = 0x00000400,

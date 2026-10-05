@@ -1,0 +1,236 @@
+Expands Math.BigMul(ulong, ulong, out ulong) and Math.BigMul(long, long, out long) on riscv64 into the
+two instructions the M extension has for the full 64x64 product: `mul` for the low half (an ordinary
+GT_MUL stored through the out pointer) and `mulhu` / `mulh` for the high half, carried by a new
+GT_INTRINSIC NI_PRIMITIVE_MultiplyHigh[Unsigned] node (target intrinsic: LSRA and codegen cases, VN as an
+opaque commutative function so equal products CSE). The managed body has no RISC-V path and falls back to
+four 32x32 multiplies and about 20 shifts and adds; UInt256 multiplication (EVM MUL, 118 `mul` and no
+`mulhu` in the Nethermind guest's OpMul) is built on it. The two CoreLib overloads gain [Intrinsic] so the
+JIT sees the call; on every other target the JIT recognizes the name and leaves the call (and its
+AggressiveInlining body) exactly as before. The (ulong, uint, out) and 32x32 overloads are untouched.
+
+RISC-V64: Math.BigMul 64x64 -> mul + mulhu / mulh.
+
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -4741,6 +4741,12 @@ void CodeGen::genIntrinsic(GenTreeIntrinsic* treeNode)
+         case NI_System_Math_MaxUnsigned:
+             instr = INS_maxu;
+             break;
++        case NI_PRIMITIVE_MultiplyHigh:
++            instr = INS_mulh;
++            break;
++        case NI_PRIMITIVE_MultiplyHighUnsigned:
++            instr = INS_mulhu;
++            break;
+         case NI_PRIMITIVE_LeadingZeroCount:
+             instr = is4 ? INS_clzw : INS_clz;
+             break;
+diff --git a/src/coreclr/jit/gentree.cpp b/src/coreclr/jit/gentree.cpp
+--- a/src/coreclr/jit/gentree.cpp
++++ b/src/coreclr/jit/gentree.cpp
+@@ -7434,6 +7434,8 @@ unsigned Compiler::gtSetEvalOrder(GenTree* tree)
+                     case NI_System_Math_Min:
+                     case NI_System_Math_MinUnsigned:
+                     case NI_System_Math_MinNative:
++                    case NI_PRIMITIVE_MultiplyHigh:
++                    case NI_PRIMITIVE_MultiplyHighUnsigned:
+                     {
+                         level++;
+                         break;
+@@ -14723,6 +14725,12 @@ void Compiler::gtDispTree(GenTree*                    tree,
+                 case NI_System_Math_MinUnsigned:
+                     printf(" minUnsigned");
+                     break;
++                case NI_PRIMITIVE_MultiplyHigh:
++                    printf(" mulHigh");
++                    break;
++                case NI_PRIMITIVE_MultiplyHighUnsigned:
++                    printf(" mulHighUnsigned");
++                    break;
+                 case NI_PRIMITIVE_LeadingZeroCount:
+                     printf(" leadingZeroCount");
+                     break;
+diff --git a/src/coreclr/jit/importercalls.cpp b/src/coreclr/jit/importercalls.cpp
+--- a/src/coreclr/jit/importercalls.cpp
++++ b/src/coreclr/jit/importercalls.cpp
+@@ -5264,6 +5264,56 @@ GenTree* Compiler::impIntrinsic(CORINFO_CLASS_HANDLE    clsHnd,
+                 break;
+             }
+ 
++            case NI_System_Math_BigMul:
++            {
++#if defined(TARGET_RISCV64)
++                // Math.BigMul(ulong a, ulong b, out ulong low) / (long, long, out long):
++                // RISC-V M has the full 64x64 product in two instructions, `mul` for the
++                // low half and `mulhu`/`mulh` for the high half. The managed body has no
++                // RISC-V path and falls back to four 32x32 multiplies and ~20 shifts and
++                // adds. Expand to
++                //     *low = a * b;            (GT_MUL)
++                //     return MULHI(a, b);      (GT_INTRINSIC NI_PRIMITIVE_MultiplyHigh[Unsigned])
++                // Only the 64x64 overloads: the (ulong, uint, out) one and the 32x32 ones
++                // keep their bodies, which are already a single multiply.
++                if (sig->numArgs == 3)
++                {
++                    CORINFO_CLASS_HANDLE    argCls = NO_CLASS_HANDLE;
++                    CORINFO_ARG_LIST_HANDLE arg    = sig->args;
++                    CorInfoType             type0  = strip(info.compCompHnd->getArgType(sig, arg, &argCls));
++                    arg                            = info.compCompHnd->getArgNext(arg);
++                    CorInfoType type1              = strip(info.compCompHnd->getArgType(sig, arg, &argCls));
++
++                    const bool isUnsigned = (type0 == CORINFO_TYPE_ULONG) && (type1 == CORINFO_TYPE_ULONG);
++                    const bool isSigned   = (type0 == CORINFO_TYPE_LONG) && (type1 == CORINFO_TYPE_LONG);
++
++                    if (isUnsigned || isSigned)
++                    {
++                        GenTree* lowAddr = impPopStack().val;
++                        GenTree* op2     = impPopStack().val;
++                        GenTree* op1     = impPopStack().val;
++
++                        // Both operands are used twice (low and high half); clone them so
++                        // side effects run once, in IL order (a, b, then the address).
++                        GenTree* op1Dup = nullptr;
++                        GenTree* op2Dup = nullptr;
++                        op1 = impCloneExpr(op1, &op1Dup, CHECK_SPILL_ALL, nullptr DEBUGARG("Cloning op1 for BigMul"));
++                        op2 = impCloneExpr(op2, &op2Dup, CHECK_SPILL_ALL, nullptr DEBUGARG("Cloning op2 for BigMul"));
++
++                        GenTree* low      = gtNewOperNode(GT_MUL, TYP_LONG, op1, op2);
++                        GenTree* storeLow = gtNewStoreIndNode(TYP_LONG, lowAddr, low);
++                        impAppendTree(storeLow, CHECK_SPILL_ALL, impCurStmtDI);
++
++                        const NamedIntrinsic hiName =
++                            isUnsigned ? NI_PRIMITIVE_MultiplyHighUnsigned : NI_PRIMITIVE_MultiplyHigh;
++                        retNode = new (this, GT_INTRINSIC)
++                            GenTreeIntrinsic(TYP_LONG, op1Dup, op2Dup, hiName, nullptr R2RARG(CORINFO_CONST_LOOKUP{IAT_VALUE}));
++                    }
++                }
++#endif // TARGET_RISCV64
++                break;
++            }
++
+             case NI_System_Array_Clone:
+             case NI_System_Collections_Generic_Comparer_get_Default:
+             case NI_System_Collections_Generic_EqualityComparer_get_Default:
+@@ -9613,6 +9663,11 @@ bool Compiler::IsTargetIntrinsic(NamedIntrinsic intrinsicName)
+         case NI_PRIMITIVE_PopCount:
+             return compOpportunisticallyDependsOn(InstructionSet_Zbb);
+ 
++        // mulh / mulhu (M extension, assumed present)
++        case NI_PRIMITIVE_MultiplyHigh:
++        case NI_PRIMITIVE_MultiplyHighUnsigned:
++            return true;
++
+         default:
+             return false;
+     }
+@@ -12752,6 +12807,15 @@ NamedIntrinsic Compiler::lookupPrimitiveFloatNamedIntrinsic(CORINFO_METHOD_HANDL
+             break;
+         }
+ 
++        case 'B':
++        {
++            if (strcmp(methodName, "BigMul") == 0)
++            {
++                result = NI_System_Math_BigMul;
++            }
++            break;
++        }
++
+         case 'C':
+         {
+             if (strcmp(methodName, "Cbrt") == 0)
+diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
+--- a/src/coreclr/jit/lsrariscv64.cpp
++++ b/src/coreclr/jit/lsrariscv64.cpp
+@@ -431,6 +431,15 @@ int LinearScan::BuildNode(GenTree* tree)
+                     assert(tree->TypeIs(TYP_I_IMPL));
+                     break;
+ 
++                // High half of a 64x64 product: mulh / mulhu, two register operands.
++                case NI_PRIMITIVE_MultiplyHigh:
++                case NI_PRIMITIVE_MultiplyHighUnsigned:
++                    assert(op2 != nullptr);
++                    assert(op1->TypeIs(TYP_LONG));
++                    assert(op2->TypeIs(TYP_LONG));
++                    assert(tree->TypeIs(TYP_LONG));
++                    break;
++
+                 // Operand and its result must be integers
+                 case NI_PRIMITIVE_LeadingZeroCount:
+                 case NI_PRIMITIVE_TrailingZeroCount:
+diff --git a/src/coreclr/jit/namedintrinsiclist.h b/src/coreclr/jit/namedintrinsiclist.h
+--- a/src/coreclr/jit/namedintrinsiclist.h
++++ b/src/coreclr/jit/namedintrinsiclist.h
+@@ -106,6 +106,7 @@ enum NamedIntrinsic : unsigned short
+     NI_System_Collections_Generic_Comparer_get_Default,
+     NI_System_Collections_Generic_EqualityComparer_get_Default,
+     NI_System_Buffers_Binary_BinaryPrimitives_ReverseEndianness,
++    NI_System_Math_BigMul,
+ 
+     NI_System_GC_KeepAlive,
+ 
+@@ -302,6 +303,10 @@ enum NamedIntrinsic : unsigned short
+     NI_PRIMITIVE_Crc32C,
+     NI_PRIMITIVE_LeadingZeroCount,
+     NI_PRIMITIVE_Log2,
++    // High 64 bits of a 64x64 product (RISC-V mulh / mulhu). Only ever created by
++    // the riscv64 import of Math.BigMul(ulong, ulong, out ulong) / (long, long, out long).
++    NI_PRIMITIVE_MultiplyHigh,
++    NI_PRIMITIVE_MultiplyHighUnsigned,
+     NI_PRIMITIVE_PopCount,
+     NI_PRIMITIVE_RotateLeft,
+     NI_PRIMITIVE_RotateRight,
+diff --git a/src/coreclr/jit/valuenum.cpp b/src/coreclr/jit/valuenum.cpp
+--- a/src/coreclr/jit/valuenum.cpp
++++ b/src/coreclr/jit/valuenum.cpp
+@@ -14096,6 +14096,19 @@ void Compiler::fgValueNumberIntrinsic(GenTree* tree)
+     {
+         intrinsic->gtVNPair = vnStore->VNPUniqueWithExc(intrinsic->TypeGet(), arg0VNPx);
+     }
++    else if ((intrinsic->gtIntrinsicName == NI_PRIMITIVE_MultiplyHigh) ||
++             (intrinsic->gtIntrinsicName == NI_PRIMITIVE_MultiplyHighUnsigned))
++    {
++        // Binary, commutative, opaque (never folded): modelled as a function so that
++        // two BigMul of the same operands CSE, and the exception sets of both operands
++        // are kept.
++        assert(intrinsic->AsOp()->gtOp2 != nullptr);
++        VNFunc vnf = (intrinsic->gtIntrinsicName == NI_PRIMITIVE_MultiplyHigh) ? VNF_MultiplyHigh
++                                                                              : VNF_MultiplyHighUnsigned;
++        ValueNumPair excSet = vnStore->VNPExcSetUnion(arg0VNPx, arg1VNPx);
++        intrinsic->gtVNPair =
++            vnStore->VNPWithExc(vnStore->VNPairForFunc(intrinsic->TypeGet(), vnf, arg0VNP, arg1VNP), excSet);
++    }
+     else
+     {
+         assert(intrinsic->gtIntrinsicName == NI_System_Object_GetType);
+diff --git a/src/coreclr/jit/valuenumfuncs.h b/src/coreclr/jit/valuenumfuncs.h
+--- a/src/coreclr/jit/valuenumfuncs.h
++++ b/src/coreclr/jit/valuenumfuncs.h
+@@ -111,6 +111,8 @@ ValueNumFuncDef(Tanh, 1, false, false)
+ ValueNumFuncDef(Truncate, 1, false, false)
+ 
+ ValueNumFuncDef(LeadingZeroCount, 1, false, false)
++ValueNumFuncDef(MultiplyHigh, 2, true, false)         // riscv64: high half of a signed 64x64 product
++ValueNumFuncDef(MultiplyHighUnsigned, 2, true, false) // riscv64: high half of an unsigned 64x64 product
+ ValueNumFuncDef(TrailingZeroCount, 1, false, false)
+ ValueNumFuncDef(PopCount, 1, false, false)
+ 
+diff --git a/src/libraries/System.Private.CoreLib/src/System/Math.cs b/src/libraries/System.Private.CoreLib/src/System/Math.cs
+--- a/src/libraries/System.Private.CoreLib/src/System/Math.cs
++++ b/src/libraries/System.Private.CoreLib/src/System/Math.cs
+@@ -196,6 +196,7 @@ internal static ulong BigMul(uint a, ulong b, out ulong low)
+         /// <param name="low">The low 64-bit of the product of the specified numbers.</param>
+         /// <returns>The high 64-bit of the product of the specified numbers.</returns>
+         [CLSCompliant(false)]
++        [Intrinsic] // RISC-V (M): mul + mulhu; the JIT expands the call, this body is the fallback
+         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+         public static unsafe ulong BigMul(ulong a, ulong b, out ulong low)
+         {
+@@ -253,6 +254,7 @@ static ulong SoftwareFallback(ulong a, ulong b, out ulong low)
+         /// <param name="b">The second number to multiply.</param>
+         /// <param name="low">The low 64-bit of the product of the specified numbers.</param>
+         /// <returns>The high 64-bit of the product of the specified numbers.</returns>
++        [Intrinsic] // RISC-V (M): mul + mulh; the JIT expands the call, this body is the fallback
+         public static long BigMul(long a, long b, out long low)
+         {
+ #if !MONO // X86Base.BigMul is not yet implemented in MONO

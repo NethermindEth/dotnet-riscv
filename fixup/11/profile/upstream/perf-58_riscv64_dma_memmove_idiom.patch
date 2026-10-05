@@ -1,0 +1,111 @@
+riscv64 zkVM: memmove past the inline threshold is the ZisK DMA idiom, not three frames
+
+A DMA-backed copy cost about 35 executed instructions of overhead regardless of size:
+SpanHelpers.Memmove's frame and checks (20), the MemmoveNative shim with its frame, the two
+pinning stores and their clears (13), and the libziskos wrapper (csrs; add x0; ret). The traced
+Nethermind block made 47k such copies.
+
+JIT: JitZkCsrPInvokes entries with three arguments are emitted in the DMA shape libziskos uses,
+`csrrs x0, csr, a1` (source) followed by `add x0, a0, a2` (destination, length), with no call and
+no register kills, like the one-argument precompile form of perf-56. bflat adds
+memmove:813,memcpy:813 for the zisk libc.
+
+CoreLib (riscv64 only): MemmoveNative passes the refs as pointers - the uGC never moves objects,
+so pinning is redundant - and is AggressiveInlining, so Memmove's native path becomes the two
+DMA instructions in line and Memmove itself has no call left to save RA for.
+
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+index 2678154aa..24ef90ce4 100644
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -6029,6 +6029,18 @@ void CodeGen::genCallInstruction(GenTreeCall* call)
+     const int zkCsr = m_compiler->zkCsrForPInvoke(call);
+     if (zkCsr >= 0)
+     {
++        if (call->gtArgs.CountArgs() == 3)
++        {
++            // ZisK DMA copy, as libziskos' memmove/memcpy wrappers spell it: the CSR takes the source
++            // and the following `add x0, dst, len` carries the other two operands.
++            const ABIPassingSegment& dst = call->gtArgs.GetArgByIndex(0)->AbiInfo.Segment(0);
++            const ABIPassingSegment& src = call->gtArgs.GetArgByIndex(1)->AbiInfo.Segment(0);
++            const ABIPassingSegment& len = call->gtArgs.GetArgByIndex(2)->AbiInfo.Segment(0);
++            assert(dst.IsPassedInRegister() && src.IsPassedInRegister() && len.IsPassedInRegister());
++            GetEmitter()->emitIns_R_R_I(INS_csrrs, EA_8BYTE, REG_ZERO, src.GetRegister(), zkCsr);
++            GetEmitter()->emitIns_R_R_R(INS_add, EA_8BYTE, REG_ZERO, dst.GetRegister(), len.GetRegister());
++            return;
++        }
+         const ABIPassingSegment& seg = call->gtArgs.GetArgByIndex(0)->AbiInfo.Segment(0);
+         assert(seg.IsPassedInRegister());
+         GetEmitter()->emitIns_R_R_I(INS_csrrs, EA_8BYTE, REG_ZERO, seg.GetRegister(), zkCsr);
+diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
+index 9a0db562b..97c88a3da 100644
+--- a/src/coreclr/jit/jitconfigvalues.h
++++ b/src/coreclr/jit/jitconfigvalues.h
+@@ -538,7 +538,8 @@ RELEASE_CONFIG_INTEGER(JitRiscV64LsraCallerCalleeFirst, "JitRiscV64LsraCallerCal
+ // and in the caller every callee-saved register the call forces live values into. Entries
+ // "entrypoint:csr" (csr in hex, ','-separated) name the P/Invokes to emit as a single
+ // `csrrs x0, csr, aN` instead: no call, no stub, and no register kills, since the CSR write
+-// changes no general register. Empty (the default) leaves every P/Invoke a call.
++// changes no general register. A three-argument entry (memmove/memcpy) is emitted in the ZisK
++// DMA shape, `csrrs x0, csr, a1; add x0, a0, a2`. Empty (the default) leaves every P/Invoke a call.
+ RELEASE_CONFIG_STRING(JitZkCsrPInvokes, "JitZkCsrPInvokes")
+ #endif
+ 
+diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
+index 1a0c70051..2ce456d43 100644
+--- a/src/coreclr/jit/morph.cpp
++++ b/src/coreclr/jit/morph.cpp
+@@ -6365,7 +6365,8 @@ void Compiler::fgMorphTailCallViaJitHelper(GenTreeCall* call)
+ //
+ // Return Value:
+ //    The CSR number when `call` is an unmanaged call whose entry point is listed in
+-//    JitZkCsrPInvokes and takes exactly one argument (the operand address); otherwise -1.
++//    JitZkCsrPInvokes and takes one argument (the operand address) or three (the ZisK DMA
++//    copy shape: destination, source, length); otherwise -1.
+ //
+ // Notes:
+ //    See JitZkCsrPInvokes. The decision is purely name based, so it is cheap enough to ask
+@@ -6375,7 +6376,14 @@ void Compiler::fgMorphTailCallViaJitHelper(GenTreeCall* call)
+ int Compiler::zkCsrForPInvoke(GenTreeCall* call)
+ {
+     if (!call->IsUnmanaged() || (call->gtCallType != CT_USER_FUNC) || (call->gtCallMethHnd == nullptr) ||
+-        call->IsFastTailCall() || (call->gtArgs.CountArgs() != 1))
++        call->IsFastTailCall())
++    {
++        return -1;
++    }
++    // One argument: the operand block address goes into the CSR. Three arguments: the ZisK DMA
++    // shape (memmove/memcpy), `csrrs x0, csr, src; add x0, dst, len` - see genCallInstruction.
++    const unsigned argCount = call->gtArgs.CountArgs();
++    if ((argCount != 1) && (argCount != 3))
+     {
+         return -1;
+     }
+diff --git a/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.ByteMemOps.cs b/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.ByteMemOps.cs
+index 486136a1f..34d483611 100644
+--- a/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.ByteMemOps.cs
++++ b/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.ByteMemOps.cs
+@@ -261,6 +261,15 @@ internal static void Memmove(ref byte dest, ref byte src, nuint len)
+             MemmoveNative(ref dest, ref src, len);
+         }
+ 
++#if TARGET_RISCV64
++        // zkVM/RISC-V64: the uGC never moves objects, so the refs need no pinning, and the JIT
++        // emits the memmove P/Invoke as the ZisK DMA idiom (dotnet-riscv perf-58) with no call
++        // and no register kills, so the shim can inline into Memmove's native path: a copy past
++        // the inline threshold costs the DMA idiom instead of two frames and a stub.
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        private static unsafe void MemmoveNative(ref byte dest, ref byte src, nuint len) =>
++            memmove(Unsafe.AsPointer(ref dest), Unsafe.AsPointer(ref src), len);
++#else
+         // Non-inlinable wrapper around the QCall that avoids polluting the fast path
+         // with P/Invoke prolog/epilog.
+         [MethodImpl(MethodImplOptions.NoInlining)]
+@@ -272,6 +281,7 @@ private static unsafe void MemmoveNative(ref byte dest, ref byte src, nuint len)
+                 memmove(pDest, pSrc, len);
+             }
+         }
++#endif
+ 
+ #if MONO
+         [MethodImpl(MethodImplOptions.InternalCall)]

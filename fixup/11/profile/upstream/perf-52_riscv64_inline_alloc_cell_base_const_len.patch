@@ -1,0 +1,255 @@
+Three cuts to the zkVM inline allocation sequence (perf-26 objects, perf-49 arrays), ~1500 array and
+~1900 object sites in the Nethermind guest:
+- emitLoadImmediate gains the two-instruction form `lui rd, hi20; slli rd, rd, k` for constants that
+  are a lui immediate shifted left (0xbfff0000 = 0x2fffc000 << 2), where the generic high32 + offset
+  algorithm used lui + addiw + slli.
+- The bump cell is addressed from a base: the next 16 KiB boundary at or above the cell when it is
+  within imm12 reach (ZisK: cell 0xbffefff8, base 0xbfff0000, offsets -8 and -16), else the cell
+  itself. The base loads in two instructions, and the heap floor is read through the same local with
+  one ld instead of a second materialized constant (value numbering still sees an invariant load of a
+  constant address, so it stays CSEd and hoisted).
+- An array whose length is a constant gets no length guard, no size arithmetic and no widening: the
+  payload size is folded at JIT time; a constant the helper would reject keeps the helper call.
+Per allocation this is 3-4 fewer executed instructions (and ~5 for constant-length arrays), about
+0.3% of the steps of block 25532480.
+
+RISC-V64 zkVM: cheaper inline allocation - lui+slli constants, bump cell via base+imm12, constant lengths folded.
+
+diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
+--- a/src/coreclr/jit/emitriscv64.cpp
++++ b/src/coreclr/jit/emitriscv64.cpp
+@@ -1619,6 +1619,37 @@ int emitter::emitLoadImmediate(emitAttr size, regNumber reg, ssize_t imm)
+         return 1;
+     }
+ 
++    // Two-instruction form `lui rd, hi20; slli rd, rd, k` for imm == sext32(hi20 << 12) << k, k >= 1:
++    // a lui immediate shifted left. The generic high32 + offset algorithm below spends three
++    // instructions on such a value (lui, addiw, slli), e.g. on 0xbfff0000 = 0x2fffc000 << 2, the
++    // base the zkVM inline allocation addresses its bump cell from. A value that is itself a lui
++    // immediate (fits in 32 bits, low 12 bits zero) is left to that algorithm, which emits one.
++    if ((imm != 0) && !((imm == (int32_t)imm) && ((imm & 0xFFF) == 0)))
++    {
++        const int tz = BitOperations::TrailingZeroCount((uint64_t)imm);
++        for (int k = 1; k <= tz - 12; k++)
++        {
++            const int64_t v = (int64_t)imm >> k; // exact: the low k bits of imm are zero
++            if ((v == (int32_t)v) && ((v & 0xFFF) == 0))
++            {
++                if (doEmit)
++                {
++                    instrDescLoadImm* id = static_cast<instrDescLoadImm*>(emitNewInstrLoadImm(size, imm));
++                    id->idReg1(reg);
++                    id->ins[0]    = INS_lui;
++                    id->values[0] = (int32_t)(((uint64_t)v >> 12) & WordMask(20));
++                    id->ins[1]    = INS_slli;
++                    id->values[1] = k;
++                    id->idCodeSize(2 * 4);
++                    id->idIns(INS_slli);
++                    dispIns(id);
++                    appendToCurIG(id);
++                }
++                return 2;
++            }
++        }
++    }
++
+     // The following algorithm works based on the following equation:
+     // `imm = high32 + offset1` OR `imm = high32 - offset2`
+     //
+diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
+--- a/src/coreclr/jit/morph.cpp
++++ b/src/coreclr/jit/morph.cpp
+@@ -6448,7 +6448,21 @@ GenTree* Compiler::fgRiscV64TryInlineNewArr(GenTreeCall* call)
+         return nullptr;
+     }
+ 
+-    JITDUMP("\nzkVM: inlining array allocation [%06u] (element size %u)\n", dspTreeID(call), elemSize);
++    // A constant length is checked here, once: the guard, the size arithmetic and the length's
++    // widening all fold away. A constant the helper would reject keeps the helper call (and its
++    // exception).
++    const bool    constLen = lenArg->IsIntegralConst();
++    const int64_t constLenVal =
++        constLen ? (lenArg->TypeIs(TYP_INT) ? (int64_t)(int32_t)lenArg->AsIntConCommon()->IconValue()
++                                            : lenArg->AsIntConCommon()->IntegralValue())
++                 : 0;
++    if (constLen && ((constLenVal < 0) || (constLenVal > (int64_t)CORINFO_Array_MaxLength)))
++    {
++        return nullptr;
++    }
++
++    JITDUMP("\nzkVM: inlining array allocation [%06u] (element size %u%s)\n", dspTreeID(call), elemSize,
++            constLen ? ", constant length" : "");
+ 
+     // The helper takes a native int length (the importer widened it); keep a copy.
+     GenTree* lenVal = lenArg;
+@@ -6474,30 +6488,56 @@ GenTree* Compiler::fgRiscV64TryInlineNewArr(GenTreeCall* call)
+     // len = (long)length
+     GenTree* storeLen = gtNewStoreLclVarNode(lenLcl, lenVal);
+ 
+-    // Guard: fail fast unless 0 <= len <= CORINFO_Array_MaxLength. GT_BOUNDS_CHECK
+-    // traps on (unsigned)index >= (unsigned)length, so index = len (negative values
+-    // are huge as unsigned) and length = MaxLength + 1. The same bound the helper
+-    // enforces (it would throw OverflowException).
+-    GenTreeBoundsChk* lenGuard = new (this, GT_BOUNDS_CHECK)
+-        GenTreeBoundsChk(gtNewLclvNode(lenLcl, TYP_LONG), gtNewLconNode((int64_t)CORINFO_Array_MaxLength + 1),
+-                         SCK_FAIL_FAST);
+-    lenGuard->gtInxType = TYP_LONG;
++    // Guard (non-constant length only): fail fast unless 0 <= len <= CORINFO_Array_MaxLength.
++    // GT_BOUNDS_CHECK traps on (unsigned)index >= (unsigned)length, so index = len (negative values
++    // are huge as unsigned) and length = MaxLength + 1. The same bound the helper enforces (it
++    // would throw OverflowException).
++    GenTree* lenGuard = nullptr;
++    if (!constLen)
++    {
++        GenTreeBoundsChk* chk = new (this, GT_BOUNDS_CHECK)
++            GenTreeBoundsChk(gtNewLclvNode(lenLcl, TYP_LONG), gtNewLconNode((int64_t)CORINFO_Array_MaxLength + 1),
++                             SCK_FAIL_FAST);
++        chk->gtInxType = TYP_LONG;
++        lenGuard       = chk;
++    }
+ 
+     // size = (len * elemSize + OFFSETOF__CORINFO_Array__data + 7) & ~7
+     // (the payload the C allocator's size header records: MethodTable, length word
+     // and elements; the 8-byte size header itself sits below it, as for objects)
+-    GenTree* bytes = gtNewOperNode(GT_MUL, TYP_LONG, gtNewLclvNode(lenLcl, TYP_LONG), gtNewLconNode(elemSize));
+-    GenTree* sizeExpr =
+-        gtNewOperNode(GT_AND, TYP_LONG,
+-                      gtNewOperNode(GT_ADD, TYP_LONG, bytes, gtNewLconNode(OFFSETOF__CORINFO_Array__data + 7)),
+-                      gtNewLconNode(~(int64_t)7));
++    GenTree* sizeExpr;
++    if (constLen)
++    {
++        sizeExpr = gtNewLconNode((constLenVal * elemSize + OFFSETOF__CORINFO_Array__data + 7) & ~(int64_t)7);
++    }
++    else
++    {
++        GenTree* bytes = gtNewOperNode(GT_MUL, TYP_LONG, gtNewLclvNode(lenLcl, TYP_LONG), gtNewLconNode(elemSize));
++        sizeExpr       = gtNewOperNode(GT_AND, TYP_LONG,
++                                       gtNewOperNode(GT_ADD, TYP_LONG, bytes,
++                                                     gtNewLconNode(OFFSETOF__CORINFO_Array__data + 7)),
++                                       gtNewLconNode(~(int64_t)7));
++    }
+     GenTree* storeSize = gtNewStoreLclVarNode(sizeLcl, sizeExpr);
+ 
+-    // cell = BUMP_ADDR
+-    GenTree* storeCell = gtNewStoreLclVarNode(cellLcl, gtNewIconNode(bumpAddr, TYP_I_IMPL));
++    // cell = BUMP_ADDR, addressed as base + cellOff: base is the next 16 KiB boundary at or above
++    // the cell when within imm12 reach (ZisK: 0xbffefff8 -> 0xbfff0000, cellOff -8), which loads
++    // with lui + slli (see emitLoadImmediate) where the cell address takes three instructions; the
++    // floor is read through the same base. Same scheme as the object path (objectalloc.cpp).
++    ssize_t base = (bumpAddr + 0x3FFF) & ~(ssize_t)0x3FFF;
++    if ((base - bumpAddr) > 2032)
++    {
++        base = bumpAddr;
++    }
++    const ssize_t cellOff   = bumpAddr - base;
++    GenTree*      storeCell = gtNewStoreLclVarNode(cellLcl, gtNewIconNode(base, TYP_I_IMPL));
++    auto cellAddr = [&](ssize_t off) -> GenTree* {
++        GenTree* addr = gtNewLclvNode(cellLcl, TYP_I_IMPL);
++        return (off == 0) ? addr : gtNewOperNode(GT_ADD, TYP_I_IMPL, addr, gtNewIconNode(off, TYP_I_IMPL));
++    };
+ 
+     // obj = *(intptr*)cell - size
+-    GenTree* cur      = gtNewIndir(TYP_I_IMPL, gtNewLclvNode(cellLcl, TYP_I_IMPL));
++    GenTree* cur      = gtNewIndir(TYP_I_IMPL, cellAddr(cellOff));
+     GenTree* storeObj = gtNewStoreLclVarNode(
+         objLcl, gtNewOperNode(GT_SUB, TYP_I_IMPL, cur, gtNewLclvNode(sizeLcl, TYP_LONG)));
+ 
+@@ -6505,9 +6545,8 @@ GenTree* Compiler::fgRiscV64TryInlineNewArr(GenTreeCall* call)
+     GenTree* storeHdr = gtNewStoreLclVarNode(
+         hdrLcl, gtNewOperNode(GT_SUB, TYP_I_IMPL, gtNewLclvNode(objLcl, TYP_I_IMPL), gtNewIconNode(8, TYP_I_IMPL)));
+ 
+-    // floor = *(intptr*)(BUMP_ADDR - 8), invariant (see the object allocator).
+-    GenTree* floor = gtNewIndir(TYP_I_IMPL, gtNewIconNode(bumpAddr - 8, TYP_I_IMPL),
+-                                GTF_IND_NONFAULTING | GTF_IND_INVARIANT);
++    // floor = *(intptr*)(BUMP_ADDR - 8), invariant, through the base local (see the object allocator).
++    GenTree* floor = gtNewIndir(TYP_I_IMPL, cellAddr(cellOff - 8), GTF_IND_NONFAULTING | GTF_IND_INVARIANT);
+ 
+     // Guard: fail fast when hdr <= floor (heap exhausted).
+     GenTreeBoundsChk* heapGuard = new (this, GT_BOUNDS_CHECK)
+@@ -6515,8 +6554,7 @@ GenTree* Compiler::fgRiscV64TryInlineNewArr(GenTreeCall* call)
+     heapGuard->gtInxType = TYP_I_IMPL;
+ 
+     // *(intptr*)cell = hdr
+-    GenTree* storeBump =
+-        gtNewStoreIndNode(TYP_I_IMPL, gtNewLclvNode(cellLcl, TYP_I_IMPL), gtNewLclvNode(hdrLcl, TYP_I_IMPL));
++    GenTree* storeBump = gtNewStoreIndNode(TYP_I_IMPL, cellAddr(cellOff), gtNewLclvNode(hdrLcl, TYP_I_IMPL));
+ 
+     // *(int64*)hdr = size
+     GenTree* storeSizeHdr =
+@@ -6547,8 +6585,11 @@ GenTree* Compiler::fgRiscV64TryInlineNewArr(GenTreeCall* call)
+     tree          = gtNewOperNode(GT_COMMA, TYP_REF, storeObj, tree);
+     tree          = gtNewOperNode(GT_COMMA, TYP_REF, storeCell, tree);
+     tree          = gtNewOperNode(GT_COMMA, TYP_REF, storeSize, tree);
+-    tree          = gtNewOperNode(GT_COMMA, TYP_REF, lenGuard, tree);
+-    tree          = gtNewOperNode(GT_COMMA, TYP_REF, storeLen, tree);
++    if (lenGuard != nullptr)
++    {
++        tree = gtNewOperNode(GT_COMMA, TYP_REF, lenGuard, tree);
++    }
++    tree = gtNewOperNode(GT_COMMA, TYP_REF, storeLen, tree);
+     return tree;
+ }
+ #endif // TARGET_RISCV64
+diff --git a/src/coreclr/jit/objectalloc.cpp b/src/coreclr/jit/objectalloc.cpp
+--- a/src/coreclr/jit/objectalloc.cpp
++++ b/src/coreclr/jit/objectalloc.cpp
+@@ -1797,12 +1797,27 @@ GenTree* ObjectAllocator::MorphAllocObjNodeIntoHelperCall(GenTreeAllocObj* alloc
+             m_compiler->lvaTable[cellLcl].lvType = TYP_I_IMPL;
+             m_compiler->lvaTable[objLcl].lvType  = TYP_I_IMPL;
+             m_compiler->lvaTable[hdrLcl].lvType  = TYP_I_IMPL;
+-            // cell = BUMP_ADDR. Held in a local so the constant is materialized
+-            // once and reused by the load and the store below.
+-            GenTree* storeCell = m_compiler->gtNewStoreLclVarNode(cellLcl, m_compiler->gtNewIconNode(bumpAddr, TYP_I_IMPL));
++            // cell = BUMP_ADDR, addressed as base + cellOff where base is the next 16 KiB boundary at
++            // or above the cell when that is within imm12 reach (ZisK: 0xbffefff8 -> base 0xbfff0000,
++            // cellOff -8). A 16 KiB-aligned 32-bit base loads with lui + slli (two instructions, see
++            // emitLoadImmediate) where the cell address itself takes three, and the floor is read
++            // through the same base (cellOff - 8) instead of a second materialized constant. Held in
++            // a local so the constant is materialized once per site.
++            ssize_t base = (bumpAddr + 0x3FFF) & ~(ssize_t)0x3FFF;
++            if ((base - bumpAddr) > 2032)
++            {
++                base = bumpAddr;
++            }
++            const ssize_t cellOff   = bumpAddr - base;
++            GenTree*      storeCell = m_compiler->gtNewStoreLclVarNode(cellLcl, m_compiler->gtNewIconNode(base, TYP_I_IMPL));
++            auto cellAddr = [&](ssize_t off) -> GenTree* {
++                GenTree* addr = m_compiler->gtNewLclvNode(cellLcl, TYP_I_IMPL);
++                return (off == 0) ? addr
++                                  : m_compiler->gtNewOperNode(GT_ADD, TYP_I_IMPL, addr, m_compiler->gtNewIconNode(off, TYP_I_IMPL));
++            };
+ 
+             // obj = *(intptr*)cell - payload
+-            GenTree* cur = m_compiler->gtNewIndir(TYP_I_IMPL, m_compiler->gtNewLclvNode(cellLcl, TYP_I_IMPL));
++            GenTree* cur = m_compiler->gtNewIndir(TYP_I_IMPL, cellAddr(cellOff));
+             GenTree* storeObj =
+                 m_compiler->gtNewStoreLclVarNode(objLcl, m_compiler->gtNewOperNode(GT_SUB, TYP_I_IMPL, cur,
+                                                                       m_compiler->gtNewIconNode(payload, TYP_I_IMPL)));
+@@ -1812,11 +1827,10 @@ GenTree* ObjectAllocator::MorphAllocObjNodeIntoHelperCall(GenTreeAllocObj* alloc
+                 hdrLcl, m_compiler->gtNewOperNode(GT_SUB, TYP_I_IMPL, m_compiler->gtNewLclvNode(objLcl, TYP_I_IMPL),
+                                             m_compiler->gtNewIconNode(8, TYP_I_IMPL)));
+ 
+-            // floor = *(intptr*)(BUMP_ADDR - 8), invariant: a separate constant
+-            // address rather than cell-8, so the whole load is one hoistable,
+-            // CSEable expression instead of one anchored on a per-site local.
+-            GenTree* floor = m_compiler->gtNewIndir(TYP_I_IMPL, m_compiler->gtNewIconNode(bumpAddr - 8, TYP_I_IMPL),
+-                                              GTF_IND_NONFAULTING | GTF_IND_INVARIANT);
++            // floor = *(intptr*)(BUMP_ADDR - 8), invariant. Addressed through the per-site base local:
++            // value numbering gives the local its constant, so the load still numbers as an invariant
++            // load of a constant address and is CSEd/hoisted, while codegen needs one ld.
++            GenTree* floor = m_compiler->gtNewIndir(TYP_I_IMPL, cellAddr(cellOff - 8), GTF_IND_NONFAULTING | GTF_IND_INVARIANT);
+ 
+             // Guard: fail fast when hdr <= floor. GT_BOUNDS_CHECK traps on
+             // (unsigned)index >= (unsigned)length, so index = floor, length = hdr.
+@@ -1831,8 +1845,8 @@ GenTree* ObjectAllocator::MorphAllocObjNodeIntoHelperCall(GenTreeAllocObj* alloc
+             guard->gtInxType = TYP_I_IMPL;
+ 
+             // *(intptr*)cell = hdr
+-            GenTree* storeBump = m_compiler->gtNewStoreIndNode(TYP_I_IMPL, m_compiler->gtNewLclvNode(cellLcl, TYP_I_IMPL),
+-                                                         m_compiler->gtNewLclvNode(hdrLcl, TYP_I_IMPL));
++            GenTree* storeBump =
++                m_compiler->gtNewStoreIndNode(TYP_I_IMPL, cellAddr(cellOff), m_compiler->gtNewLclvNode(hdrLcl, TYP_I_IMPL));
+ 
+             // *(int64*)hdr = payload   (size header, for layout compat with the C allocator)
+             GenTree* storeSize = m_compiler->gtNewStoreIndNode(TYP_LONG, m_compiler->gtNewLclvNode(hdrLcl, TYP_I_IMPL),

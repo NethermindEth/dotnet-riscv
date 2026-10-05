@@ -7,7 +7,7 @@ the riscv64 codegen to inline.
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 --- a/src/coreclr/jit/codegenriscv64.cpp
 +++ b/src/coreclr/jit/codegenriscv64.cpp
-@@ -2730,6 +2730,12 @@
+@@ -2791,6 +2791,12 @@ void CodeGen::genCodeForStoreInd(GenTreeStoreInd* tree)
      GenTree* addr = tree->Addr();
  
      GCInfo::WriteBarrierForm writeBarrierForm = gcInfo.gcIsWriteBarrierCandidate(tree);
@@ -23,7 +23,7 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
 diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
 --- a/src/coreclr/jit/lsrariscv64.cpp
 +++ b/src/coreclr/jit/lsrariscv64.cpp
-@@ -740,12 +740,9 @@
+@@ -762,12 +762,9 @@ int LinearScan::BuildNode(GenTree* tree)
          {
              assert(dstCount == 0);
  

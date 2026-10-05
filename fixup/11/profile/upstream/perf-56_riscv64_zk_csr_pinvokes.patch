@@ -1,0 +1,222 @@
+riscv64 zkVM: emit listed precompile P/Invokes as a single CSR write
+
+On ZisK a precompile runs when a CSR is written with the address of its operand block;
+libziskos exposes each as a two-instruction function (csrs; ret) that managed code calls
+through a P/Invoke (for a LibraryImport, through the generated "<entrypoint>g____PInvoke"
+local function). In the traced Nethermind block keccak-f ran 141k times and sha256-f 27k
+times: each paid the auipc+jalr pair and the stub, and, because a call kills every
+caller-saved register, the hashing wrappers kept their pointers and counters in sN
+registers with the matching prolog/epilog traffic.
+
+JitZkCsrPInvokes (a ','-separated list of "entrypoint:csr", csr in hex; empty by default)
+names the P/Invokes to emit as `csrrs x0, csr, aN` in place of the call. The call node
+stays a call for everything that matters to correctness - argument setup in a0, ordering
+against the stores that fill and the loads that read the operand block - but LSRA gets an
+empty kill set for it, codegen emits the CSR write instead of the call sequence, and the
+leaf RA-elision scan no longer counts it as a call. bflat passes
+"syscall_keccak_f:800,syscall_sha256_f:805" for the zisk libc.
+
+Measured on nine mainnet blocks with ziskemu against the same build without the knob:
+-0.43% executed steps (-6.9M), identical outputs; every one of the 25 managed call sites
+became a single csrrs and ValueKeccak.Compute lost its four callee-saved registers.
+
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+index 70c27b944..2678154aa 100644
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -6023,6 +6023,18 @@ void CodeGen::genCall(GenTreeCall* call)
+ //
+ void CodeGen::genCallInstruction(GenTreeCall* call)
+ {
++    // zkVM: a listed precompile P/Invoke is the CSR write itself (see JitZkCsrPInvokes). The
++    // single argument, the operand address, is already in its ABI register; no call, no
++    // return value, no registers changed, and nothing for the GC to see.
++    const int zkCsr = m_compiler->zkCsrForPInvoke(call);
++    if (zkCsr >= 0)
++    {
++        const ABIPassingSegment& seg = call->gtArgs.GetArgByIndex(0)->AbiInfo.Segment(0);
++        assert(seg.IsPassedInRegister());
++        GetEmitter()->emitIns_R_R_I(INS_csrrs, EA_8BYTE, REG_ZERO, seg.GetRegister(), zkCsr);
++        return;
++    }
++
+     // Determine return value size(s).
+     const ReturnTypeDesc* pRetTypeDesc = call->GetReturnTypeDesc();
+     EmitCallParams        params;
+@@ -7144,7 +7156,11 @@ void CodeGen::genComputeLeafRaElision()
+     {
+         for (GenTree* const node : LIR::AsRange(block))
+         {
+-            if ((node->OperIs(GT_CALL) && !node->AsCall()->IsFastTailCall()) || node->OperIs(GT_JMP, GT_INTRINSIC))
++            // zkVM: a precompile P/Invoke emitted as a CSR write (JitZkCsrPInvokes) is not a call
++            // and leaves RA alone.
++            if ((node->OperIs(GT_CALL) && !node->AsCall()->IsFastTailCall() &&
++                 (m_compiler->zkCsrForPInvoke(node->AsCall()) < 0)) ||
++                node->OperIs(GT_JMP, GT_INTRINSIC))
+             {
+                 return;
+             }
+diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
+index 6f3764009..6168202c2 100644
+--- a/src/coreclr/jit/compiler.h
++++ b/src/coreclr/jit/compiler.h
+@@ -7390,6 +7390,7 @@ private:
+     GenTree* fgMorphCall(GenTreeCall* call);
+ #if defined(TARGET_RISCV64)
+     GenTree* fgRiscV64TryInlineNewArr(GenTreeCall* call);
++    int      zkCsrForPInvoke(GenTreeCall* call);
+ #endif
+     GenTree* fgExpandVirtualVtableCallTarget(GenTreeCall* call);
+ 
+diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
+index 7799772bd..fa87f5eff 100644
+--- a/src/coreclr/jit/jitconfigvalues.h
++++ b/src/coreclr/jit/jitconfigvalues.h
+@@ -529,6 +529,14 @@ RELEASE_CONFIG_INTEGER(JitRiscV64NoMemoryBarriers,  "JitRiscV64NoMemoryBarriers"
+ // caller-saved register whenever one is free, and only call-spanning intervals pay for
+ // callee-saved ones.
+ RELEASE_CONFIG_INTEGER(JitRiscV64LsraCallerCalleeFirst, "JitRiscV64LsraCallerCalleeFirst", 1)
++// riscv64 zkVM (ZisK): a precompile runs when a CSR is written with the address of its
++// operand block. libziskos wraps each one in a two-instruction function (csrs; ret) that
++// managed code reaches through a P/Invoke, so one keccak-f costs the call pair, the stub,
++// and in the caller every callee-saved register the call forces live values into. Entries
++// "entrypoint:csr" (csr in hex, ','-separated) name the P/Invokes to emit as a single
++// `csrrs x0, csr, aN` instead: no call, no stub, and no register kills, since the CSR write
++// changes no general register. Empty (the default) leaves every P/Invoke a call.
++RELEASE_CONFIG_STRING(JitZkCsrPInvokes, "JitZkCsrPInvokes")
+ #endif
+ 
+ RELEASE_CONFIG_INTEGER(EnableEmbeddedBroadcast,     "EnableEmbeddedBroadcast",   1) // Allows embedded broadcasts to be disabled
+diff --git a/src/coreclr/jit/lsrabuild.cpp b/src/coreclr/jit/lsrabuild.cpp
+index e3945df46..341c058c0 100644
+--- a/src/coreclr/jit/lsrabuild.cpp
++++ b/src/coreclr/jit/lsrabuild.cpp
+@@ -798,6 +798,11 @@ regMaskTP LinearScan::getKillSetForCall(GenTreeCall* call)
+     {
+         return RBM_NONE;
+     }
++    // zkVM: a precompile P/Invoke emitted as a CSR write (see JitZkCsrPInvokes) changes no register.
++    if (call->IsUnmanaged() && (m_compiler->zkCsrForPInvoke(call) >= 0))
++    {
++        return RBM_NONE;
++    }
+ #endif
+ 
+     regMaskTP killMask = RBM_CALLEE_TRASH;
+diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
+index befbef3b3..1a0c70051 100644
+--- a/src/coreclr/jit/morph.cpp
++++ b/src/coreclr/jit/morph.cpp
+@@ -6357,6 +6357,112 @@ void Compiler::fgMorphTailCallViaJitHelper(GenTreeCall* call)
+ }
+ 
+ #if defined(TARGET_RISCV64)
++//------------------------------------------------------------------------
++// zkCsrForPInvoke: the CSR a P/Invoke stands for on the zkVM, or -1 for an ordinary call.
++//
++// Arguments:
++//    call - a call node
++//
++// Return Value:
++//    The CSR number when `call` is an unmanaged call whose entry point is listed in
++//    JitZkCsrPInvokes and takes exactly one argument (the operand address); otherwise -1.
++//
++// Notes:
++//    See JitZkCsrPInvokes. The decision is purely name based, so it is cheap enough to ask
++//    again at each consumer (LSRA kills, call codegen, the leaf RA-elision scan) rather than
++//    carried on the node.
++//
++int Compiler::zkCsrForPInvoke(GenTreeCall* call)
++{
++    if (!call->IsUnmanaged() || (call->gtCallType != CT_USER_FUNC) || (call->gtCallMethHnd == nullptr) ||
++        call->IsFastTailCall() || (call->gtArgs.CountArgs() != 1))
++    {
++        return -1;
++    }
++
++    const char* cfg = JitConfig.JitZkCsrPInvokes();
++    if ((cfg == nullptr) || (*cfg == '\0'))
++    {
++        return -1;
++    }
++
++    // The P/Invoke the JIT sees is either the DllImport itself or, for a LibraryImport, the
++    // generated local function named "<EntryPoint>g____PInvoke|N_M"; both carry the entry
++    // point name, which is what the config lists.
++    const char* methodName = info.compCompHnd->getMethodNameFromMetadata(call->gtCallMethHnd, nullptr, nullptr, nullptr, 0);
++    if (methodName == nullptr)
++    {
++        return -1;
++    }
++    const char* name    = methodName;
++    size_t      nameLen = strlen(name);
++    if (name[0] == '<')
++    {
++        const char* close = strchr(name, '>');
++        if (close == nullptr)
++        {
++            return -1;
++        }
++        name++;
++        nameLen = (size_t)(close - name);
++    }
++
++    // Each entry is "EntryPoint:hex"; entries are separated by ',' (shell-neutral).
++    const char* p = cfg;
++    while (*p != '\0')
++    {
++        const char* entryEnd = p;
++        while ((*entryEnd != '\0') && (*entryEnd != ','))
++        {
++            entryEnd++;
++        }
++
++        const char* colon = nullptr;
++        for (const char* q = p; q < entryEnd; q++)
++        {
++            if (*q == ':')
++            {
++                colon = q;
++            }
++        }
++
++        if ((colon != nullptr) && ((size_t)(colon - p) == nameLen) && (strncmp(name, p, nameLen) == 0))
++        {
++            int value = 0;
++            for (const char* q = colon + 1; q < entryEnd; q++)
++            {
++                int digit;
++                if ((*q >= '0') && (*q <= '9'))
++                {
++                    digit = *q - '0';
++                }
++                else if ((*q >= 'a') && (*q <= 'f'))
++                {
++                    digit = *q - 'a' + 10;
++                }
++                else if ((*q >= 'A') && (*q <= 'F'))
++                {
++                    digit = *q - 'A' + 10;
++                }
++                else
++                {
++                    return -1;
++                }
++                value = (value << 4) | digit;
++                if (value > 0xFFF)
++                {
++                    return -1;
++                }
++            }
++            return (colon + 1 < entryEnd) ? value : -1;
++        }
++
++        p = (*entryEnd == ',') ? entryEnd + 1 : entryEnd;
++    }
++
++    return -1;
++}
++
+ //------------------------------------------------------------------------
+ // fgRiscV64TryInlineNewArr: zkVM per-site inline allocation of a single-dimensional
+ //    array (CORINFO_HELP_NEWARR_1_VC / _PTR / _DIRECT / _ALIGN8) against the fixed

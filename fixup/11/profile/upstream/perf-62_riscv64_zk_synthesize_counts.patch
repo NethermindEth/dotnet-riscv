@@ -1,0 +1,46 @@
+riscv64 zkVM: synthesized block weights for methods without profile data
+
+Without PGO every block of a method carries the same weight (loops aside), so the inliner,
+LSRA's spill costs and the callee-save decisions cannot tell an if-arm from the fall-through
+path. RyuJIT's profile synthesis (AssignLikelihoods: loop back edges, throw and return
+arms, 50/50 conditions) only runs under dynamic PGO or a DEBUG knob; JitZkSynthesizeCounts
+(release-settable, default 0; bflat passes 1 for the zkVM libcs) runs it for every method
+compiled without profile data. Measured on nine mainnet blocks: -0.45% executed steps,
+identical outputs.
+
+diff --git a/src/coreclr/jit/fgprofile.cpp b/src/coreclr/jit/fgprofile.cpp
+index 46c3077ec..834d9da8e 100644
+--- a/src/coreclr/jit/fgprofile.cpp
++++ b/src/coreclr/jit/fgprofile.cpp
+@@ -2908,9 +2908,13 @@ PhaseStatus Compiler::fgIncorporateProfileData()
+ 
+         // Is dynamic PGO active? If so, run synthesis.
+         //
+-        if (fgPgoDynamic)
++        bool synthesize = fgPgoDynamic;
++#if defined(TARGET_RISCV64)
++        synthesize |= (JitConfig.JitZkSynthesizeCounts() != 0);
++#endif
++        if (synthesize)
+         {
+-            JITDUMP("Dynamic PGO active, synthesizing profile data\n");
++            JITDUMP("Dynamic PGO active or synthesis requested, synthesizing profile data\n");
+             ProfileSynthesis::Run(this, ProfileSynthesisOption::AssignLikelihoods);
+         }
+ 
+diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
+index 78399abde..13e87cb2d 100644
+--- a/src/coreclr/jit/jitconfigvalues.h
++++ b/src/coreclr/jit/jitconfigvalues.h
+@@ -537,6 +537,11 @@ RELEASE_CONFIG_INTEGER(JitRiscV64LsraCallerCalleeFirst, "JitRiscV64LsraCallerCal
+ // as ordinary byrefs/pointers removes that traffic (the keccak and span helpers pin on every call).
+ // Non-zero drops the pinned attribute at import. Default 0 (standard semantics).
+ RELEASE_CONFIG_INTEGER(JitZkNoPinning, "JitZkNoPinning", 0)
++// zkVM: non-zero runs profile synthesis (AssignLikelihoods) for methods without profile
++// data, so block weights distinguish if/else arms, loop exits, return paths and throws
++// instead of being uniform; consumed by LSRA (spill costs, JitZkColdCallSpill), the inliner
++// and block layout. Default 0.
++RELEASE_CONFIG_INTEGER(JitZkSynthesizeCounts, "JitZkSynthesizeCounts", 0)
+ // riscv64 zkVM (ZisK): a precompile runs when a CSR is written with the address of its
+ // operand block. libziskos wraps each one in a two-instruction function (csrs; ret) that
+ // managed code reaches through a P/Invoke, so one keccak-f costs the call pair, the stub,

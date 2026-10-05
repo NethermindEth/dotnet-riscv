@@ -1,0 +1,43 @@
+riscv64 zkVM: SpanHelpers.Memmove and clearing go native from 16 and 64 bytes
+
+On the zkVM the native memmove is the DMA memcpy idiom (two instructions, inlined by the
+JIT, perf-56/58) and the native memset is libziskos' memset precompile idiom, so the
+managed scalar paths - a load and a store per eight bytes, the size dispatch and the two
+overlap compares for copies, the 64-byte clearing loop - cost more than the call from a
+few words up. MemmoveNativeThreshold drops from 64 to 16 bytes and ZeroMemoryNativeThreshold
+from 1024 to 64 on riscv64. In the traced Nethermind block SpanHelpers.Memmove ran 101k
+times at ~15 steps each, two thirds of them for 32..64-byte copies that now take ~5.
+
+diff --git a/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.ByteMemOps.cs b/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.ByteMemOps.cs
+index 34d483611..28468b523 100644
+--- a/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.ByteMemOps.cs
++++ b/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.ByteMemOps.cs
+@@ -21,16 +21,22 @@ internal static partial class SpanHelpers // .ByteMemOps
+ #elif TARGET_ARM
+         private const nuint MemmoveNativeThreshold = 512;
+ #elif TARGET_RISCV64
+-        // zkVM/RISC-V64: managed copy path is scalar (no SIMD); the native memmove is
+-        // wrapped by libziskos into the Zisk dma_memcpy precompile, and the PInvoke
+-        // transition is elided under uGC. Delegate copies past the inline <=64B fast
+-        // path to the DMA-backed native memmove. (Default 2048 left hot 64..2048B copies
+-        // as scalar loops -> 0 DMA.) Tunable toward 128/256 if small copies regress.
+-        private const nuint MemmoveNativeThreshold = 64;
++        // zkVM/RISC-V64: managed copy path is scalar (no SIMD); the native memmove is the
++        // ZisK DMA memcpy idiom (two instructions, emitted inline by the JIT, see JitZkCsrPInvokes),
++        // so on the zkVM it beats the unrolled managed copy from 16 bytes up: every executed
++        // instruction is a step, and the scalar path costs a load and a store per eight bytes plus
++        // the size dispatch and the two overlap compares.
++        private const nuint MemmoveNativeThreshold = 16;
+ #else
+         private const nuint MemmoveNativeThreshold = 2048;
+ #endif
++#if TARGET_RISCV64
++        // zkVM: libziskos' memset is the memset precompile idiom; a call to it beats the scalar
++        // clearing loop well below the default.
++        private const nuint ZeroMemoryNativeThreshold = 64;
++#else
+         private const nuint ZeroMemoryNativeThreshold = 1024;
++#endif
+ 
+ 
+ #if HAS_CUSTOM_BLOCKS
