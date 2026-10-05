@@ -1,0 +1,102 @@
+RISC-V: a call that never returns, ending a throw block, becomes a fast tail call. Applied after perf-48; JIT only.
+- A method whose only calls are fast tail calls already drops its RA save, and with it often its whole frame
+  (perf-31/42). A method that only calls out to throw - `ThrowHelper.ThrowX()` behind a guard - keeps both,
+  for a call that never comes back.
+- Lowering::TryTailCallNoReturn turns such a call into a fast tail call: the block becomes BBJ_RETURN with
+  BBF_HAS_JMP, so the epilog restores the callee-saved registers and pops the frame before the jump. An
+  exception the callee throws then unwinds straight into our caller, where it would go anyway from a method
+  without EH clauses. The frame is gone while the callee runs, so the method may have no address-exposed or
+  pinned local and every argument must travel in a register; synchronized, P/Invoke-frame, GS-cookie,
+  localloc, varargs, async, profiled and unoptimized methods are left alone, as are virtual, unmanaged,
+  delegate, R2R and non-standard-argument calls.
+- Only a stack trace would miss the frame, so it follows RiscV64ElideLeafRaSave, the zkVM-guest knob whose
+  RA elision it feeds.
+
+--- a/src/coreclr/jit/lower.cpp
++++ b/src/coreclr/jit/lower.cpp
+@@ -2928,6 +2928,8 @@
+             return dmaNext;
+         }
+     }
++
++    TryTailCallNoReturn(call);
+ #endif // TARGET_RISCV64
+ 
+     call->gtDirectCallAddress = nullptr; // Clear out any stale data from the union.
+--- a/src/coreclr/jit/lower.h
++++ b/src/coreclr/jit/lower.h
+@@ -179,6 +179,7 @@
+     void     SignExtendIfNecessary(GenTree** arg);
+     void     ComputeSignExtendedLocals();
+     void     RemoveRedundantExtensions();
++    void     TryTailCallNoReturn(GenTreeCall* call);
+ #endif
+     GenTree*   LowerSelect(GenTreeConditional* cond);
+     bool       TryLowerConditionToFlagsNode(GenTree*      parent,
+--- a/src/coreclr/jit/lowerriscv64.cpp
++++ b/src/coreclr/jit/lowerriscv64.cpp
+@@ -666,6 +666,64 @@
+ }
+ 
+ //------------------------------------------------------------------------
++// TryTailCallNoReturn: make a call that never returns, ending a throw block, a fast tail call.
++//
++// Arguments:
++//    call - the call being lowered
++//
++// Notes:
++//    Nothing runs after such a call, so jumping to it after the epilog changes no behavior, and a
++//    method whose other calls are fast tail calls then needs no RA save and often no frame (see
++//    genComputeLeafRaElision). An exception the callee throws unwinds straight into the caller, where
++//    it goes anyway from a method without EH clauses, with the callee-saved registers the epilog
++//    restored. The frame is gone while the callee runs, so no local may have its address taken and
++//    every argument travels in a register. Only a stack trace would miss the frame, so this follows the
++//    zkVM-guest knob RiscV64ElideLeafRaSave.
++//
++void Lowering::TryTailCallNoReturn(GenTreeCall* call)
++{
++    if ((JitConfig.RiscV64ElideLeafRaSave() == 0) || m_compiler->opts.OptimizationDisabled() ||
++        m_compiler->opts.IsOSR() || !call->IsNoReturn() || call->IsTailCall() || (call->gtCallType != CT_USER_FUNC) ||
++        call->IsVirtual() || call->IsUnmanaged() || call->IsDelegateInvoke() || call->IsAsync() ||
++        call->IsSpecialIntrinsic() || call->gtArgs.HasRetBuffer() || call->IsR2ROrVirtualStubRelativeIndir() ||
++        call->HasNonStandardAddedArgs(m_compiler) || !m_block->KindIs(BBJ_THROW) || (BlockRange().LastNode() != call))
++    {
++        return;
++    }
++
++    if ((m_compiler->compHndBBtabCount != 0) || m_compiler->compLocallocUsed || m_compiler->info.compIsVarArgs ||
++        ((m_compiler->info.compFlags & CORINFO_FLG_SYNCH) != 0) || m_compiler->opts.IsReversePInvoke() ||
++        m_compiler->compMethodRequiresPInvokeFrame() || m_compiler->getNeedsGSSecurityCookie() ||
++        m_compiler->compIsProfilerHookNeeded() || m_compiler->compIsAsync())
++    {
++        return;
++    }
++
++    for (CallArg& arg : call->gtArgs.Args())
++    {
++        if (arg.AbiInfo.HasAnyStackSegment())
++        {
++            return;
++        }
++    }
++
++    for (unsigned lclNum = 0; lclNum < m_compiler->lvaCount; lclNum++)
++    {
++        const LclVarDsc* const varDsc = m_compiler->lvaGetDesc(lclNum);
++        if (varDsc->lvPinned || (varDsc->IsAddressExposed() && (lclNum != m_compiler->lvaOutgoingArgSpaceVar)))
++        {
++            return;
++        }
++    }
++
++    JITDUMP("Tail calling no-return call [%06u]\n", Compiler::dspTreeID(call));
++    call->gtCallMoreFlags |= GTF_CALL_M_TAILCALL;
++    m_compiler->compTailCallUsed = true;
++    m_block->SetKindAndTargetEdge(BBJ_RETURN);
++    m_block->SetFlags(BBF_HAS_JMP);
++}
++
++//------------------------------------------------------------------------
+ // RemoveRedundantExtensions: drop the 32-to-64-bit extensions whose operand register already holds the
+ // extended value, where the user reads its operands as full registers.
+ //
