@@ -1,0 +1,30 @@
+SpanHelpers.Memmove on riscv64 (perf-29: copies above 64 bytes go to the DMA-backed native memmove)
+tested the two buffer-overlap conditions and the <=16 / <=64 size dispatch before reaching the
+native-threshold test: about eight executed instructions per call that end in the native path anyway,
+which handles overlap itself. Two thirds of the Memmove calls of the Nethermind guest (47k of 74k per
+block) are such copies. The threshold test now comes first on riscv64.
+
+RISC-V64 zkVM: Memmove decides on the native DMA path before the overlap and size tests.
+
+diff --git a/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.ByteMemOps.cs b/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.ByteMemOps.cs
+index a4c4d0129..486136a1f 100644
+--- a/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.ByteMemOps.cs
++++ b/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.ByteMemOps.cs
+@@ -44,6 +44,17 @@ private struct Block64 {}
+         [Intrinsic] // Unrolled for small constant lengths
+         internal static void Memmove(ref byte dest, ref byte src, nuint len)
+         {
++#if TARGET_RISCV64
++            // zkVM/RISC-V64: a copy above the native threshold ends in the DMA-backed native memmove
++            // whatever the other tests say (it handles overlap itself), so decide that first and skip
++            // the two overlap compares and the size dispatch: ~8 executed instructions on the ~47k
++            // such copies per block of the Nethermind guest, two thirds of all Memmove calls.
++            if (len > MemmoveNativeThreshold)
++            {
++                goto PInvoke;
++            }
++#endif
++
+             // P/Invoke into the native version when the buffers are overlapping.
+             if ((nuint)Unsafe.ByteOffset(ref src, ref dest) < len ||
+                 (nuint)Unsafe.ByteOffset(ref dest, ref src) < len)

@@ -1,0 +1,86 @@
+Three sources of redundant sign extension found by tracing block 25532480 (3.0M sext.w, 2.3% of steps):
+- A 32-bit and/or/xor (and their -not forms) of two operands whose registers are sign-extended
+  (Lowering::IsInt32SignExtendedInReg) has a sign-extended result, every bit above 31 being a copy of
+  bit 31 on both inputs; codegen emits the 64-bit form so the emitter's trailing sext.w (the
+  emitriscv64 TODO) goes away. 3.5k sites.
+- A return of an INT value that is already sign-extended moves it with mv instead of sext.w
+  (previously genSimpleReturn always re-extended, hence `sext.w s3,a0; sext.w a0,s3` pairs). 0.9k sites.
+- The INT result of a managed (CT_USER_FUNC, not unmanaged, not helper, single-register) call is taken
+  as sign-extended: the callee's return path extends it into a0 and dispatch stubs and fast tail calls
+  only forward the register. perf-43 distrusted every call result and re-extended it at the caller
+  (4.1k `jalr; sext.w a0,a0` sites) and at the store to a sign-extended local. Helpers and unmanaged
+  callees stay distrusted.
+
+RISC-V64: drop redundant sext.w after 32-bit logic ops, on return and after managed INT calls.
+
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+index c00a629a3..93b9ce074 100644
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -1222,7 +1222,17 @@ void CodeGen::genCodeForBinary(GenTreeOp* treeNode)
+     // The arithmetic node must be sitting in a register (since it's not contained)
+     assert(targetReg != REG_NA);
+ 
+-    regNumber r = emit->emitInsTernary(ins, emitActualTypeSize(treeNode), treeNode, op1, op2);
++    emitAttr attr = emitActualTypeSize(treeNode);
++    if ((attr == EA_4BYTE) && treeNode->OperIs(GT_AND, GT_OR, GT_XOR, GT_AND_NOT, GT_OR_NOT, GT_XOR_NOT) &&
++        Lowering::IsInt32SignExtendedInReg(m_compiler, op1) && Lowering::IsInt32SignExtendedInReg(m_compiler, op2))
++    {
++        // A bitwise operation on two values whose registers are sign-extended from 32 bits yields a
++        // sign-extended result (every bit above 31 is a copy of bit 31 on both inputs, so on the
++        // output too); emit the 64-bit form so the emitter does not append its sext.w.
++        attr = EA_8BYTE;
++    }
++
++    regNumber r = emit->emitInsTernary(ins, attr, treeNode, op1, op2);
+     assert(r == targetReg);
+ 
+     genProduceReg(treeNode);
+@@ -1475,8 +1485,10 @@ void CodeGen::genCodeForStoreLclVar(GenTreeLclVar* lclNode)
+                 inst_Mov(isSignExtended ? TYP_LONG : targetType, targetReg, dataReg, true);
+ #ifdef TARGET_RISCV64
+                 // Lowering took the local to be sign-extended (see Lowering::ComputeSignExtendedLocals), which
+-                // the move gives a call result unless it was skipped.
+-                if (varDsc->lvSignExtendedInt && (targetReg == dataReg) && data->gtSkipReloadOrCopy()->IsCall())
++                // the move gives a call result unless it was skipped. A managed call's INT result is
++                // already sign-extended (IsInt32SignExtendedInReg) and needs nothing.
++                if (varDsc->lvSignExtendedInt && (targetReg == dataReg) && data->gtSkipReloadOrCopy()->IsCall() &&
++                    !isSignExtended)
+                 {
+                     emit->emitIns_R_R(INS_sext_w, EA_4BYTE, targetReg, targetReg);
+                 }
+@@ -1532,7 +1544,11 @@ void CodeGen::genSimpleReturn(GenTree* treeNode)
+         }
+         else
+         {
+-            GetEmitter()->emitIns_R_R(attr == EA_4BYTE ? INS_sext_w : INS_mov, attr, retReg, op1->GetRegNum());
++            // An INT return value is sign-extended into a0 (the callers rely on it); a value
++            // that already is sign-extended in its register moves with mv.
++            const bool needsSext = (attr == EA_4BYTE) && !Lowering::IsInt32SignExtendedInReg(m_compiler, op1);
++            GetEmitter()->emitIns_R_R(needsSext ? INS_sext_w : INS_mov, needsSext ? attr : EA_PTRSIZE, retReg,
++                                      op1->GetRegNum());
+         }
+     }
+ }
+diff --git a/src/coreclr/jit/lowerriscv64.cpp b/src/coreclr/jit/lowerriscv64.cpp
+index 2465b4d11..5cd521eb5 100644
+--- a/src/coreclr/jit/lowerriscv64.cpp
++++ b/src/coreclr/jit/lowerriscv64.cpp
+@@ -430,6 +430,17 @@ bool Lowering::IsInt32SignExtendedInReg(Compiler* comp, GenTree* node, unsigned
+                    (varDsc->lvDoNotEnregister && node->TypeIs(TYP_INT, TYP_BYTE, TYP_UBYTE, TYP_SHORT, TYP_USHORT));
+         }
+ 
++        case GT_CALL:
++        {
++            // The INT result of a managed method: genSimpleReturn/genReturn sign-extend a 4-byte return
++            // value into a0 (sext.w, or mv of an already extended value), and a dispatch stub or a fast
++            // tail call only forwards that register. Helpers and unmanaged callees are not trusted:
++            // some are hand-written assembly or C code returning narrower types.
++            GenTreeCall* const call = node->AsCall();
++            return call->TypeIs(TYP_INT) && (call->gtCallType == CT_USER_FUNC) && !call->IsUnmanaged() &&
++                   !call->IsHelperCall() && !call->HasMultiRegRetVal();
++        }
++
+         default:
+             return false;
+     }

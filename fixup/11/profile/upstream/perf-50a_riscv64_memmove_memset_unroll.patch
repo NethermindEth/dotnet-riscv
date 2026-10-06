@@ -1,0 +1,271 @@
+Enables the constant-size SpanHelpers.Memmove / Fill / ClearWithoutReferences (and CORINFO_HELP_MEMCPY /
+CORINFO_HELP_MEMSET) call unrolling on riscv64, which was compiled in for x64 and arm64 only. The Nethermind guest
+has ~140 explicit Memmove calls with a constant length - 48 bytes (58 sites) and 32 bytes (39 sites) dominate:
+Span.CopyTo of hashes, UInt256 and addresses - each a prolog, an overlap test and ~40 executed instructions.
+Memmove becomes a STORE_BLK of kind BlkOpKindUnrollMemmove; the new riscv64 genCodeForMemmove loads the whole
+source into GPR temps before the first store (arm64's scheme with 8-byte GPRs in place of SIMD registers), so
+any src/dst overlap is handled: 48 bytes are 6 ld + 6 sd. The memmove threshold is 64 bytes on this target, and
+LinearScan::MaxInternalCount is raised to 8 for it, one temp per 8-byte chunk. LSRA delay-frees the temps so
+none aliases an address register. Fill/Clear reuse the existing init-block unroll (threshold 256 from
+perf-44). The merged-load SequenceEqual expansion stays off (riscv64 has the zkVM DMA lowering instead).
+When JitNoUnalignedAccess is set (SP1, OpenVM) the Memmove call is kept: the unrolled copy is wide accesses
+the front end cannot prove aligned.
+
+RISC-V64: unroll constant-size Memmove (<= 64 bytes, overlap-safe) and Fill/Clear calls.
+
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+index 31b4bd193..c00a629a3 100644
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -6514,6 +6514,117 @@ void CodeGen::genCreateAndStoreGCInfo(unsigned            codeSize,
+     m_compiler->compInfoBlkSize = gcInfoEncoder->GetEncodedGCInfoSize();
+ }
+ 
++//------------------------------------------------------------------------
++// genCodeForMemmove: Perform an unrolled memmove (a constant-size
++//    SpanHelpers.Memmove / CORINFO_HELP_MEMCPY lowered to a STORE_BLK of kind
++//    BlkOpKindUnrollMemmove). The whole source is loaded into GPR temps before
++//    the first store, so the copy is correct for any src/dst overlap. The size
++//    is at most getUnrollThreshold(Memmove) (8 x 8 bytes); a remainder that is
++//    not a multiple of 8 is covered by an overlapping 8-byte chunk, and a block
++//    of 1..7 bytes by one power-of-two access or two overlapping ones (arm64's
++//    scheme with GPRs in place of SIMD registers).
++//
++// Arguments:
++//    tree - GenTreeBlk node
++//
++void CodeGen::genCodeForMemmove(GenTreeBlk* tree)
++{
++    // TODO-CQ: Support addressing modes, for now we don't use them
++    GenTreeIndir* srcIndir = tree->Data()->AsIndir();
++    assert(srcIndir->isContained() && !srcIndir->Addr()->isContained());
++
++    regNumber dst  = genConsumeReg(tree->Addr());
++    regNumber src  = genConsumeReg(srcIndir->Addr());
++    unsigned  size = tree->Size();
++    emitter*  emit = GetEmitter();
++
++    auto emitLoadStore = [&](bool load, unsigned regSize, regNumber tempReg, unsigned offset) {
++        var_types memType;
++        switch (regSize)
++        {
++            case 1:
++                memType = TYP_UBYTE;
++                break;
++            case 2:
++                memType = TYP_USHORT;
++                break;
++            case 4:
++                memType = TYP_INT;
++                break;
++            case 8:
++                memType = TYP_LONG;
++                break;
++            default:
++                unreached();
++        }
++        if (load)
++        {
++            emit->emitIns_R_R_I(ins_Load(memType), emitTypeSize(memType), tempReg, src, offset);
++        }
++        else
++        {
++            emit->emitIns_R_R_I(ins_Store(memType), emitTypeSize(memType), tempReg, dst, offset);
++        }
++    };
++
++    if (size >= REGSIZE_BYTES)
++    {
++        // One temp per 8-byte chunk; the last chunk overlaps the previous one when the
++        // size is not a multiple of 8.
++        const unsigned numRegs = internalRegisters.Count(tree);
++        assert(numRegs == (size + REGSIZE_BYTES - 1) / REGSIZE_BYTES);
++        regNumber tempRegs[LinearScan::MaxInternalCount] = {};
++        for (unsigned i = 0; i < numRegs; i++)
++        {
++            tempRegs[i] = internalRegisters.Extract(tree);
++        }
++
++        auto emitPass = [&](bool load) {
++            unsigned offset   = 0;
++            unsigned regIndex = 0;
++            do
++            {
++                emitLoadStore(load, REGSIZE_BYTES, tempRegs[regIndex++], offset);
++                offset += REGSIZE_BYTES;
++                if (size == offset)
++                {
++                    break;
++                }
++                if ((size - offset) < REGSIZE_BYTES)
++                {
++                    offset = size - REGSIZE_BYTES;
++                }
++            } while (true);
++        };
++
++        // load everything from SRC to temp regs, then store them to DST
++        emitPass(/* load */ true);
++        emitPass(/* load */ false);
++    }
++    else
++    {
++        // 1..7 bytes: one power-of-two access, or two overlapping ones
++        // (e.g. size 5: 4 bytes @0 and 4 bytes @1).
++        const unsigned loadStoreSize = 1 << BitOperations::Log2(size);
++        if (loadStoreSize == size)
++        {
++            const regNumber tmpReg = internalRegisters.GetSingle(tree);
++            emitLoadStore(/* load */ true, loadStoreSize, tmpReg, 0);
++            emitLoadStore(/* load */ false, loadStoreSize, tmpReg, 0);
++        }
++        else
++        {
++            assert(internalRegisters.Count(tree) == 2);
++            const regNumber tmpReg1 = internalRegisters.Extract(tree);
++            const regNumber tmpReg2 = internalRegisters.Extract(tree);
++            emitLoadStore(/* load */ true, loadStoreSize, tmpReg1, 0);
++            emitLoadStore(/* load */ true, loadStoreSize, tmpReg2, size - loadStoreSize);
++            emitLoadStore(/* load */ false, loadStoreSize, tmpReg1, 0);
++            emitLoadStore(/* load */ false, loadStoreSize, tmpReg2, size - loadStoreSize);
++        }
++    }
++}
++
+ //------------------------------------------------------------------------
+ // genCodeForStoreBlk: Produce code for a GT_STORE_BLK node.
+ //
+@@ -6548,6 +6659,11 @@ void CodeGen::genCodeForStoreBlk(GenTreeBlk* blkOp)
+             }
+             break;
+ 
++        case GenTreeBlk::BlkOpKindUnrollMemmove:
++            assert(isCopyBlk);
++            genCodeForMemmove(blkOp);
++            break;
++
+         default:
+             unreached();
+     }
+diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
+index b14e4dd84..6f3764009 100644
+--- a/src/coreclr/jit/compiler.h
++++ b/src/coreclr/jit/compiler.h
+@@ -10794,6 +10794,12 @@ public:
+             // NOTE: Memmove's unrolling is currently limited with LSRA -
+             // up to LinearScan::MaxInternalCount number of temp regs, e.g. 5*16=80 bytes on arm64
+             threshold = maxRegSize * 4;
++#if defined(TARGET_RISCV64)
++            // One 8-byte GPR per chunk and MaxInternalCount raised to 8 for this target:
++            // 64 bytes covers the 32- and 48-byte SpanHelpers.Memmove calls that dominate
++            // (hashes, UInt256, addresses) in the Nethermind guest.
++            threshold = maxRegSize * 8;
++#endif // TARGET_RISCV64
+         }
+ 
+         if (type == UnrollKind::MemcmpU16)
+diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
+index ae998d8d3..ce453ec8f 100644
+--- a/src/coreclr/jit/lower.cpp
++++ b/src/coreclr/jit/lower.cpp
+@@ -2457,6 +2457,17 @@ bool Lowering::LowerCallMemmove(GenTreeCall* call, GenTree** next)
+         return false;
+     }
+ 
++#if defined(TARGET_RISCV64)
++    // The unrolled memmove is wide ld/sd into temps (genCodeForMemmove); on a target where
++    // every access the front end cannot prove aligned must be byte-wise
++    // (JitNoUnalignedAccess), the call to SpanHelpers.Memmove stays.
++    if (JitConfig.JitNoUnalignedAccess() != 0)
++    {
++        JITDUMP("JitNoUnalignedAccess is set - bail out.\n")
++        return false;
++    }
++#endif // TARGET_RISCV64
++
+     GenTree* lengthArg = call->gtArgs.GetUserArgByIndex(2)->GetNode();
+     if (lengthArg->IsIntegralConst())
+     {
+@@ -2867,7 +2878,7 @@ GenTree* Lowering::LowerCall(GenTree* node)
+         assert(call->gtInitClsHnd == nullptr);
+     }
+ 
+-#if defined(TARGET_AMD64) || defined(TARGET_ARM64)
++#if defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_RISCV64)
+     GenTree* nextNode = nullptr;
+     if (call->IsSpecialIntrinsic())
+     {
+@@ -2880,12 +2891,16 @@ GenTree* Lowering::LowerCall(GenTree* node)
+                 }
+                 break;
+ 
++#if !defined(TARGET_RISCV64)
++            // riscv64: SequenceEqual has its own zkVM DMA lowering below; the merged-load
++            // memcmp expansion is not implemented for it.
+             case NI_System_SpanHelpers_SequenceEqual:
+                 if (LowerCallMemcmp(call, &nextNode))
+                 {
+                     return nextNode;
+                 }
+                 break;
++#endif // !TARGET_RISCV64
+ 
+             case NI_System_SpanHelpers_Fill:
+             case NI_System_SpanHelpers_ClearWithoutReferences:
+diff --git a/src/coreclr/jit/lsra.h b/src/coreclr/jit/lsra.h
+index 3541e1a23..9352a4a96 100644
+--- a/src/coreclr/jit/lsra.h
++++ b/src/coreclr/jit/lsra.h
+@@ -1921,7 +1921,13 @@ private:
+ public:
+     // The following keep track of information about internal (temporary register) intervals
+     // during the building of a single node.
++#if defined(TARGET_RISCV64)
++    // The unrolled memmove holds the whole source in GPR temps (no SIMD): 8 of them for
++    // the 64-byte limit of getUnrollThreshold(Memmove).
++    static const int MaxInternalCount = 8;
++#else
+     static const int MaxInternalCount = 5;
++#endif
+ 
+ private:
+     RefPosition* internalDefs[MaxInternalCount];
+diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
+index 98a23fc00..ec17b7198 100644
+--- a/src/coreclr/jit/lsrariscv64.cpp
++++ b/src/coreclr/jit/lsrariscv64.cpp
+@@ -1315,6 +1315,34 @@ int LinearScan::BuildBlockStore(GenTreeBlk* blkNode)
+                 }
+                 break;
+ 
++            case GenTreeBlk::BlkOpKindUnrollMemmove:
++            {
++                // genCodeForMemmove loads the whole source into temps before the first
++                // store, so src/dst overlap does not matter: one GPR per 8-byte chunk
++                // (a remainder is covered by an overlapping 8-byte access), two GPRs for
++                // a 3..7 byte block (two overlapping accesses), one for 1/2/4 bytes. The
++                // size is capped by getUnrollThreshold(Memmove) at MaxInternalCount * 8.
++                // The temps must not alias the address registers, which stay live across
++                // the loads: delay-free them.
++                assert(size > 0);
++                unsigned temps;
++                if (size >= REGSIZE_BYTES)
++                {
++                    temps = (size + REGSIZE_BYTES - 1) / REGSIZE_BYTES;
++                }
++                else
++                {
++                    temps = isPow2(size) ? 1 : 2;
++                }
++                assert(temps <= (unsigned)MaxInternalCount);
++                for (unsigned i = 0; i < temps; i++)
++                {
++                    buildInternalIntRegisterDefForNode(blkNode);
++                }
++                setInternalRegsDelayFree = true;
++                break;
++            }
++
+             default:
+                 unreached();
+         }

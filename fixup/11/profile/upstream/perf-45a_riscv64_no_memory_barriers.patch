@@ -1,0 +1,49 @@
+Adds JitRiscV64NoMemoryBarriers (default 1): the riscv64 JIT emits no `fence`. A single-hart zkVM guest
+(ZisK, SP1, OpenVM) has no other hart, device or asynchronous observer of memory, so a barrier orders
+nothing - but each is one executed step, and the JIT emits one before every volatile load/store (which
+includes the static-base initialization check on every access to a static of a type with a cctor: ~2500
+`fence rw,rw` in ~1300 functions of the Nethermind guest) and for every Interlocked.MemoryBarrier /
+Volatile.* call. Every barrier the JIT emits goes through CodeGen::instGen_MemoryBarrier, which now returns
+early when the knob is set. Set JitRiscV64NoMemoryBarriers=0 on any target where another agent can observe
+memory.
+
+RISC-V64: JitRiscV64NoMemoryBarriers (default 1) - emit no fence; zkVM guests are single-hart.
+
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+index 0d4f8702b..8d5bae87d 100644
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -6881,6 +6881,14 @@ void CodeGen::instGen_MemoryBarrier(BarrierKind barrierKind)
+     }
+ #endif // DEBUG
+ 
++    // zkVM: a single-hart guest with no asynchronous observer of memory; a fence
++    // orders nothing and costs a step. Every barrier the JIT emits goes through
++    // here (volatile indirs, GT_MEMORYBARRIER, volatile block ops).
++    if (JitConfig.JitRiscV64NoMemoryBarriers() != 0)
++    {
++        return;
++    }
++
+     insBarrier barrier;
+     switch (barrierKind)
+     {
+diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
+index 63ccaf18a..fd3f839c3 100644
+--- a/src/coreclr/jit/jitconfigvalues.h
++++ b/src/coreclr/jit/jitconfigvalues.h
+@@ -511,6 +511,14 @@ RELEASE_CONFIG_INTEGER(JitNoUnalignedAccess,        "JitNoUnalignedAccess",
+ // locals and statics are provably aligned and stay single instructions. For zkVMs
+ // that reject any misaligned access (SP1, OpenVM). Off by default.
+ RELEASE_CONFIG_INTEGER(JitRiscV64StrictAlign,       "JitRiscV64StrictAlign",     0)
++// Single-hart zkVM guests (ZisK, SP1, OpenVM): there is no other hart, no device
++// and no asynchronous observer of memory, so a memory barrier orders nothing -
++// but every `fence` is still one executed step, and the JIT emits one before every
++// volatile load/store (which includes the static-base initialization check on
++// each access to a static of a type with a cctor) and for every
++// Interlocked.MemoryBarrier / Volatile.* call. When 1, the riscv64 JIT emits no
++// `fence` at all. Set 0 on any target where another agent can observe memory.
++RELEASE_CONFIG_INTEGER(JitRiscV64NoMemoryBarriers,  "JitRiscV64NoMemoryBarriers", 1)
+ #endif
+ 
+ RELEASE_CONFIG_INTEGER(EnableEmbeddedBroadcast,     "EnableEmbeddedBroadcast",   1) // Allows embedded broadcasts to be disabled

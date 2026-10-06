@@ -1,0 +1,51 @@
+A method that contains a P/Invoke saved every callee-saved register in its prolog (s1..s11, so a GC
+stack walk could find them while the thread is in native code) and was forced to keep a frame pointer
+(the P/Invoke frame setup needs one). perf-27 removed the P/Invoke transition itself on riscv64 - the
+zkVM guest has no GC stack walk and no thread suspension - but left both rules in place. On the
+Nethermind guest the cost sits in the precompile wrappers: SpanHelpers.MemmoveNative (47k calls per
+block) spent 26 of its 35 executed instructions on saving and restoring 13 registers, 1.2M steps
+(0.9%) on block 25532480; ZeroMemoryNative likewise. Both rules are now skipped on riscv64, so these
+methods get the ordinary prolog (only the registers they modify, frameless when nothing else needs FP).
+
+RISC-V64 zkVM: P/Invoke methods no longer save all callee-saved registers nor force a frame pointer.
+
+diff --git a/src/coreclr/jit/codegencommon.cpp b/src/coreclr/jit/codegencommon.cpp
+index 5b8f588a5..812abd17e 100644
+--- a/src/coreclr/jit/codegencommon.cpp
++++ b/src/coreclr/jit/codegencommon.cpp
+@@ -5074,11 +5074,17 @@ void CodeGen::genFinalizeFrame()
+     }
+ 
+     /* If we have any pinvoke calls, we might potentially trash everything */
++#if !defined(TARGET_RISCV64)
++    // RISC-V zkVM: the P/Invoke transition is not emitted (perf-27), there is no GC stack walk
++    // that would need every callee-saved register on the frame, and the frame pointer is not
++    // forced for these methods (fgMorph). Saving s1..s11 around a two-instruction precompile
++    // wrapper (SpanHelpers.MemmoveNative: 26 of its 35 steps) is pure overhead there.
+     if (m_compiler->compMethodRequiresPInvokeFrame())
+     {
+         noway_assert(isFramePointerUsed()); // Setup of Pinvoke frame currently requires an EBP style frame
+         regSet.rsSetRegsModified(RBM_INT_CALLEE_SAVED & ~RBM_FPBASE);
+     }
++#endif // !TARGET_RISCV64
+ 
+     // Parameter homing may need an additional register to handle conflicts if
+     // all callee trash registers are used by parameters.
+diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
+index a8abec1a4..aaab5f9a6 100644
+--- a/src/coreclr/jit/morph.cpp
++++ b/src/coreclr/jit/morph.cpp
+@@ -15330,10 +15330,13 @@ void Compiler::fgSetOptions()
+ #endif // TARGET_X86
+     }
+ 
++#if !defined(TARGET_RISCV64)
++    // RISC-V zkVM: no P/Invoke frame is set up (perf-27), so no frame pointer is needed for it.
+     if (compMethodRequiresPInvokeFrame())
+     {
+         codeGen->setFramePointerRequired(true); // Setup of Pinvoke frame currently requires an EBP style frame
+     }
++#endif // !TARGET_RISCV64
+ 
+     if (info.compPublishStubParam)
+     {

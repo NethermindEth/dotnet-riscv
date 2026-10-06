@@ -1,0 +1,193 @@
+riscv64 zkVM: unrolled block copies as the ZisK DMA memcpy idiom
+
+A struct copy or a constant-size block copy was unrolled into a load and a store per
+eight bytes: two steps per word on the zkVM, where the 32-byte copies of UInt256 and
+Hash256 alone were 3.3% of all executed instructions in the traced Nethermind block
+(4.4% for all unrolled copies). The ZisK DMA precompile (perf-56/58 for memmove
+P/Invokes) copies any length in two instructions: `csrrs x0, 0x813, <source>; add x0,
+<destination>, <length>`. JitZkMemcpyCsr=<bytes> (default 0 = off; bflat passes 0x10)
+emits an unrolled GT_STORE_BLK copy of at least that many bytes as `[lea/addi source;]
+[lea/addi destination;] li length; csrrs; add` - three to five instructions - with LSRA
+reserving the length register and one per address to materialize. Address modes with
+an index or an offset outside simm12, unaligned copies in strict-alignment mode and the
+CpObj (GC write barrier) kind keep their stores.
+
+Measured on nine mainnet blocks on top of perf-62..64: -2.44% executed steps
+(1,463,698,587 = -5.07% versus perf-61, -14.08% versus master); 16- and 32-byte
+minimums are the same to 0.004%. Outputs identical.
+
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+index 279a0bcd4..56348677d 100644
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -5693,6 +5693,46 @@ void CodeGen::genCodeForCpBlkUnroll(GenTreeBlk* cpBlkNode)
+     assert(srcOffset < INT32_MAX - static_cast<int>(size));
+     assert(dstOffset < INT32_MAX - static_cast<int>(size));
+ 
++
++    bool zkNeedsDstReg = false;
++    bool zkNeedsSrcReg = false;
++    if (m_compiler->zkCpBlkUsesMemcpyCsr(cpBlkNode, &zkNeedsDstReg, &zkNeedsSrcReg))
++    {
++        // ZisK DMA memcpy (JitZkMemcpyCsr): csrrs x0, 0x813, <source>; add x0, <destination>, <length>
++        regNumber lenReg = internalRegisters.Extract(cpBlkNode, RBM_ALLINT);
++        regNumber dstReg = dstAddrBaseReg;
++        regNumber srcReg = srcAddrBaseReg;
++        if (zkNeedsDstReg)
++        {
++            dstReg = internalRegisters.Extract(cpBlkNode, RBM_ALLINT);
++            if (dstLclNum != BAD_VAR_NUM)
++            {
++                emit->emitIns_R_S(INS_lea, EA_PTRSIZE, dstReg, dstLclNum, dstOffset);
++            }
++            else
++            {
++                emit->emitIns_R_R_I(INS_addi, EA_PTRSIZE, dstReg, dstAddrBaseReg, dstOffset);
++            }
++        }
++        if (zkNeedsSrcReg)
++        {
++            srcReg = internalRegisters.Extract(cpBlkNode, RBM_ALLINT);
++            if (srcLclNum != BAD_VAR_NUM)
++            {
++                emit->emitIns_R_S(INS_lea, EA_PTRSIZE, srcReg, srcLclNum, srcOffset);
++            }
++            else
++            {
++                emit->emitIns_R_R_I(INS_addi, EA_PTRSIZE, srcReg, srcAddrBaseReg, srcOffset);
++            }
++        }
++        assert((dstReg != REG_NA) && (srcReg != REG_NA));
++        instGen_Set_Reg_To_Imm(EA_PTRSIZE, lenReg, (ssize_t)size);
++        emit->emitIns_R_R_I(INS_csrrs, EA_8BYTE, REG_ZERO, srcReg, 0x813);
++        emit->emitIns_R_R_R(INS_add, EA_8BYTE, REG_ZERO, dstReg, lenReg);
++        return;
++    }
++
+     regNumber tempReg  = internalRegisters.Extract(cpBlkNode, RBM_ALLINT);
+     regNumber tempReg2 = (size >= 2 * REGSIZE_BYTES) ? internalRegisters.Extract(cpBlkNode, RBM_ALLINT) : REG_NA;
+ 
+diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
+index 948b571e8..acff0c152 100644
+--- a/src/coreclr/jit/compiler.h
++++ b/src/coreclr/jit/compiler.h
+@@ -7394,6 +7394,7 @@ private:
+     GenTree* fgRiscV64TryInlineNewArr(GenTreeCall* call);
+     int      zkCsrForPInvoke(GenTreeCall* call);
+     bool     zkInitBlkUsesMemsetCsr(GenTreeBlk* blk, bool* needsAddrReg);
++    bool     zkCpBlkUsesMemcpyCsr(GenTreeBlk* blk, bool* needsDstReg, bool* needsSrcReg);
+ #endif
+     GenTree* fgExpandVirtualVtableCallTarget(GenTreeCall* call);
+ 
+diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
+index c74447aac..7e480677f 100644
+--- a/src/coreclr/jit/jitconfigvalues.h
++++ b/src/coreclr/jit/jitconfigvalues.h
+@@ -560,6 +560,10 @@ RELEASE_CONFIG_INTEGER(JitZkSpillKeepReg, "JitZkSpillKeepReg", 0)
+ // `csrrs x0, 0x816, <address>; addi x0, <length>, 0`: three or four instructions whatever
+ // the size, against one store per eight bytes.
+ RELEASE_CONFIG_INTEGER(JitZkMemsetCsr, "JitZkMemsetCsr", 0)
++// zkVM (ZisK): a block copy of at least this many bytes (0 = never) that would otherwise be
++// unrolled into load/store pairs is emitted as the DMA memcpy idiom (see JitZkCsrPInvokes),
++// `csrrs x0, 0x813, <source>; add x0, <destination>, <length>`.
++RELEASE_CONFIG_INTEGER(JitZkMemcpyCsr, "JitZkMemcpyCsr", 0)
+ // riscv64 zkVM (ZisK): a precompile runs when a CSR is written with the address of its
+ // operand block. libziskos wraps each one in a two-instruction function (csrs; ret) that
+ // managed code reaches through a P/Invoke, so one keccak-f costs the call pair, the stub,
+diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
+index dd536acda..7d591d3c8 100644
+--- a/src/coreclr/jit/lsrariscv64.cpp
++++ b/src/coreclr/jit/lsrariscv64.cpp
+@@ -1320,6 +1320,24 @@ int LinearScan::BuildBlockStore(GenTreeBlk* blkNode)
+         switch (blkNode->gtBlkOpKind)
+         {
+             case GenTreeBlk::BlkOpKindUnroll:
++                {
++                    bool zkNeedsDstReg = false;
++                    bool zkNeedsSrcReg = false;
++                    if (m_compiler->zkCpBlkUsesMemcpyCsr(blkNode, &zkNeedsDstReg, &zkNeedsSrcReg))
++                    {
++                        // ZisK DMA memcpy idiom: a register for the length and one per address to materialize.
++                        buildInternalIntRegisterDefForNode(blkNode);
++                        if (zkNeedsDstReg)
++                        {
++                            buildInternalIntRegisterDefForNode(blkNode);
++                        }
++                        if (zkNeedsSrcReg)
++                        {
++                            buildInternalIntRegisterDefForNode(blkNode);
++                        }
++                        break;
++                    }
++                }
+                 buildInternalIntRegisterDefForNode(blkNode);
+                 if (size >= 2 * REGSIZE_BYTES)
+                 {
+diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
+index e97075c08..1ee6b094d 100644
+--- a/src/coreclr/jit/morph.cpp
++++ b/src/coreclr/jit/morph.cpp
+@@ -6420,6 +6420,63 @@ bool Compiler::zkInitBlkUsesMemsetCsr(GenTreeBlk* blk, bool* needsAddrReg)
+     return true;
+ }
+ 
++//------------------------------------------------------------------------
++// zkCpBlkUsesMemcpyCsr: does this unrolled block copy become the ZisK DMA memcpy idiom
++//   (JitZkMemcpyCsr)? Reports whether codegen needs registers to materialize the destination
++//   and source addresses (a local, or a based address with a non-zero offset).
++//
++bool Compiler::zkCpBlkUsesMemcpyCsr(GenTreeBlk* blk, bool* needsDstReg, bool* needsSrcReg)
++{
++    *needsDstReg = false;
++    *needsSrcReg = false;
++    const int minSize = JitConfig.JitZkMemcpyCsr();
++    if ((minSize <= 0) || !blk->OperIs(GT_STORE_BLK) || !blk->OperIsCopyBlkOp() ||
++        (blk->gtBlkOpKind != GenTreeBlk::BlkOpKindUnroll) || (blk->Size() < (unsigned)minSize))
++    {
++        return false;
++    }
++    if (blk->IsUnaligned() && (JitConfig.JitNoUnalignedAccess() != 0))
++    {
++        return false;
++    }
++    auto addrOk = [](GenTree* addr, bool* needsReg) -> bool {
++        if (!addr->isContained())
++        {
++            return true;
++        }
++        if (addr->OperIsAddrMode())
++        {
++            if (addr->AsAddrMode()->HasIndex() || !emitter::isValidSimm12(addr->AsAddrMode()->Offset()))
++            {
++                return false;
++            }
++            *needsReg = (addr->AsAddrMode()->Offset() != 0);
++            return true;
++        }
++        if (addr->OperIs(GT_LCL_ADDR))
++        {
++            *needsReg = true;
++            return true;
++        }
++        return false;
++    };
++    if (!addrOk(blk->Addr(), needsDstReg))
++    {
++        return false;
++    }
++    GenTree* src = blk->Data();
++    if (src->OperIs(GT_LCL_VAR, GT_LCL_FLD))
++    {
++        *needsSrcReg = true;
++        return src->isContained();
++    }
++    if (!src->OperIs(GT_IND) || !src->isContained())
++    {
++        return false;
++    }
++    return addrOk(src->AsIndir()->Addr(), needsSrcReg);
++}
++
+ int Compiler::zkCsrForPInvoke(GenTreeCall* call)
+ {
+     if (!call->IsUnmanaged() || (call->gtCallType != CT_USER_FUNC) || (call->gtCallMethHnd == nullptr) ||

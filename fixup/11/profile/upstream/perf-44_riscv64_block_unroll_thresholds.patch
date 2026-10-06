@@ -1,0 +1,46 @@
+Raises the riscv64 block-copy / block-init unroll thresholds from memcpy:32 / memset:64 to the arm64
+numbers, memcpy:128 / memset:256. A block copy above the threshold becomes a call to SpanHelpers.Memmove
+(CORINFO_HELP_MEMCPY maps to it under NativeAOT): a prolog, an overlap test and about 40 executed
+instructions before the first byte moves. The Nethermind guest makes ~1000 such calls with a constant
+length of 32 to 80 bytes (40 and 48 are the most common: UInt256, Address, Keccak state and other struct
+copies), each of which is now a straight ld/sd sequence of at most 16 instructions. On a zkVM every
+executed instruction is a step and there is no icache, so the larger straight-line sequence is the cheaper
+one up to that size. The unaligned-access and strict-alignment expansions (perf-35, perf-39) apply to the
+unrolled sequence as before.
+
+RISC-V64: raise the block unroll thresholds to memcpy:128 / memset:256 (zkVM: a Memmove call costs more
+than the unrolled copy up to that size).
+
+diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
+index b28714c70..02db5a29b 100644
+--- a/src/coreclr/jit/compiler.h
++++ b/src/coreclr/jit/compiler.h
+@@ -10723,6 +10723,19 @@ public:
+         unsigned maxRegSize = REGSIZE_BYTES;
+         unsigned threshold  = maxRegSize;
+ 
++#if defined(TARGET_RISCV64)
++        // zkVM guests: a block copy that exceeds the unroll limit becomes a call to
++        // SpanHelpers.Memmove (CORINFO_HELP_MEMCPY maps to it under NativeAOT), which
++        // costs a prolog, an overlap test and ~40 executed instructions before the
++        // first byte moves - several times the unrolled ld/sd sequence for the 32 to
++        // 80-byte struct copies that dominate (UInt256, Address, Keccak state). With
++        // no SIMD the baseline would be memcpy:32 / memset:64; raise it to the arm64
++        // numbers (memcpy:128 / memset:256): on a target that charges per executed
++        // instruction and has no icache, the larger straight-line sequence is the
++        // cheaper one up to that size.
++        threshold = maxRegSize * 4;
++#endif // TARGET_RISCV64
++
+ #if defined(FEATURE_SIMD)
+         if (canUseSimd)
+         {
+@@ -10767,7 +10780,7 @@ public:
+         // | arm64       |   256  |   128  | ldp/stp (2x128bit)
+         // | arm         |    32  |    16  | no SIMD support
+         // | loongarch64 |    64  |    32  | no SIMD support
+-        // | riscv64     |    64  |    32  | no SIMD support
++        // | riscv64     |   256  |   128  | no SIMD; raised above (zkVM: call cost dominates)
+         //
+         // We might want to use a different multiplier for truly hot/cold blocks based on PGO data
+         //

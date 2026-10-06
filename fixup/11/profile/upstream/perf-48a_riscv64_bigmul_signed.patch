@@ -1,0 +1,113 @@
+riscv64: Math.BigMul(long, long, out long) as mul + mulh
+
+PR #16's perf-48 expands the unsigned Math.BigMul into `mul` + `mulhu` through the
+NI_System_Math_BigMul intrinsic; the signed overload (Int128 and the signed Int256 paths)
+stayed a call to the software fallback. The same expansion now accepts (long, long, out long):
+the high-half GT_INTRINSIC carries GTF_UNSIGNED for the unsigned overload, codegen picks
+`mulhu` or `mulh` from it, value numbering uses a signed VNF_MulHi beside VNF_MulHi_UN, and
+Math.BigMul(long, long, out long) is [Intrinsic] so the JIT sees it. Replaces the signed
+half of the previous perf-48 of this series.
+
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+index 8d5bae87d..31b4bd193 100644
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -4742,7 +4742,8 @@ void CodeGen::genIntrinsic(GenTreeIntrinsic* treeNode)
+             instr = INS_maxu;
+             break;
+         case NI_System_Math_BigMul:
+-            instr = INS_mulhu;
++            // High half of the 128-bit product: unsigned (GTF_UNSIGNED) or signed factors.
++            instr = treeNode->IsUnsigned() ? INS_mulhu : INS_mulh;
+             break;
+         case NI_PRIMITIVE_LeadingZeroCount:
+             instr = is4 ? INS_clzw : INS_clz;
+diff --git a/src/coreclr/jit/importercalls.cpp b/src/coreclr/jit/importercalls.cpp
+index eeb21514b..531310082 100644
+--- a/src/coreclr/jit/importercalls.cpp
++++ b/src/coreclr/jit/importercalls.cpp
+@@ -5171,23 +5171,27 @@ GenTree* Compiler::impIntrinsic(CORINFO_CLASS_HANDLE    clsHnd,
+ #ifdef TARGET_RISCV64
+             case NI_System_Math_BigMul:
+             {
+-                // BigMul(ulong, ulong, out ulong): the low half is a mul stored through the out parameter and the
+-                // high half, the value returned, a mulhu (GT_INTRINSIC, as GT_MULHI is not valid in HIR).
+-                if ((sig->numArgs != 3) || (sig->retType != CORINFO_TYPE_ULONG))
++                // BigMul(ulong, ulong, out ulong) / BigMul(long, long, out long): the low half is a mul stored
++                // through the out parameter and the high half, the value returned, a mulhu / mulh (GT_INTRINSIC,
++                // as GT_MULHI is not valid in HIR; GTF_UNSIGNED on it picks mulhu).
++                const bool isUnsignedBigMul = (sig->retType == CORINFO_TYPE_ULONG);
++                const bool isSignedBigMul   = (sig->retType == CORINFO_TYPE_LONG);
++                if ((sig->numArgs != 3) || (!isUnsignedBigMul && !isSignedBigMul))
+                 {
+                     break;
+                 }
+ 
+                 CORINFO_ARG_LIST_HANDLE arg           = sig->args;
+                 CORINFO_CLASS_HANDLE    argClass      = NO_CLASS_HANDLE;
+-                bool                    ulongFactors  = true;
++                bool                    sameFactors   = true;
++                const CorInfoType       factorType    = isUnsignedBigMul ? CORINFO_TYPE_ULONG : CORINFO_TYPE_LONG;
+                 for (unsigned i = 0; i < 2; i++)
+                 {
+-                    ulongFactors &= (strip(info.compCompHnd->getArgType(sig, arg, &argClass)) == CORINFO_TYPE_ULONG);
++                    sameFactors &= (strip(info.compCompHnd->getArgType(sig, arg, &argClass)) == factorType);
+                     arg = info.compCompHnd->getArgNext(arg);
+                 }
+ 
+-                if (!ulongFactors)
++                if (!sameFactors)
+                 {
+                     break;
+                 }
+@@ -5215,6 +5219,10 @@ GenTree* Compiler::impIntrinsic(CORINFO_CLASS_HANDLE    clsHnd,
+                 retNode = new (this, GT_INTRINSIC)
+                     GenTreeIntrinsic(TYP_LONG, gtCloneExpr(factors[0]), gtCloneExpr(factors[1]), ni,
+                                      nullptr R2RARG(CORINFO_CONST_LOOKUP{IAT_VALUE}));
++                if (isUnsignedBigMul)
++                {
++                    retNode->gtFlags |= GTF_UNSIGNED;
++                }
+                 break;
+             }
+ #endif // TARGET_RISCV64
+diff --git a/src/coreclr/jit/valuenum.cpp b/src/coreclr/jit/valuenum.cpp
+index c84abc450..dfe92487d 100644
+--- a/src/coreclr/jit/valuenum.cpp
++++ b/src/coreclr/jit/valuenum.cpp
+@@ -14100,8 +14100,8 @@ void Compiler::fgValueNumberIntrinsic(GenTree* tree)
+     else if (intrinsic->gtIntrinsicName == NI_System_Math_BigMul)
+     {
+         ValueNumPair excSet = vnStore->VNPExcSetUnion(arg0VNPx, arg1VNPx);
+-        intrinsic->gtVNPair =
+-            vnStore->VNPWithExc(vnStore->VNPairForFunc(TYP_LONG, VNF_MulHi_UN, arg0VNP, arg1VNP), excSet);
++        const VNFunc vnf    = intrinsic->IsUnsigned() ? VNF_MulHi_UN : VNF_MulHi;
++        intrinsic->gtVNPair = vnStore->VNPWithExc(vnStore->VNPairForFunc(TYP_LONG, vnf, arg0VNP, arg1VNP), excSet);
+     }
+ #endif // TARGET_RISCV64
+     else
+diff --git a/src/coreclr/jit/valuenumfuncs.h b/src/coreclr/jit/valuenumfuncs.h
+index eddd80a87..ce3221fa9 100644
+--- a/src/coreclr/jit/valuenumfuncs.h
++++ b/src/coreclr/jit/valuenumfuncs.h
+@@ -221,6 +221,8 @@ ValueNumFuncDef(HWI_INTRINSIC_END, -1, false, false)
+     ValueNumFuncDef(MaxInt_UN, 2, true, false)
+     // High 64 bits of the unsigned 128-bit product (Math.BigMul)
+     ValueNumFuncDef(MulHi_UN, 2, true, false)
++    // High 64 bits of the signed 128-bit product (Math.BigMul(long, long, out long))
++    ValueNumFuncDef(MulHi, 2, true, false)
+ #endif // TARGET_RISCV64
+ 
+ // clang-format on
+diff --git a/src/libraries/System.Private.CoreLib/src/System/Math.cs b/src/libraries/System.Private.CoreLib/src/System/Math.cs
+index 9c65afe51..0e0c67698 100644
+--- a/src/libraries/System.Private.CoreLib/src/System/Math.cs
++++ b/src/libraries/System.Private.CoreLib/src/System/Math.cs
+@@ -254,6 +254,7 @@ static ulong SoftwareFallback(ulong a, ulong b, out ulong low)
+         /// <param name="b">The second number to multiply.</param>
+         /// <param name="low">The low 64-bit of the product of the specified numbers.</param>
+         /// <returns>The high 64-bit of the product of the specified numbers.</returns>
++        [Intrinsic] // RISC-V (M): mul + mulh, expanded by the JIT like the unsigned overload; this body is the fallback
+         public static long BigMul(long a, long b, out long low)
+         {
+ #if !MONO // X86Base.BigMul is not yet implemented in MONO
