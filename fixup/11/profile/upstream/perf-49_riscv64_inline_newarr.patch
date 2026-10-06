@@ -1,0 +1,259 @@
+Extends perf-26's per-site inline bump allocation to single-dimensional arrays
+(CORINFO_HELP_NEWARR_1_VC / _PTR / _DIRECT / _ALIGN8): Compiler::fgRiscV64TryInlineNewArr, run from
+fgMorphCall during global morph, replaces the helper call with the same cell / floor / size-header
+protocol as the object path plus the size computation (aligned OFFSETOF__CORINFO_Array__data +
+length * elementSize) and the length store. Under NativeAOT the helper is RhpNewArrayFast: a prolog saving
+four registers, a __tls_get_addr call for the thread's alloc context and the bump - about 40 executed
+instructions for the most frequent allocation kind there is (byte[] / ulong[] in RLP, hashing, tries:
+~800 call sites in the Nethermind guest); the inline sequence is ~15 instructions and no call. Gated by
+the same JitZkBumpAddr knob (0 = helper call, the default), so non-zkVM targets are unaffected. Left
+alone: class handles that are not compile-time constants (shared generic code), the frozen-segment helper
+and arrays the object allocator put on the stack. Semantics changed as for objects: a length the helper
+would reject (negative or above CORINFO_Array_MaxLength) and heap exhaustion fail fast instead of throwing;
+the array is exactly typed, zeroed (fresh zkVM RAM) and its length set. Strings (RhNewString) are not a
+JIT helper and stay as they are.
+
+RISC-V64 zkVM: inline bump allocation of single-dimensional arrays (JitZkBumpAddr).
+
+diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
+index 02db5a29b..b14e4dd84 100644
+--- a/src/coreclr/jit/compiler.h
++++ b/src/coreclr/jit/compiler.h
+@@ -7388,6 +7388,9 @@ private:
+                                                      Statement*       tmpAssignmentInsertionPoint,
+                                                      Statement*       paramAssignmentInsertionPoint);
+     GenTree* fgMorphCall(GenTreeCall* call);
++#if defined(TARGET_RISCV64)
++    GenTree* fgRiscV64TryInlineNewArr(GenTreeCall* call);
++#endif
+     GenTree* fgExpandVirtualVtableCallTarget(GenTreeCall* call);
+ 
+     void fgMorphCallInline(GenTreeCall* call, InlineResult* result);
+diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
+index 8d4b7d68e..a8abec1a4 100644
+--- a/src/coreclr/jit/morph.cpp
++++ b/src/coreclr/jit/morph.cpp
+@@ -6356,6 +6356,203 @@ void Compiler::fgMorphTailCallViaJitHelper(GenTreeCall* call)
+     DISPTREE(call);
+ }
+ 
++#if defined(TARGET_RISCV64)
++//------------------------------------------------------------------------
++// fgRiscV64TryInlineNewArr: zkVM per-site inline allocation of a single-dimensional
++//    array (CORINFO_HELP_NEWARR_1_VC / _PTR / _DIRECT / _ALIGN8) against the fixed
++//    bump cell that ObjectAllocator::MorphAllocObjNodeIntoHelperCall uses for
++//    fixed-size objects. See the long comment there for the heap protocol
++//    (cell, floor, size header) and why the floor load is invariant.
++//
++// Arguments:
++//    call - the helper call
++//
++// Return Value:
++//    A TYP_REF tree producing the array, to be morphed by the caller, or nullptr
++//    when the call is left alone.
++//
++// Notes:
++//    Under NativeAOT the array helper is RhpNewArrayFast: a prolog saving four
++//    registers, a __tls_get_addr call for the thread's alloc context and the bump
++//    itself - about 40 executed instructions, for the most frequent allocation
++//    kind there is (byte[] and ulong[] buffers in RLP, hashing, tries). The
++//    inline sequence is the object one plus the size computation and the length
++//    store: ~15 instructions, no call.
++//
++//    Semantics kept: the array is exactly-typed (its MethodTable is the constant
++//    the IL named), zeroed (fresh zkVM RAM, as for objects), its length field set,
++//    its size the aligned OFFSETOF__CORINFO_Array__data + length * elementSize.
++//    Semantics changed, like the object path: a length that the helper would
++//    reject (negative, or beyond the maximum array length) and heap exhaustion
++//    fail fast instead of throwing OverflowException / OutOfMemoryException.
++//
++//    Left alone: a class handle that is not a compile-time constant (shared
++//    generic code looks it up at run time), the frozen-segment helper, and arrays
++//    the object allocator already placed on the stack (GTF_CALL_M_STACK_ARRAY).
++//
++GenTree* Compiler::fgRiscV64TryInlineNewArr(GenTreeCall* call)
++{
++    // Low 32 bits of the cell address, zero-extended. 0 disables the transform.
++    const ssize_t bumpAddr = (ssize_t)(size_t)(uint32_t)JitConfig.JitZkBumpAddr();
++    if ((bumpAddr == 0) || ((bumpAddr & 7) != 0))
++    {
++        return nullptr;
++    }
++
++    switch (call->GetHelperNum())
++    {
++        case CORINFO_HELP_NEWARR_1_VC:
++        case CORINFO_HELP_NEWARR_1_PTR:
++        case CORINFO_HELP_NEWARR_1_DIRECT:
++        case CORINFO_HELP_NEWARR_1_ALIGN8:
++            break;
++        default:
++            return nullptr;
++    }
++
++    if ((call->gtCallMoreFlags & GTF_CALL_M_STACK_ARRAY) != 0)
++    {
++        return nullptr;
++    }
++
++    if (call->gtArgs.CountUserArgs() != 2)
++    {
++        return nullptr;
++    }
++
++    GenTree* clsArg = call->gtArgs.GetUserArgByIndex(0)->GetNode();
++    GenTree* lenArg = call->gtArgs.GetUserArgByIndex(1)->GetNode();
++
++    // The MethodTable must be a compile-time constant: it is both the value stored
++    // into the new object and the source of the element size.
++    if (!clsArg->IsIconHandle(GTF_ICON_CLASS_HDL))
++    {
++        return nullptr;
++    }
++
++    CORINFO_CLASS_HANDLE arrCls = (CORINFO_CLASS_HANDLE)clsArg->AsIntCon()->GetCompileTimeHandle();
++    if (arrCls == NO_CLASS_HANDLE)
++    {
++        arrCls = (CORINFO_CLASS_HANDLE)call->compileTimeHelperArgumentHandle;
++    }
++    if (arrCls == NO_CLASS_HANDLE)
++    {
++        return nullptr;
++    }
++
++    CORINFO_CLASS_HANDLE elemCls  = NO_CLASS_HANDLE;
++    const var_types      elemType = JITtype2varType(info.compCompHnd->getChildType(arrCls, &elemCls));
++    const unsigned       elemSize = (elemType == TYP_STRUCT) ? typGetObjLayout(elemCls)->GetSize() : genTypeSize(elemType);
++    if (elemSize == 0)
++    {
++        return nullptr;
++    }
++
++    JITDUMP("\nzkVM: inlining array allocation [%06u] (element size %u)\n", dspTreeID(call), elemSize);
++
++    // The helper takes a native int length (the importer widened it); keep a copy.
++    GenTree* lenVal = lenArg;
++    if (genActualType(lenVal) == TYP_INT)
++    {
++        lenVal = gtNewCastNode(TYP_LONG, lenVal, /* unsigned */ false, TYP_LONG);
++    }
++    assert(genActualType(lenVal) == TYP_LONG);
++
++    unsigned lenLcl  = lvaGrabTemp(true DEBUGARG("zkVM inline-newarr len"));
++    unsigned sizeLcl = lvaGrabTemp(true DEBUGARG("zkVM inline-newarr size"));
++    unsigned cellLcl = lvaGrabTemp(true DEBUGARG("zkVM inline-newarr cell"));
++    unsigned objLcl  = lvaGrabTemp(true DEBUGARG("zkVM inline-newarr obj"));
++    unsigned hdrLcl  = lvaGrabTemp(true DEBUGARG("zkVM inline-newarr hdr"));
++    unsigned refLcl  = lvaGrabTemp(true DEBUGARG("zkVM inline-newarr ref"));
++    lvaTable[lenLcl].lvType  = TYP_LONG;
++    lvaTable[sizeLcl].lvType = TYP_LONG;
++    lvaTable[cellLcl].lvType = TYP_I_IMPL;
++    lvaTable[objLcl].lvType  = TYP_I_IMPL;
++    lvaTable[hdrLcl].lvType  = TYP_I_IMPL;
++    lvaTable[refLcl].lvType  = TYP_REF;
++
++    // len = (long)length
++    GenTree* storeLen = gtNewStoreLclVarNode(lenLcl, lenVal);
++
++    // Guard: fail fast unless 0 <= len <= CORINFO_Array_MaxLength. GT_BOUNDS_CHECK
++    // traps on (unsigned)index >= (unsigned)length, so index = len (negative values
++    // are huge as unsigned) and length = MaxLength + 1. The same bound the helper
++    // enforces (it would throw OverflowException).
++    GenTreeBoundsChk* lenGuard = new (this, GT_BOUNDS_CHECK)
++        GenTreeBoundsChk(gtNewLclvNode(lenLcl, TYP_LONG), gtNewLconNode((int64_t)CORINFO_Array_MaxLength + 1),
++                         SCK_FAIL_FAST);
++    lenGuard->gtInxType = TYP_LONG;
++
++    // size = (len * elemSize + OFFSETOF__CORINFO_Array__data + 7) & ~7
++    // (the payload the C allocator's size header records: MethodTable, length word
++    // and elements; the 8-byte size header itself sits below it, as for objects)
++    GenTree* bytes = gtNewOperNode(GT_MUL, TYP_LONG, gtNewLclvNode(lenLcl, TYP_LONG), gtNewLconNode(elemSize));
++    GenTree* sizeExpr =
++        gtNewOperNode(GT_AND, TYP_LONG,
++                      gtNewOperNode(GT_ADD, TYP_LONG, bytes, gtNewLconNode(OFFSETOF__CORINFO_Array__data + 7)),
++                      gtNewLconNode(~(int64_t)7));
++    GenTree* storeSize = gtNewStoreLclVarNode(sizeLcl, sizeExpr);
++
++    // cell = BUMP_ADDR
++    GenTree* storeCell = gtNewStoreLclVarNode(cellLcl, gtNewIconNode(bumpAddr, TYP_I_IMPL));
++
++    // obj = *(intptr*)cell - size
++    GenTree* cur      = gtNewIndir(TYP_I_IMPL, gtNewLclvNode(cellLcl, TYP_I_IMPL));
++    GenTree* storeObj = gtNewStoreLclVarNode(
++        objLcl, gtNewOperNode(GT_SUB, TYP_I_IMPL, cur, gtNewLclvNode(sizeLcl, TYP_LONG)));
++
++    // hdr = obj - 8
++    GenTree* storeHdr = gtNewStoreLclVarNode(
++        hdrLcl, gtNewOperNode(GT_SUB, TYP_I_IMPL, gtNewLclvNode(objLcl, TYP_I_IMPL), gtNewIconNode(8, TYP_I_IMPL)));
++
++    // floor = *(intptr*)(BUMP_ADDR - 8), invariant (see the object allocator).
++    GenTree* floor = gtNewIndir(TYP_I_IMPL, gtNewIconNode(bumpAddr - 8, TYP_I_IMPL),
++                                GTF_IND_NONFAULTING | GTF_IND_INVARIANT);
++
++    // Guard: fail fast when hdr <= floor (heap exhausted).
++    GenTreeBoundsChk* heapGuard = new (this, GT_BOUNDS_CHECK)
++        GenTreeBoundsChk(floor, gtNewLclvNode(hdrLcl, TYP_I_IMPL), SCK_FAIL_FAST);
++    heapGuard->gtInxType = TYP_I_IMPL;
++
++    // *(intptr*)cell = hdr
++    GenTree* storeBump =
++        gtNewStoreIndNode(TYP_I_IMPL, gtNewLclvNode(cellLcl, TYP_I_IMPL), gtNewLclvNode(hdrLcl, TYP_I_IMPL));
++
++    // *(int64*)hdr = size
++    GenTree* storeSizeHdr =
++        gtNewStoreIndNode(TYP_LONG, gtNewLclvNode(hdrLcl, TYP_I_IMPL), gtNewLclvNode(sizeLcl, TYP_LONG));
++
++    // *(intptr*)obj = MethodTable
++    GenTree* storeMt = gtNewStoreIndNode(TYP_I_IMPL, gtNewLclvNode(objLcl, TYP_I_IMPL), clsArg);
++
++    // *(int32*)(obj + OFFSETOF__CORINFO_Array__length) = (int)len
++    GenTree* lenAddr   = gtNewOperNode(GT_ADD, TYP_I_IMPL, gtNewLclvNode(objLcl, TYP_I_IMPL),
++                                       gtNewIconNode(OFFSETOF__CORINFO_Array__length, TYP_I_IMPL));
++    GenTree* storeLenF = gtNewStoreIndNode(
++        TYP_INT, lenAddr, gtNewCastNode(TYP_INT, gtNewLclvNode(lenLcl, TYP_LONG), /* unsigned */ false, TYP_INT));
++
++    // ref = (object)obj
++    GenTree* storeRef = gtNewStoreLclVarNode(refLcl, gtNewLclvNode(objLcl, TYP_I_IMPL));
++    GenTree* result   = gtNewLclvNode(refLcl, TYP_REF);
++
++    // COMMA nests right: build from the tail so evaluation is len, lenGuard, size,
++    // cell, obj, hdr, heapGuard, then the stores.
++    GenTree* tree = gtNewOperNode(GT_COMMA, TYP_REF, storeRef, result);
++    tree          = gtNewOperNode(GT_COMMA, TYP_REF, storeLenF, tree);
++    tree          = gtNewOperNode(GT_COMMA, TYP_REF, storeMt, tree);
++    tree          = gtNewOperNode(GT_COMMA, TYP_REF, storeSizeHdr, tree);
++    tree          = gtNewOperNode(GT_COMMA, TYP_REF, storeBump, tree);
++    tree          = gtNewOperNode(GT_COMMA, TYP_REF, heapGuard, tree);
++    tree          = gtNewOperNode(GT_COMMA, TYP_REF, storeHdr, tree);
++    tree          = gtNewOperNode(GT_COMMA, TYP_REF, storeObj, tree);
++    tree          = gtNewOperNode(GT_COMMA, TYP_REF, storeCell, tree);
++    tree          = gtNewOperNode(GT_COMMA, TYP_REF, storeSize, tree);
++    tree          = gtNewOperNode(GT_COMMA, TYP_REF, lenGuard, tree);
++    tree          = gtNewOperNode(GT_COMMA, TYP_REF, storeLen, tree);
++    return tree;
++}
++#endif // TARGET_RISCV64
++
+ //------------------------------------------------------------------------
+ // fgGetStubAddrArg: Return the virtual stub address for the given call.
+ //
+@@ -6827,6 +7024,19 @@ GenTree* Compiler::fgMorphCall(GenTreeCall* call)
+ 
+     noway_assert(call->OperIs(GT_CALL));
+ 
++#if defined(TARGET_RISCV64)
++    // zkVM: per-site inline bump allocation of single-dimensional arrays, the
++    // array counterpart of ObjectAllocator::MorphAllocObjNodeIntoHelperCall.
++    if (fgGlobalMorph && call->IsHelperCall())
++    {
++        GenTree* inlined = fgRiscV64TryInlineNewArr(call);
++        if (inlined != nullptr)
++        {
++            return fgMorphTree(inlined);
++        }
++    }
++#endif // TARGET_RISCV64
++
+     //
+     // Only count calls once (only in the global morph phase)
+     //

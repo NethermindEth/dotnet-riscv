@@ -1,0 +1,59 @@
+Drops the three `fence r, r` from the riscv64 interface dispatch stubs (RhpInterfaceDispatch /
+RhpDispatchResolve, perf-38). They gave the monomorphic-cell MethodTable load and the GenericCache seqlock
+version reads acquire semantics against a concurrent writer; this runtime only runs single-hart zkVM
+guests, where the writer is the same hart and program order is all the ordering there is, so each fence
+was a wasted step on the hot path of every interface call (~1500 call sites in the Nethermind guest).
+
+RISC-V64 NativeAOT: no fences in the interface dispatch stubs (single-hart zkVM guests).
+
+diff --git a/src/coreclr/nativeaot/Runtime/riscv64/DispatchResolve.S b/src/coreclr/nativeaot/Runtime/riscv64/DispatchResolve.S
+index 3c7a07e10..3bee78e7b 100644
+--- a/src/coreclr/nativeaot/Runtime/riscv64/DispatchResolve.S
++++ b/src/coreclr/nativeaot/Runtime/riscv64/DispatchResolve.S
+@@ -17,12 +17,14 @@ LEAF_ENTRY \DispatchName, _TEXT
+ 
+         // DispatchCellReg currently contains the indirection cell address.
+         // The cell is { cached MethodTable, cached code }; the writer stores Code
+-        // first and publishes the entry with a release store of MethodTable. RVWMO
+-        // allows two plain loads to be reordered, so "fence r, r" after the
+-        // MethodTable load gives it acquire semantics: the load of Code below cannot
+-        // be hoisted above it. This is what the ldar in the arm64 helper does.
++        // first and publishes the entry with a release store of MethodTable. On a
++        // multi-hart machine the MethodTable load would need acquire semantics
++        // ("fence r, r", the ldar of the arm64 helper) so the Code load below could
++        // not be hoisted above it. This runtime only runs single-hart zkVM guests
++        // (ZisK, SP1, OpenVM): the writer is this same hart, program order is all
++        // the ordering there is, and a fence is one wasted step on the hot path
++        // of every interface call - so none is emitted.
+         ld      t6, 0(\DispatchCellReg)
+-        fence   r, r
+         bne     t6, t0, LOCAL_LABEL(Hashtable\@) // not the monomorphic MethodTable?
+ 
+         ld      t6, 8(\DispatchCellReg)         // cached monomorphic resolved code address
+@@ -79,11 +81,10 @@ LOCAL_LABEL(ProbeLoop\@):
+         add     t3, t3, t1
+         addi    t3, t3, 0x30
+ 
+-        // Read the version snapshot (seqlock protocol). "fence r, r" makes the load
+-        // acquire, so the key and value loads below cannot be hoisted above it and
+-        // are guaranteed to see the data written before this version was published.
++        // Read the version snapshot (seqlock protocol). With a concurrent writer the
++        // load would need to be acquire ("fence r, r") so the key and value loads
++        // below could not be hoisted above it; single-hart guest, see above.
+         lw      t4, 0(t3)
+-        fence   r, r
+         andi    t6, t4, 1
+         bnez    t6, LOCAL_LABEL(ProbeMiss\@) // odd: entry being written
+ 
+@@ -96,9 +97,8 @@ LOCAL_LABEL(ProbeLoop\@):
+         // Read the cached code pointer.
+         ld      t6, 24(t3)
+ 
+-        // Order the value load before the version re-read, so that a writer which
+-        // touched this entry in between is guaranteed to show up as a version change.
+-        fence   r, r
++        // (The value load would have to be ordered before the version re-read with a
++        // "fence r, r" against a concurrent writer; single-hart guest, see above.)
+ 
+         // Re-verify version has not changed.
+         lw      t3, 0(t3)

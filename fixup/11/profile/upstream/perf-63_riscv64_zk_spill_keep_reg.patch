@@ -1,0 +1,586 @@
+riscv64 zkVM: spill around calls on cold paths instead of callee-saved registers
+
+On the zkVM every executed instruction is one step, so a callee-saved register costs its
+save and restore on every invocation (plus the move out of the argument register for a
+parameter), whereas a caller-saved register costs a store before and a reload after each
+call that actually executes. LSRA always preferred callee-saved registers for a local live
+across any call, and when it did spill such a local it stored it at the last reference
+before the call (usually on the hot path) and reloaded it at the next use in the join
+block (hot again), so plain spilling never paid off.
+
+JitZkSpillKeepReg (default 0): a local whose caller-saved register is killed by a call
+keeps the register up to that call. The allocation pass marks the spilling reference
+(spilledByKill) only when the interval is active and this very kill causes the spill (an
+evicted "previous interval" already carries spillAfter); the write-back pass keeps the
+interval live until the RefTypeKill, where it retires every kept local in a killed register,
+so the block's outgoing location still names the register and resolution places the reload
+on the edges leaving the call's block; codegen (genCall) stores each kept local to its home
+right before the call instruction and drops it from the register and GC sets, using the
+call's real kill set (none for a perf-56 CSR precompile pseudo-call). A reloaded reference
+that is kept needs no second store; single-def locals are no longer stored at their
+definition when the only spill is such a kill. verifyFinalAllocation mirrors the new state.
+Parameters stay in their argument register; EH-live and reg-optional references are not
+kept.
+
+JitZkColdCallSpill=<percent> (default 0): instead of preferring callee-saved registers at
+every call, the summed (synthesized) weight of the call blocks a local is live across is
+compared, once all RefPositions are built, with that percentage of the entry block weight
+(150% of it for parameters); below the threshold the local keeps its caller-saved candidates
+and is spilled around the calls with the mechanism above.
+
+Measured on nine mainnet blocks on top of perf-62 (JitZkSynthesizeCounts=1): keep-reg
+alone changes nothing (the callee-save preference still wins); keep-reg with the policy at
+125% (the value bflat passes) gives -0.74% executed steps (-1.19% together with perf-62,
+1,523,663,934 = -10.56% versus master); 50% -0.43%, 80% -0.62%, 100% -0.71%, 150% -0.46%,
+200% -0.31%; the policy without perf-62 -0.72%; the policy with plain LSRA spilling loses
+(+0.25..0.4%). Outputs identical.
+
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+index 2f1662c8f..783e58dae 100644
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -5952,6 +5952,53 @@ void CodeGen::genCall(GenTreeCall* call)
+     // the GC pointer state before the callsite.
+     // We can't utilize the typical lazy killing of GC pointers
+     // at (or inside) the callsite.
++    // JitZkSpillKeepReg: a local may still be in a caller-saved register here (LSRA retires it at this call's
++    // kill): store it to its stack home now, unless the home is always up to date, and it is on the stack
++    // from the call on.
++    {
++        regMaskTP callKillMask = RBM_CALLEE_TRASH;
++        if (call->IsHelperCall())
++        {
++            callKillMask = m_compiler->compHelperCallKillSet(call->GetHelperNum());
++        }
++        else if (call->IsUnmanaged() && (m_compiler->zkCsrForPInvoke(call) >= 0))
++        {
++            // A precompile CSR write (JitZkCsrPInvokes) changes no register (see LSRA's kill set).
++            callKillMask = RBM_NONE;
++        }
++        if ((regSet.GetMaskVars() & callKillMask).IsNonEmpty())
++        {
++            VarSetOps::Iter iter(m_compiler, m_compiler->compCurLife);
++            unsigned        varIndex = 0;
++            while (iter.NextElem(&varIndex))
++            {
++                LclVarDsc* varDsc = m_compiler->lvaGetDescByTrackedIndex(varIndex);
++                if (!varDsc->lvIsInReg() || !varDsc->lvZkKeepReg)
++                {
++                    continue;
++                }
++                regMaskTP varRegMask = varDsc->lvRegMask();
++                if ((varRegMask & callKillMask).IsEmpty())
++                {
++                    continue;
++                }
++                if (!varDsc->IsAlwaysAliveInMemory())
++                {
++                    var_types storeType = varDsc->GetStackSlotHomeType();
++                    GetEmitter()->emitIns_S_R(ins_Store(storeType), emitTypeSize(storeType), varDsc->GetRegNum(),
++                                              m_compiler->lvaTrackedIndexToLclNum(varIndex), 0);
++                }
++                genUpdateRegLife(varDsc, /*isBorn*/ false, /*isDying*/ true DEBUGARG(call));
++                gcInfo.gcMarkRegSetNpt(varRegMask);
++                if (VarSetOps::IsMember(m_compiler, gcInfo.gcTrkStkPtrLcls, varIndex))
++                {
++                    VarSetOps::AddElemD(m_compiler, gcInfo.gcVarPtrSetCur, varIndex);
++                }
++                varDsc->SetRegNum(REG_STK);
++            }
++        }
++    }
++
+     if (m_compiler->killGCRefs(call))
+     {
+         genDefineTempLabel(genCreateTempLabel());
+@@ -5971,6 +6018,10 @@ void CodeGen::genCall(GenTreeCall* call)
+         CorInfoHelpFunc helpFunc = call->GetHelperNum();
+         killMask                 = m_compiler->compHelperCallKillSet(helpFunc);
+     }
++    else if (call->IsUnmanaged() && (m_compiler->zkCsrForPInvoke(call) >= 0))
++    {
++        killMask = RBM_NONE; // zkVM precompile CSR write: no registers are killed
++    }
+ 
+     assert((gcInfo.gcRegGCrefSetCur & killMask) == 0);
+     assert((gcInfo.gcRegByrefSetCur & killMask) == 0);
+diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
+index 67d9a3c46..43867319c 100644
+--- a/src/coreclr/jit/compiler.h
++++ b/src/coreclr/jit/compiler.h
+@@ -578,6 +578,8 @@ public:
+                                                          // candidancy
+ 
+     unsigned char lvSpillAtSingleDef : 1; // variable has a single def (as determined by LSRA interval scan)
++    unsigned char lvZkKeepReg : 1; // JitZkSpillKeepReg: LSRA keeps this local in a caller-saved register up to a
++                                   // call that kills it; codegen stores it to its home right before such a call
+                                           // and is spilled making it candidate to spill right after the
+                                           // first (and only) definition.
+                                           // Note: We cannot reuse lvSingleDefRegCandidate because it is set
+diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
+index 13e87cb2d..407ad45ff 100644
+--- a/src/coreclr/jit/jitconfigvalues.h
++++ b/src/coreclr/jit/jitconfigvalues.h
+@@ -537,11 +537,24 @@ RELEASE_CONFIG_INTEGER(JitRiscV64LsraCallerCalleeFirst, "JitRiscV64LsraCallerCal
+ // as ordinary byrefs/pointers removes that traffic (the keccak and span helpers pin on every call).
+ // Non-zero drops the pinned attribute at import. Default 0 (standard semantics).
+ RELEASE_CONFIG_INTEGER(JitZkNoPinning, "JitZkNoPinning", 0)
++// zkVM: every executed instruction is one step, so a callee-saved register costs its save and
++// restore on every invocation while a spill around a call costs a store and a reload only when
++// the call executes. A local live across a call placed in a block whose weight is below this
++// percentage of the entry block's weight keeps its caller-saved candidates (no callee-save
++// preference, no aversion to the killed registers); LSRA then spills it around that call.
++// A local that also crosses a call in a hot block prefers callee-saved as before. 0 = off.
++RELEASE_CONFIG_INTEGER(JitZkColdCallSpill, "JitZkColdCallSpill", 0)
+ // zkVM: non-zero runs profile synthesis (AssignLikelihoods) for methods without profile
+ // data, so block weights distinguish if/else arms, loop exits, return paths and throws
+ // instead of being uniform; consumed by LSRA (spill costs, JitZkColdCallSpill), the inliner
+ // and block layout. Default 0.
+ RELEASE_CONFIG_INTEGER(JitZkSynthesizeCounts, "JitZkSynthesizeCounts", 0)
++// zkVM: when a call kills the caller-saved register of a single-def local (which is then spilled at
++// its definition and so is always up to date on the stack), keep the register live up to the call
++// instead of treating the local as on the stack from its last reference on. The reload then happens
++// through join resolution on the edge leaving the call's block, i.e. only on paths that executed the
++// call, instead of at the next use on every path. Default 0.
++RELEASE_CONFIG_INTEGER(JitZkSpillKeepReg, "JitZkSpillKeepReg", 0)
+ // riscv64 zkVM (ZisK): a precompile runs when a CSR is written with the address of its
+ // operand block. libziskos wraps each one in a two-instruction function (csrs; ret) that
+ // managed code reaches through a P/Invoke, so one keccak-f costs the call pair, the stub,
+diff --git a/src/coreclr/jit/lsra.cpp b/src/coreclr/jit/lsra.cpp
+index 030cb6084..846eb1e6c 100644
+--- a/src/coreclr/jit/lsra.cpp
++++ b/src/coreclr/jit/lsra.cpp
+@@ -1386,6 +1386,9 @@ PhaseStatus LinearScan::doRegisterAllocation()
+ 
+     initVarRegMaps();
+ 
++    // zkVM (JitZkColdCallSpill): decide callee-save preferences from the weights of the calls crossed.
++    zkApplyCallCrossPolicy();
++
+ #ifdef TARGET_ARM64
+     if (m_compiler->info.compNeedsConsecutiveRegisters)
+     {
+@@ -3874,7 +3877,46 @@ void LinearScan::freeKilledRegs(RefPosition*     killRefPosition,
+         Interval*  assignedInterval = regRecord->assignedInterval;
+         if (assignedInterval != nullptr)
+         {
+-            unassignPhysReg(regRecord, assignedInterval->recentRefPosition);
++            RefPosition* const spillRef = assignedInterval->recentRefPosition;
++#if defined(TARGET_RISCV64)
++            const bool hadSingleDefSpill =
++                assignedInterval->isLocalVar && assignedInterval->firstRefPosition->singleDefSpill;
++            // Only an interval that is active here and whose spill is caused by this very kill may keep its
++            // register: an inactive one (the register's "previous interval", evicted earlier by another
++            // interval or a fixed-register copy) already has spillAfter set by that earlier eviction.
++            const bool spilledHere = assignedInterval->isActive && (spillRef != nullptr) && !spillRef->spillAfter;
++#endif
++            unassignPhysReg(regRecord, spillRef);
++#if defined(TARGET_RISCV64)
++            // JitZkSpillKeepReg: a local spilled because of this kill keeps its register up to the kill; codegen
++            // stores it to its stack home right before the call (genCall), so no store is needed at the spill
++            // reference (nor at a single definition), and the reload is placed by resolution on the edges that
++            // leave the call's block.
++            if ((JitConfig.JitZkSpillKeepReg() != 0) && spilledHere && assignedInterval->isLocalVar &&
++                !assignedInterval->isWriteThru &&
++                !m_compiler->lvaGetDesc(assignedInterval->varNum)->IsLiveInOutOfHandler() &&
++                spillRef->spillAfter && !spillRef->RegOptional() && (spillRef->getInterval() == assignedInterval) &&
++                (((spillRef->treeNode != nullptr) && !spillRef->treeNode->IsMultiRegNode() &&
++                  ((spillRef->refType == RefTypeDef) || (spillRef->refType == RefTypeUse))) ||
++                 (spillRef->refType == RefTypeParamDef)))
++            {
++                spillRef->spilledByKill = true;
++                // Codegen stores the local before the killing call (genCall) only for flagged locals.
++                m_compiler->lvaGetDesc(assignedInterval->varNum)->lvZkKeepReg = true;
++                if (!hadSingleDefSpill)
++                {
++                    // spillInterval marks single-def locals to be stored at their definition; this spill is
++                    // stored at the call instead.
++                    assignedInterval->firstRefPosition->singleDefSpill = false;
++                }
++                if (spillRef->nodeLocation <= curBBStartLocation)
++                {
++                    // unassignPhysReg recorded the local as on the stack on entry to this block; it is still in
++                    // the register there (the kill is inside this block).
++                    setInVarRegForBB(curBBNum, assignedInterval->varNum, killedReg);
++                }
++            }
++#endif
+             clearConstantReg(regRecord->regNum, assignedInterval->registerType);
+             makeRegAvailable(regRecord->regNum, assignedInterval->registerType);
+         }
+@@ -7087,8 +7129,9 @@ void LinearScan::resolveLocalRef(BasicBlock* block, GenTreeLclVar* treeNode, Ref
+         assert(currentRefPosition->refType != RefTypeDef);
+         assert(interval->isSpilled);
+         varDsc->SetRegNum(REG_STK);
+-        if (!spillAfter)
++        if (!spillAfter || currentRefPosition->spilledByKill)
+         {
++            // (JitZkSpillKeepReg: reloaded here and kept in the register up to the later kill.)
+             interval->physReg = assignedReg;
+         }
+ 
+@@ -7101,7 +7144,7 @@ void LinearScan::resolveLocalRef(BasicBlock* block, GenTreeLclVar* treeNode, Ref
+             {
+                 treeNode->SetRegSpillFlagByIdx(GTF_SPILLED, currentRefPosition->getMultiRegIdx());
+             }
+-            if (spillAfter)
++            if (spillAfter && !currentRefPosition->spilledByKill)
+             {
+                 if (currentRefPosition->RegOptional())
+                 {
+@@ -7136,7 +7179,7 @@ void LinearScan::resolveLocalRef(BasicBlock* block, GenTreeLclVar* treeNode, Ref
+         }
+     }
+     else if (spillAfter && !RefTypeIsUse(currentRefPosition->refType) && (treeNode != nullptr) &&
+-             (!treeNode->IsMultiReg() || treeNode->gtGetOp1()->IsMultiRegNode()))
++             (!treeNode->IsMultiReg() || treeNode->gtGetOp1()->IsMultiRegNode()) && !currentRefPosition->spilledByKill)
+     {
+         // In the case of a pure def, don't bother spilling - just assign it to the
+         // stack.  However, we need to remember that it was spilled.
+@@ -7208,7 +7251,15 @@ void LinearScan::resolveLocalRef(BasicBlock* block, GenTreeLclVar* treeNode, Ref
+                 }
+             }
+         }
+-        if (spillAfter)
++        if (spillAfter && currentRefPosition->spilledByKill)
++        {
++            // JitZkSpillKeepReg: the register stays live until the kill, where codegen stores the local
++            // (resolveRegisters' RefTypeKill handling retires it), so no spill here and the local remains in
++            // the register for codegen and for the block's outgoing location map.
++            assert(interval->isSpilled);
++            varDsc->lvZkKeepReg = true;
++        }
++        else if (spillAfter)
+         {
+             if (treeNode != nullptr)
+             {
+@@ -7266,7 +7317,7 @@ void LinearScan::resolveLocalRef(BasicBlock* block, GenTreeLclVar* treeNode, Ref
+     // Update the physRegRecord for the register, so that we know what vars are in
+     // regs at the block boundaries
+     RegRecord* physRegRecord = getRegisterRecord(homeReg);
+-    if (spillAfter || currentRefPosition->lastUse)
++    if ((spillAfter && !currentRefPosition->spilledByKill) || currentRefPosition->lastUse)
+     {
+         interval->isActive    = false;
+         interval->assignedReg = nullptr;
+@@ -7901,7 +7952,8 @@ void LinearScan::resolveRegisters()
+             regNumber reg      = REG_STK;
+             int       varIndex = interval->getVarIndex(m_compiler);
+ 
+-            if (!currentRefPosition->spillAfter && currentRefPosition->registerAssignment != RBM_NONE)
++            if ((!currentRefPosition->spillAfter || currentRefPosition->spilledByKill) &&
++                currentRefPosition->registerAssignment != RBM_NONE)
+             {
+                 reg = currentRefPosition->assignedReg();
+             }
+@@ -8008,6 +8060,29 @@ void LinearScan::resolveRegisters()
+                     currentRefPosition->referent->recentRefPosition = currentRefPosition;
+                     continue;
+                 case RefTypeKill:
++#if defined(TARGET_RISCV64)
++                    if (JitConfig.JitZkSpillKeepReg() != 0)
++                    {
++                        // Locals kept in a register past their spill point (spilledByKill) die here.
++                        regMaskTP killedRegs = currentRefPosition->getKilledRegisters();
++                        while (killedRegs.IsNonEmpty())
++                        {
++                            regNumber  killedReg = genFirstRegNumFromMaskAndToggle(killedRegs);
++                            RegRecord* regRecord = getRegisterRecord(killedReg);
++                            Interval*  killedInterval = regRecord->assignedInterval;
++                            if ((killedInterval != nullptr) && killedInterval->isLocalVar && killedInterval->isActive &&
++                                (killedInterval->assignedReg == regRecord))
++                            {
++                                killedInterval->isActive    = false;
++                                killedInterval->assignedReg = nullptr;
++                                killedInterval->physReg     = REG_NA;
++                                m_compiler->lvaGetDesc(killedInterval->varNum)->SetRegNum(REG_STK);
++                                clearAssignedInterval(regRecord ARM_ARG(killedInterval->registerType));
++                            }
++                        }
++                    }
++                    FALLTHROUGH;
++#endif
+                 case RefTypeKillGCRefs:
+                     // No action to take at resolution time, and no interval to update recentRefPosition for.
+                     continue;
+@@ -8297,9 +8372,11 @@ void LinearScan::resolveRegisters()
+                 if (varDsc->lvIsParam || varDsc->lvIsParamRegTarget)
+                 {
+                     SingleTypeRegSet initialRegMask = interval->firstRefPosition->registerAssignment;
+-                    regNumber        initialReg = (initialRegMask == RBM_NONE || interval->firstRefPosition->spillAfter)
+-                                                      ? REG_STK
+-                                                      : genRegNumFromMask(initialRegMask, interval->registerType);
++                    regNumber        initialReg =
++                        (initialRegMask == RBM_NONE ||
++                         (interval->firstRefPosition->spillAfter && !interval->firstRefPosition->spilledByKill))
++                            ? REG_STK
++                            : genRegNumFromMask(initialRegMask, interval->registerType);
+ 
+ #ifdef TARGET_ARM
+                     if (varTypeIsMultiReg(varDsc))
+@@ -8364,7 +8441,8 @@ void LinearScan::resolveRegisters()
+                         {
+                             varDsc->lvOnFrame = false;
+                         }
+-                        if (firstRefPosition->registerAssignment == RBM_NONE || firstRefPosition->spillAfter)
++                        if (firstRefPosition->registerAssignment == RBM_NONE ||
++                            (firstRefPosition->spillAfter && !firstRefPosition->spilledByKill))
+                         {
+                             // Either this RefPosition is spilled, or regOptional or it is not a "real" def or use
+                             assert(
+@@ -10413,6 +10491,10 @@ void RefPosition::dump(LinearScan* linearScan)
+     {
+         printf(" singleDefSpill");
+     }
++    if (spilledByKill)
++    {
++        printf(" spilledByKill");
++    }
+     if (writeThru)
+     {
+         printf(" writeThru");
+@@ -12074,9 +12156,27 @@ void LinearScan::verifyFinalAllocation()
+             break;
+ 
+             case RefTypeKill:
++            {
++                // JitZkSpillKeepReg: locals kept in a killed register (spilledByKill) die here.
++                regMaskTP killedRegs = currentRefPosition.getKilledRegisters();
++                while (killedRegs.IsNonEmpty())
++                {
++                    regNumber  killedReg      = genFirstRegNumFromMaskAndToggle(killedRegs);
++                    RegRecord* killedRegRec   = getRegisterRecord(killedReg);
++                    Interval*  killedInterval = killedRegRec->assignedInterval;
++                    if ((killedInterval != nullptr) && killedInterval->isLocalVar && killedInterval->isActive &&
++                        (killedInterval->assignedReg == killedRegRec))
++                    {
++                        killedInterval->isActive    = false;
++                        killedInterval->physReg     = REG_NA;
++                        killedInterval->assignedReg = nullptr;
++                        killedRegRec->assignedInterval = nullptr;
++                    }
++                }
+                 dumpLsraAllocationEvent(LSRA_EVENT_KILL_REGS, nullptr, REG_NA, currentBlock, NONE,
+                                         currentRefPosition.getKilledRegisters());
+                 break;
++            }
+ 
+             case RefTypeFixedReg:
+                 assert(regRecord != nullptr);
+@@ -12169,13 +12269,35 @@ void LinearScan::verifyFinalAllocation()
+                 {
+                     dumpLsraAllocationEvent(LSRA_EVENT_KEPT_ALLOCATION, nullptr, regRecord->regNum, currentBlock);
+                 }
+-                if (currentRefPosition.lastUse || (currentRefPosition.spillAfter && !currentRefPosition.writeThru))
++                if (currentRefPosition.lastUse ||
++                    (currentRefPosition.spillAfter && !currentRefPosition.writeThru && !currentRefPosition.spilledByKill))
+                 {
+                     interval->isActive = false;
+                 }
+                 if (regNum != REG_NA)
+                 {
+-                    if (currentRefPosition.spillAfter)
++                    if (currentRefPosition.spillAfter && currentRefPosition.spilledByKill)
++                    {
++                        // JitZkSpillKeepReg: spilled at the later kill; the home register stays live here.
++                        if (currentRefPosition.copyReg)
++                        {
++                            regRecord->assignedInterval = interval;
++                        }
++                        else
++                        {
++                            if (RefTypeIsDef(currentRefPosition.refType))
++                            {
++                                if (interval->physReg != REG_NA && interval->physReg != regNum)
++                                {
++                                    interval->assignedReg->assignedInterval = nullptr;
++                                }
++                            }
++                            interval->physReg           = regNum;
++                            interval->assignedReg       = regRecord;
++                            regRecord->assignedInterval = interval;
++                        }
++                    }
++                    else if (currentRefPosition.spillAfter)
+                     {
+                         if (VERBOSE)
+                         {
+@@ -12262,7 +12384,7 @@ void LinearScan::verifyFinalAllocation()
+                     assert(interval->assignedReg != nullptr);
+                     regRecord = interval->assignedReg;
+                 }
+-                if (currentRefPosition.spillAfter || currentRefPosition.lastUse)
++                if ((currentRefPosition.spillAfter && !currentRefPosition.spilledByKill) || currentRefPosition.lastUse)
+                 {
+                     assert(!currentRefPosition.spillAfter || currentRefPosition.IsActualRef());
+ 
+@@ -12280,9 +12402,14 @@ void LinearScan::verifyFinalAllocation()
+                     interval->assignedReg = nullptr;
+ 
+                     // regRecord could be null if the RefPosition does not require a register.
++                    // A special putarg shares the register of the local it copies (the RegRecord stays the
++                    // local's); with JitZkSpillKeepReg that local may stay in the register past this point.
+                     if (regRecord != nullptr)
+                     {
+-                        regRecord->assignedInterval = nullptr;
++                        if (!interval->isSpecialPutArg || (regRecord->assignedInterval == interval))
++                        {
++                            regRecord->assignedInterval = nullptr;
++                        }
+                     }
+ #if FEATURE_PARTIAL_SIMD_CALLEE_SAVE
+                     else if (interval->isUpperVector && !currentRefPosition.RegOptional())
+diff --git a/src/coreclr/jit/lsra.h b/src/coreclr/jit/lsra.h
+index 9352a4a96..58a488ad1 100644
+--- a/src/coreclr/jit/lsra.h
++++ b/src/coreclr/jit/lsra.h
+@@ -1067,7 +1067,8 @@ private:
+ 
+     // Given some tree node add refpositions for all the registers this node kills
+     bool buildKillPositionsForNode(GenTree* tree, LsraLocation currentLoc, regMaskTP killMask);
+-    void updateIntervalPreferencesForKill(Interval* interval, regMaskTP killMask);
++    void updateIntervalPreferencesForKill(Interval* interval, regMaskTP killMask, weight_t callBlockWeight = -1);
++    void zkApplyCallCrossPolicy();
+ 
+     SingleTypeRegSet allRegs(RegisterType rt);
+     SingleTypeRegSet allByteRegs();
+@@ -2224,6 +2225,7 @@ public:
+         , hasInterferingUses(false)
+         , isSpecialPutArg(false)
+         , preferCalleeSave(false)
++        , zkCallCrossWeight(0)
+         , isConstant(false)
+ #if FEATURE_PARTIAL_SIMD_CALLEE_SAVE
+         , isUpperVector(false)
+@@ -2301,6 +2303,9 @@ public:
+ 
+     // True if this interval interferes with a call.
+     bool preferCalleeSave : 1;
++    // JitZkColdCallSpill: summed weight of the blocks of the calls this (local var) interval is live across;
++    // the callee-save preference is decided from it once all RefPositions are built (zkApplyCallCrossPolicy).
++    weight_t zkCallCrossWeight;
+ 
+     // True if this interval is defined by a constant node that may be reused and/or may be
+     // able to reuse a constant that's already in a register.
+@@ -2569,6 +2574,9 @@ public:
+     unsigned char reload         : 1;
+     unsigned char spillAfter     : 1;
+     unsigned char singleDefSpill : 1;
++    // spilledByKill: spillAfter was set because a later kill (call) trashes the register; with
++    // JitZkSpillKeepReg the register stays live until that kill (see resolveLocalRef / resolveRegisters).
++    unsigned char spilledByKill : 1;
+     unsigned char writeThru : 1; // true if this var is defined in a register and also spilled. spillAfter must NOT be
+                                  // set.
+ 
+@@ -2637,6 +2645,7 @@ public:
+         , reload(false)
+         , spillAfter(false)
+         , singleDefSpill(false)
++        , spilledByKill(false)
+         , writeThru(false)
+         , copyReg(false)
+         , moveReg(false)
+diff --git a/src/coreclr/jit/lsrabuild.cpp b/src/coreclr/jit/lsrabuild.cpp
+index 341c058c0..14c71dd60 100644
+--- a/src/coreclr/jit/lsrabuild.cpp
++++ b/src/coreclr/jit/lsrabuild.cpp
+@@ -1105,6 +1105,15 @@ bool LinearScan::buildKillPositionsForNode(GenTree* tree, LsraLocation currentLo
+         // if (!blockSequence[curBBSeqNum]->isRunRarely())
+         if (enregisterLocalVars)
+         {
++            // zkVM (JitZkColdCallSpill): the callee-save preference of a local live across calls is decided
++            // from the summed weight of the call blocks (zkApplyCallCrossPolicy); here we only record it.
++            weight_t callBlockWeight = -1;
++#if defined(TARGET_RISCV64)
++            if ((JitConfig.JitZkColdCallSpill() > 0) && (m_compiler->compCurBB != nullptr))
++            {
++                callBlockWeight = blockInfo[m_compiler->compCurBB->bbNum].weight;
++            }
++#endif
+             VarSetOps::Iter iter(m_compiler, currentLiveVars);
+             unsigned        varIndex = 0;
+             while (iter.NextElem(&varIndex))
+@@ -1127,7 +1136,7 @@ bool LinearScan::buildKillPositionsForNode(GenTree* tree, LsraLocation currentLo
+                     }
+ 
+                 Interval* interval = getIntervalForLocalVar(varIndex);
+-                updateIntervalPreferencesForKill(interval, killMask);
++                updateIntervalPreferencesForKill(interval, killMask, callBlockWeight);
+             }
+         }
+ 
+@@ -1166,11 +1175,18 @@ bool LinearScan::buildKillPositionsForNode(GenTree* tree, LsraLocation currentLo
+ //    interval - The interval
+ //    killMask - Registers that will be killed during the interval's lifetime
+ //
+-void LinearScan::updateIntervalPreferencesForKill(Interval* interval, regMaskTP killMask)
++void LinearScan::updateIntervalPreferencesForKill(Interval* interval, regMaskTP killMask, weight_t callBlockWeight)
+ {
+     const bool       isCallKill   = ((killMask.getLow() == RBM_INT_CALLEE_TRASH) || (killMask == RBM_CALLEE_TRASH));
+     SingleTypeRegSet regsKillMask = killMask.GetRegSetForType(interval->registerType);
+ 
++    if (isCallKill && (callBlockWeight >= 0) && interval->isLocalVar && !interval->isWriteThru)
++    {
++        // JitZkColdCallSpill: decided later from the total weight of the calls crossed.
++        interval->zkCallCrossWeight += callBlockWeight;
++        return;
++    }
++
+     if (isCallKill)
+     {
+         interval->preferCalleeSave = true;
+@@ -1197,6 +1213,54 @@ void LinearScan::updateIntervalPreferencesForKill(Interval* interval, regMaskTP
+     }
+ }
+ 
++//------------------------------------------------------------------------
++// zkApplyCallCrossPolicy (JitZkColdCallSpill): on the zkVM every instruction is one step, so a
++// callee-saved register costs its save and restore (and for a parameter the move out of the
++// argument register) on every invocation, while a caller-saved register costs a store before and
++// a reload after each call actually executed (JitZkSpillKeepReg places both on the call's path).
++// A local prefers callee-saved registers only if the summed weight of the call blocks it is live
++// across reaches JitZkColdCallSpill percent of the entry block weight (150% of that for parameters).
++//
++void LinearScan::zkApplyCallCrossPolicy()
++{
++#if defined(TARGET_RISCV64)
++    const int pct = JitConfig.JitZkColdCallSpill();
++    if ((pct <= 0) || !enregisterLocalVars)
++    {
++        return;
++    }
++    const weight_t entryWeight = blockInfo[m_compiler->fgFirstBB->bbNum].weight;
++    for (unsigned varIndex = 0; varIndex < m_compiler->lvaTrackedCount; varIndex++)
++    {
++        Interval* interval = localVarIntervals[varIndex];
++        if ((interval == nullptr) || (interval->zkCallCrossWeight <= 0))
++        {
++            continue;
++        }
++        const LclVarDsc* varDsc    = m_compiler->lvaGetDescByTrackedIndex(varIndex);
++        weight_t         threshold = entryWeight * pct / 100;
++        if (varDsc->lvIsParam || varDsc->lvIsParamRegTarget)
++        {
++            threshold = threshold * 3 / 2;
++        }
++        if (interval->zkCallCrossWeight < threshold)
++        {
++            JITDUMP("zk: V%02u crosses calls of weight %.2f < %.2f: caller-saved candidates kept\n", interval->varNum,
++                    interval->zkCallCrossWeight, threshold);
++            continue;
++        }
++        interval->preferCalleeSave = true;
++        SingleTypeRegSet trash          = RBM_CALLEE_TRASH.GetRegSetForType(interval->registerType);
++        SingleTypeRegSet newPreferences = allRegs(interval->registerType) & ~trash;
++        if (newPreferences != RBM_NONE)
++        {
++            interval->registerAversion |= trash;
++            interval->updateRegisterPreferences(newPreferences);
++        }
++    }
++#endif
++}
++
+ //------------------------------------------------------------------------
+ // LinearScan::isCandidateMultiRegLclVar: Check whether a MultiReg node should
+ //                                        remain a candidate MultiReg
