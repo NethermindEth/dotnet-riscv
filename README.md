@@ -10,7 +10,7 @@ This project is a pipeline for building RISC-V .NET runtime for [Nethermind clie
 
 ## Why is it needed?
 
-[Nethermind client](https://github.com/nethermindeth/nethermind)'s [Stateless Executor](https://github.com/NethermindEth/nethermind/tree/tanishq/feature/stateless_execv2/tools/StatelessExecution) has to be compiled natively for the RISC-V platform. To do this, runtime requires several patches, namely for:
+[Nethermind client](https://github.com/nethermindeth/nethermind)'s [Stateless Executor](https://github.com/NethermindEth/nethermind/tree/master/src/Nethermind/Nethermind.Stateless.Executor) has to be compiled natively for the RISC-V platform. To do this, runtime requires several patches, namely for:
  - bflat runtime support.
  - support for custom Alpine images.
  - disabling of compressed instructions.
