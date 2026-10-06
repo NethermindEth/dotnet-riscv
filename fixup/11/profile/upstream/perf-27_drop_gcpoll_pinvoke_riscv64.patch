@@ -1,7 +1,7 @@
 diff --git a/src/coreclr/jit/flowgraph.cpp b/src/coreclr/jit/flowgraph.cpp
 --- a/src/coreclr/jit/flowgraph.cpp
 +++ b/src/coreclr/jit/flowgraph.cpp
-@@ -78,6 +78,15 @@
+@@ -78,6 +78,15 @@ PhaseStatus Compiler::fgInsertGCPolls()
  {
      PhaseStatus result = PhaseStatus::MODIFIED_NOTHING;
  
@@ -20,11 +20,10 @@ diff --git a/src/coreclr/jit/flowgraph.cpp b/src/coreclr/jit/flowgraph.cpp
 diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
 --- a/src/coreclr/jit/lower.cpp
 +++ b/src/coreclr/jit/lower.cpp
-@@ -7002,6 +7002,16 @@
- void Lowering::InsertPInvokeCallProlog(GenTreeCall* call)
+@@ -7003,6 +7003,16 @@ void Lowering::InsertPInvokeCallProlog(GenTreeCall* call)
  {
      JITDUMP("======= Inserting PInvoke call prolog\n");
-+
+ 
 +#if defined(TARGET_RISCV64)
 +    // zkVM: the per-call PInvoke transition (CORINFO_HELP_JIT_PINVOKE_BEGIN ->
 +    // RhpPInvoke) only exists to coordinate GC suspension / stack-walk of a
@@ -34,10 +33,11 @@ diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
 +    // native call itself is still emitted normally below in the caller.
 +    return;
 +#endif
- 
++
      GenTree* insertBefore = call;
      if (call->gtCallType == CT_INDIRECT)
-@@ -7165,6 +7175,12 @@
+     {
+@@ -7165,6 +7175,12 @@ void Lowering::InsertPInvokeCallEpilog(GenTreeCall* call)
  {
      JITDUMP("======= Inserting PInvoke call epilog\n");
  

@@ -6,12 +6,10 @@ elision and the genRangeCheck part are carried over.
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 --- a/src/coreclr/jit/codegenriscv64.cpp
 +++ b/src/coreclr/jit/codegenriscv64.cpp
-@@ -3061,6 +3061,52 @@
-     }
- 
+@@ -3124,6 +3124,52 @@ void CodeGen::genCkfinite(GenTree* treeNode)
      genProduceReg(treeNode);
-+}
-+
+ }
+ 
 +//------------------------------------------------------------------------
 +// RiscV64ValueIsSignExtendedInt32: does this node leave its result already
 +// sign-extended from bit 31 into bits [63:32], so a following `sext.w` (e.g. the
@@ -56,10 +54,12 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
 +        return node->TypeGet() == TYP_INT;
 +    }
 +    return false;
- }
- 
++}
++
  //------------------------------------------------------------------------
-@@ -4691,14 +4737,20 @@
+ // genCodeForCompare: Produce code for a GT_EQ/GT_NE/GT_LT/GT_LE/GT_GE/GT_GT node.
+ //
+@@ -4752,14 +4798,20 @@ void CodeGen::genRangeCheck(GenTree* oper)
      if (genActualType(length) == TYP_INT)
      {
          regNumber tempReg = internalRegisters.Extract(oper);
@@ -87,11 +87,10 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
 diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
 --- a/src/coreclr/jit/emitriscv64.cpp
 +++ b/src/coreclr/jit/emitriscv64.cpp
-@@ -671,6 +671,32 @@
-     instruction ins, emitAttr attr, regNumber reg1, regNumber reg2, insOpts opt /* = INS_OPTS_NONE */)
+@@ -672,6 +672,32 @@ void emitter::emitIns_R_R(
  {
      code_t code = emitInsCode(ins);
-+
+ 
 +    // zkVM/RISC-V64 codegen peephole: drop an in-place `sext.w rd,rd` whose source was
 +    // just produced by a W-form op or a sign-extending/byte/half load. Per the RV64 spec,
 +    // all *.W instructions and lb/lh/lw sign-extend their 32-bit result into bits [63:32],
@@ -117,18 +116,17 @@ diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
 +            return; // already sign-extended in place: the sext.w is dead
 +        }
 +    }
- 
++
      if (INS_mov == ins || INS_sext_w == ins || INS_not == ins || (INS_clz <= ins && ins <= INS_rev8))
      {
+         assert(isGeneralRegisterOrR0(reg1));
 diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
 --- a/src/coreclr/jit/lower.cpp
 +++ b/src/coreclr/jit/lower.cpp
-@@ -10247,7 +10247,81 @@
-     if (node->gtOverflow())
-     {
+@@ -10249,6 +10249,80 @@ bool Lowering::TryRemoveCast(GenTreeCast* node)
          return false;
-+    }
-+
+     }
+ 
 +#ifdef TARGET_RISCV64
 +    // zkVM/RISCV64 CQ: elide a redundant sign-extending cast.
 +    //
@@ -200,8 +198,9 @@ diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
 +            BlockRange().Remove(node);
 +            return true;
 +        }
-     }
++    }
 +#endif // TARGET_RISCV64
- 
++
      GenTree* op = node->CastOp();
      if (!op->OperIsConst())
+     {

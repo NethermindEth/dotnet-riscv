@@ -1,4 +1,4 @@
-From af8d26309b1d9f954490506d4350c6562ff8be86 Mon Sep 17 00:00:00 2001
+From 8a6cbe88613e42d10bca6134b3a777aaf52b311c Mon Sep 17 00:00:00 2001
 From: Maxim Menshikov <maksim.menshikov@nethermind.io>
 Date: Wed, 16 Sep 2026 15:26:34 +0100
 Subject: [PATCH] [RISC-V] Pass -mabi=lp64 to the native linker and the shim
@@ -15,13 +15,24 @@ Derive the flag from _targetArchitectureWithAbi, the same property that already
 selects --targetarch for ilc, and mark it Shim="true" so both the shim and the
 main link get it.
 
+On musl the executable also has to name the right loader. musl built for lp64
+installs it as /lib/ld-musl-riscv64-sf.so.1, but clang derives that name from
+the ABI only from LLVM 23 on; the clang 20 of the cross-build images gives an
+lp64 executable the lp64d loader, which then does not start:
+
+    qemu-riscv64: Could not open '/lib/ld-musl-riscv64.so.1': No such file or directory
+
+Pass --dynamic-linker explicitly for musl links that are not static. That
+includes shared libraries, whose aggregate-executable shims are executables;
+the linker gives the shared object itself no interpreter.
+
 Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
 
 diff --git a/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets b/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets
 --- a/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets
 +++ b/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets
-@@ -261,6 +261,12 @@ The .NET Foundation licenses this file to you under the MIT license.
+@@ -261,6 +261,18 @@ The .NET Foundation licenses this file to you under the MIT license.
        <LinkerArg Include="--sysroot=&quot;$(SysRoot)&quot;" Condition="'$(SysRoot)' != '' and '$(_IsApplePlatform)' != 'true'" Shim="true" />
        <LinkerArg Include="-isysroot &quot;$(SysRoot)&quot;" Condition="'$(SysRoot)' != '' and '$(_IsApplePlatform)' == 'true'" Shim="true" />
        <LinkerArg Include="--target=$(TargetTriple)" Condition="'$(TargetTriple)' != ''" Shim="true" />
@@ -31,6 +42,12 @@ diff --git a/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Uni
 +           the final link picks the CRT by ABI. Both have to be told explicitly, or
 +           the shim comes out lp64d and the linker refuses to mix it with the rest. -->
 +      <LinkerArg Include="-mabi=lp64" Condition="'$(_targetArchitectureWithAbi)' == 'riscv64-lp64'" Shim="true" />
++      <!-- musl built for lp64 installs its loader as ld-musl-riscv64-sf.so.1, and clang
++           only names it so from LLVM 23 on; older drivers give lp64 executables the lp64d
++           loader, which a soft-float userspace does not have. Also for a shared library:
++           its aggregate-executable shims are executables, and the linker gives a shared
++           object no interpreter anyway. -->
++      <LinkerArg Include="-Wl,--dynamic-linker=/lib/ld-musl-riscv64-sf.so.1" Condition="'$(_targetArchitectureWithAbi)' == 'riscv64-lp64' and '$(_linuxLibcFlavor)' == 'musl' and '$(StaticExecutable)' != 'true'" Shim="true" />
        <LinkerArg Include="-g" Condition="$(NativeDebugSymbols) == 'true'" Shim="true" />
        <LinkerArg Include="-Wl,--strip-debug" Condition="$(NativeDebugSymbols) != 'true' and '$(_IsApplePlatform)' != 'true'" />
        <LinkerArg Include="-Wl,-install_name,&quot;$(SharedLibraryInstallName)&quot;" Condition="'$(_IsApplePlatform)' == 'true' and '$(NativeLib)' == 'Shared'" />

@@ -1,7 +1,7 @@
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 --- a/src/coreclr/jit/codegenriscv64.cpp
 +++ b/src/coreclr/jit/codegenriscv64.cpp
-@@ -6492,7 +6492,12 @@
+@@ -6562,7 +6562,12 @@ void CodeGen::genComputeLeafRaElision()
  
      if (m_compiler->compUsesThrowHelper || m_compiler->ehAnyFunclets() || m_compiler->compLocallocUsed ||
          m_compiler->info.compIsVarArgs || m_compiler->opts.IsOSR() || m_compiler->opts.MinOpts() ||
@@ -15,14 +15,10 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
      {
          return;
      }
-@@ -6502,20 +6507,35 @@
-         for (GenTree* const node : LIR::AsRange(block))
-         {
-             if (node->OperIs(GT_CALL, GT_JMP, GT_INTRINSIC))
-+            {
-+                return;
-+            }
-+
+@@ -6576,16 +6581,31 @@ void CodeGen::genComputeLeafRaElision()
+                 return;
+             }
+ 
 +            // zkVM: RyuJIT riscv64 uses REG_RA as a HARDCODED scratch (not via LSRA) in
 +            // several paths - materializing a branch/compare constant (genCodeForJumpCompare
 +            // instGen_Set_Reg_To_Imm into REG_RA; genCodeForCompare 4-byte sext temp), the
@@ -34,15 +30,15 @@ diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64
 +            // use REG_ZERO / an LSRA reg - so pure-integer getters like get_AsSpan and
 +            // UInt256.IsZero/IsOne still qualify.)
 +            if (node->OperIs(GT_JCMP, GT_LT, GT_LE, GT_GT, GT_GE, GT_MULHI))
-             {
-                 return;
-             }
++            {
++                return;
++            }
 +            // genCodeForShift emits a rotate as srl/sll + or using REG_RA as the temp.
 +            if (node->OperIs(GT_ROL, GT_ROR))
 +            {
 +                return;
 +            }
- 
++
              if (node->OperIs(GT_STORE_BLK))
              {
 -                GenTreeBlk* blk = node->AsBlk();

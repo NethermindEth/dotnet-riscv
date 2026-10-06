@@ -1,7 +1,7 @@
 diff --git a/src/coreclr/jit/objectalloc.cpp b/src/coreclr/jit/objectalloc.cpp
 --- a/src/coreclr/jit/objectalloc.cpp
 +++ b/src/coreclr/jit/objectalloc.cpp
-@@ -1459,13 +1459,12 @@
+@@ -1459,13 +1459,12 @@ bool ObjectAllocator::MorphAllocObjNodeHelper(AllocationCandidate& candidate)
          return false;
      }
  
