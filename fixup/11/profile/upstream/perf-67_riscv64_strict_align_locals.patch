@@ -1,0 +1,363 @@
+Strict alignment: prove accesses through locals aligned (applies after perf-39).
+
+perf-39 proves an address aligned only from the tree that forms it, so a byref held in a
+local - a CSE temp of "array data + i * 32", the base an inlinee copies its pointer argument
+to, a pointer loaded once and offset many times - loses its provenance, and every access
+through it gets the andi/bnez test with a byte-wise slow path. On SP1 that test sits in
+front of most EVM stack and Keccak lane accesses of the Nethermind guest.
+
+Lowering now runs ComputeAlignedLocals before it lowers any block: for every local whose
+definitions are all GT_STORE_LCL_VAR (not a parameter, not address-exposed, no GT_LCL_ADDR
+or partial store, not a promoted struct or field) it finds, as an optimistic fixed point,
+an alignment every stored value has. The alignment proof becomes KnownAlignmentLog2, which
+returns a power of two instead of a yes/no for one width and reads those locals: a sum,
+difference or OR keeps the weaker operand's alignment, a constant shift adds to it, a
+product adds both, an AND keeps the stronger one (masking only clears bits) and an
+integral cast keeps it. Object references, LCL_ADDR, handles and constants are as before.
+
+The AND rule lets managed code establish alignment it knows but the JIT cannot see: a
+byref parameter rounded down to the boundary it is already on, (p & ~31), is free to
+compute once and proves every access off it.
+
+Nethermind stateless guest on SP1 (sp1-runner v6.5.0), cycles:
+  block 26055159: 169,834,110 -> 166,130,276 (-2.2%) with this patch alone,
+                  -> 141,125,404 (-16.9%) with the guest rounding its stack and Keccak bases
+  block 26112793: 409,369,758 -> 399,352,385 (-2.4%) alone, -> 320,921,838 (-21.6%)
+Outputs identical on 11 mainnet blocks. Only builds with JitRiscV64StrictAlign change.
+
+diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
+index ce453ec..4db10e7 100644
+--- a/src/coreclr/jit/lower.cpp
++++ b/src/coreclr/jit/lower.cpp
+@@ -9129,6 +9129,14 @@ PhaseStatus Lowering::DoPhase()
+         MapParameterRegisterLocals();
+     }
+ 
++#ifdef TARGET_RISCV64
++    ComputeAlignedLocals();
++#endif
++
++#ifdef TARGET_RISCV64
++    ComputeAlignedLocals();
++#endif
++
+     for (BasicBlock* const block : m_compiler->Blocks())
+     {
+         /* Make the block publicly available */
+diff --git a/src/coreclr/jit/lower.h b/src/coreclr/jit/lower.h
+index 34353f1..a9500f0 100644
+--- a/src/coreclr/jit/lower.h
++++ b/src/coreclr/jit/lower.h
+@@ -178,6 +178,13 @@ private:
+     GenTree* LowerSavedIntegerCompare(GenTree* cmp);
+     void     SignExtendIfNecessary(GenTree** arg);
+     void     ComputeSignExtendedLocals();
++    void     ComputeAlignedLocals();
++    unsigned KnownAlignmentLog2(GenTree* node, int depth = 0) const;
++    bool     IsAddrKnownAligned(GenTree* addr, unsigned align) const;
++    // Per local, log2 of an alignment every value it holds has (see ComputeAlignedLocals); locals
++    // created during lowering are past m_lclAlignCount and unknown.
++    unsigned char* m_lclAlignLog2  = nullptr;
++    unsigned       m_lclAlignCount = 0;
+     void     RemoveRedundantExtensions();
+     void     TryTailCallNoReturn(GenTreeCall* call);
+ #endif
+diff --git a/src/coreclr/jit/lowerriscv64.cpp b/src/coreclr/jit/lowerriscv64.cpp
+index 5cd521e..7f921b9 100644
+--- a/src/coreclr/jit/lowerriscv64.cpp
++++ b/src/coreclr/jit/lowerriscv64.cpp
+@@ -982,105 +982,130 @@ GenTree* Lowering::LowerStoreIndir(GenTreeStoreInd* node)
+ //------------------------------------------------------------------------
+ // Strict alignment support (JitRiscV64StrictAlign).
+ //
+-// RiscV64IsAddrKnownAligned: is `addr` provably a multiple of `align`?
++// KnownAlignmentLog2: log2 of a power of two `node`'s value is provably a multiple of (0 if unknown).
+ //
+-// Object references are 8-byte aligned, so anything reached from one by a
+-// constant offset (fields), a scaled index whose scale is a multiple of the
+-// access width (array elements) or an address mode built from those is
+-// aligned. Stack locals are pointer-aligned, handles (statics, string
+-// literals, frozen objects) are at least pointer-aligned. Everything else -
+-// byrefs out of spans, Unsafe.As reinterpretation, plain pointer arithmetic -
+-// is unknown and reported as not aligned.
++// Object references are 8-byte aligned, stack locals pointer-aligned and handles (statics, string
++// literals, frozen objects) at least pointer-aligned. Arithmetic keeps the low zero bits it can prove:
++// a sum, difference or OR has as many as the weaker operand, a shift by n adds n, a product adds both
++// operands', an AND has at least the stronger operand's (masking only clears bits) and an integral cast
++// keeps them. A local has the alignment ComputeAlignedLocals found for every value stored to it.
++// Everything else - a byref parameter, a load from memory - is unknown.
+ //
+-static bool RiscV64IsAddrKnownAligned(GenTree* addr, unsigned align)
++unsigned Lowering::KnownAlignmentLog2(GenTree* node, int depth) const
+ {
+-    if (align <= 1)
++    const unsigned maxLog2 = 6;
++    if (node->TypeIs(TYP_REF))
+     {
+-        return true;
++        return 3; // an object pointer: 8-byte aligned
+     }
+-    if (addr->TypeIs(TYP_REF))
++    if (depth > 8)
+     {
+-        return true; // an object pointer: 8-byte aligned
++        return 0;
+     }
+ 
+-    switch (addr->OperGet())
++    switch (node->OperGet())
+     {
+-        case GT_LEA:
++        case GT_CNS_INT:
+         {
+-            GenTreeAddrMode* lea = addr->AsAddrMode();
+-            if (!lea->HasBase() || !RiscV64IsAddrKnownAligned(lea->Base(), align))
+-            {
+-                return false;
+-            }
+-            if (lea->HasIndex() && ((lea->GetScale() % align) != 0))
++            GenTreeIntCon* con = node->AsIntCon();
++            if (con->IsIconHandle())
+             {
+-                return false;
++                return 3; // statics, string literals, frozen objects: pointer-aligned
+             }
+-            return (lea->Offset() % (int)align) == 0;
++            uint64_t value = (uint64_t)con->IconValue();
++            return (value == 0) ? maxLog2 : min((unsigned)BitOperations::TrailingZeroCount(value), maxLog2);
+         }
+ 
+-        case GT_ADD:
++        case GT_LCL_VAR:
+         {
+-            GenTree* op1 = addr->gtGetOp1();
+-            GenTree* op2 = addr->gtGetOp2();
+-            if (op2->IsCnsIntOrI())
++            unsigned lclNum = node->AsLclVar()->GetLclNum();
++            return (lclNum < m_lclAlignCount) ? m_lclAlignLog2[lclNum] : 0;
++        }
++
++        case GT_LCL_ADDR:
++        {
++            // Stack locals are pointer-aligned; the field offset decides.
++            unsigned offs = node->AsLclFld()->GetLclOffs();
++            return (offs == 0) ? 3 : min((unsigned)BitOperations::TrailingZeroCount(offs), 3u);
++        }
++
++        case GT_ADD:
++        case GT_SUB:
++        case GT_OR:
++            return min(KnownAlignmentLog2(node->gtGetOp1(), depth + 1),
++                       KnownAlignmentLog2(node->gtGetOp2(), depth + 1));
++
++        case GT_AND:
++            return max(KnownAlignmentLog2(node->gtGetOp1(), depth + 1),
++                       KnownAlignmentLog2(node->gtGetOp2(), depth + 1));
++
++        case GT_MUL:
++            if (node->gtOverflow())
+             {
+-                return RiscV64IsAddrKnownAligned(op1, align) && ((op2->AsIntCon()->IconValue() % (ssize_t)align) == 0);
++                return 0;
+             }
+-            if (op1->IsCnsIntOrI())
++            return min(KnownAlignmentLog2(node->gtGetOp1(), depth + 1) +
++                           KnownAlignmentLog2(node->gtGetOp2(), depth + 1),
++                       maxLog2);
++
++        case GT_LSH:
++        {
++            GenTree* shift = node->gtGetOp2();
++            if (!shift->IsCnsIntOrI())
+             {
+-                return RiscV64IsAddrKnownAligned(op2, align) && ((op1->AsIntCon()->IconValue() % (ssize_t)align) == 0);
++                return 0;
+             }
+-            // base + (index << n) / base + index * n, either order
+-            for (int i = 0; i < 2; i++)
++            ssize_t sh = shift->AsIntCon()->IconValue();
++            if ((sh < 0) || (sh >= 64))
+             {
+-                GenTree* base = (i == 0) ? op1 : op2;
+-                GenTree* idx  = (i == 0) ? op2 : op1;
+-                if (!RiscV64IsAddrKnownAligned(base, align))
+-                {
+-                    continue;
+-                }
+-                unsigned scale = 0;
+-                if (idx->OperIs(GT_LSH) && idx->gtGetOp2()->IsCnsIntOrI())
+-                {
+-                    ssize_t sh = idx->gtGetOp2()->AsIntCon()->IconValue();
+-                    scale      = ((sh >= 0) && (sh < 32)) ? (1u << sh) : 0;
+-                }
+-                else if (idx->OperIs(GT_MUL) && idx->gtGetOp2()->IsCnsIntOrI())
+-                {
+-                    ssize_t m = idx->gtGetOp2()->AsIntCon()->IconValue();
+-                    scale     = ((m > 0) && (m < INT32_MAX)) ? (unsigned)m : 0;
+-                }
+-                if ((scale != 0) && ((scale % align) == 0))
+-                {
+-                    return true;
+-                }
++                return 0;
+             }
+-            return false;
++            return min(KnownAlignmentLog2(node->gtGetOp1(), depth + 1) + (unsigned)sh, maxLog2);
+         }
+ 
+-        case GT_LCL_ADDR:
+-            // Stack locals are pointer-aligned; the field offset decides.
+-            return (addr->AsLclFld()->GetLclOffs() % align) == 0;
+-
+-        case GT_CNS_INT:
++        case GT_LEA:
+         {
+-            GenTreeIntCon* con = addr->AsIntCon();
+-            if (con->IsIconHandle())
++            GenTreeAddrMode* lea = node->AsAddrMode();
++            if (!lea->HasBase())
++            {
++                return 0;
++            }
++            unsigned log2 = KnownAlignmentLog2(lea->Base(), depth + 1);
++            if (lea->HasIndex())
+             {
+-                return true; // statics, string literals, frozen objects: pointer-aligned
++                unsigned scaleLog2 = (unsigned)BitOperations::TrailingZeroCount(lea->GetScale());
++                log2               = min(log2, KnownAlignmentLog2(lea->Index(), depth + 1) + scaleLog2);
+             }
+-            return (con->IconValue() % (ssize_t)align) == 0;
++            if (lea->Offset() != 0)
++            {
++                log2 = min(log2, (unsigned)BitOperations::TrailingZeroCount((unsigned)lea->Offset()));
++            }
++            return min(log2, maxLog2);
+         }
+ 
++        case GT_CAST:
++            // Truncation and extension both keep the low bits.
++            if (node->gtOverflow() || !varTypeIsIntegral(node) || !varTypeIsIntegral(node->AsCast()->CastOp()))
++            {
++                return 0;
++            }
++            return KnownAlignmentLog2(node->AsCast()->CastOp(), depth + 1);
++
+         case GT_ARR_ADDR:
+-            return RiscV64IsAddrKnownAligned(addr->AsArrAddr()->Addr(), align);
++            return KnownAlignmentLog2(node->AsArrAddr()->Addr(), depth + 1);
+ 
+         default:
+-            return false;
++            return 0;
+     }
+ }
+ 
++// IsAddrKnownAligned: is `addr` provably a multiple of `align`, a power of two?
++//
++bool Lowering::IsAddrKnownAligned(GenTree* addr, unsigned align) const
++{
++    return (align <= 1) || ((1u << KnownAlignmentLog2(addr)) >= align);
++}
++
+ // The alignment an unrolled block copy/init of `size` bytes needs: it moves
+ // 8-byte words first and then a 4/2/1-byte tail from offset 0, so an
+ // 8-byte aligned base (or the size itself when smaller) keeps every piece
+@@ -1095,6 +1120,80 @@ static bool RiscV64StrictAlign()
+     return (JitConfig.JitRiscV64StrictAlign() != 0) && (JitConfig.JitNoUnalignedAccess() != 0);
+ }
+ 
++//------------------------------------------------------------------------
++// ComputeAlignedLocals: for every local, find an alignment all the values stored to it have.
++//
++// Notes:
++//    Runs before lowering, so a byref formed once (a CSE temp, or a local holding a base rounded down
++//    to a known boundary) keeps the alignment of its definition at every access through it, and the
++//    strict-alignment checks of those accesses can be proven away. A local qualifies when every
++//    definition is a GT_STORE_LCL_VAR: not a parameter (its incoming value is unknown), not
++//    address-exposed, never the target of a GT_LCL_ADDR or a partial store, and not a promoted struct
++//    or field. The fixed point starts optimistic and only lowers a local's alignment, so stores of other
++//    locals and of the local itself are accounted for.
++//
++void Lowering::ComputeAlignedLocals()
++{
++    if (!RiscV64StrictAlign() || m_compiler->opts.OptimizationDisabled() || m_compiler->opts.IsOSR())
++    {
++        return;
++    }
++
++    const unsigned count = m_compiler->lvaCount;
++    unsigned char* align = new (m_compiler, CMK_Lower) unsigned char[count];
++    for (unsigned lclNum = 0; lclNum < count; lclNum++)
++    {
++        LclVarDsc* const varDsc    = m_compiler->lvaGetDesc(lclNum);
++        const bool       candidate = !varDsc->IsAddressExposed() && !varDsc->lvIsParam && !varDsc->lvIsParamRegTarget &&
++                               !varDsc->lvIsStructField && !varDsc->lvPromoted &&
++                               varDsc->TypeIs(TYP_BYREF, TYP_I_IMPL, TYP_LONG, TYP_INT);
++        align[lclNum] = candidate ? 6 : 0;
++    }
++
++    ArrayStack<GenTreeLclVarCommon*> stores(m_compiler->getAllocator(CMK_Lower));
++    for (BasicBlock* const block : m_compiler->Blocks())
++    {
++        for (GenTree* const node : LIR::AsRange(block))
++        {
++            if (!node->OperIsLocalStore() && !node->OperIs(GT_LCL_ADDR))
++                continue;
++
++            const unsigned lclNum = node->AsLclVarCommon()->GetLclNum();
++            if (align[lclNum] == 0)
++                continue;
++
++            if (node->OperIs(GT_STORE_LCL_VAR))
++            {
++                stores.Push(node->AsLclVarCommon());
++            }
++            else
++            {
++                align[lclNum] = 0;
++            }
++        }
++    }
++
++    m_lclAlignLog2  = align;
++    m_lclAlignCount = count;
++
++    bool changed;
++    do
++    {
++        changed = false;
++        for (int i = 0; i < stores.Height(); i++)
++        {
++            GenTreeLclVarCommon* const store  = stores.Bottom(i);
++            const unsigned             lclNum = store->GetLclNum();
++            const unsigned             log2   = KnownAlignmentLog2(store->Data());
++            if (log2 < align[lclNum])
++            {
++                align[lclNum] = (unsigned char)log2;
++                changed       = true;
++            }
++        }
++    } while (changed);
++}
++
+ void Lowering::ContainBlockStoreAddress(GenTreeBlk* blkNode, unsigned size, GenTree* addr, GenTree* addrParent)
+ {
+     assert(blkNode->OperIs(GT_STORE_BLK) && (blkNode->gtBlkOpKind == GenTreeBlk::BlkOpKindUnroll));
+@@ -1105,7 +1204,7 @@ void Lowering::ContainBlockStoreAddress(GenTreeBlk* blkNode, unsigned size, GenT
+     // run time and falls back to a byte-wise copy; genCodeForInitBlkUnroll stores
+     // byte-wise). Locals not going through here are stack-aligned.
+     if (RiscV64StrictAlign() && !blkNode->IsUnaligned() &&
+-        !RiscV64IsAddrKnownAligned(addr, RiscV64BlockAlignment(size)))
++        !IsAddrKnownAligned(addr, RiscV64BlockAlignment(size)))
+     {
+         blkNode->gtFlags |= GTF_IND_UNALIGNED;
+     }
+@@ -1683,7 +1782,7 @@ void Lowering::ContainCheckIndir(GenTreeIndir* indirNode)
+     // and then takes the checked wide/byte-wise path below.
+     if (RiscV64StrictAlign() && indirNode->OperIs(GT_IND, GT_STOREIND) && !indirNode->IsUnaligned() &&
+         (genTypeSize(indirNode->TypeGet()) > 1) &&
+-        !RiscV64IsAddrKnownAligned(indirNode->Addr(), genTypeSize(indirNode->TypeGet())))
++        !IsAddrKnownAligned(indirNode->Addr(), genTypeSize(indirNode->TypeGet())))
+     {
+         indirNode->gtFlags |= GTF_IND_UNALIGNED;
+     }
