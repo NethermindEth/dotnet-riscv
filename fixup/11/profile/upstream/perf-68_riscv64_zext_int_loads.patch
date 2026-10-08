@@ -1,0 +1,320 @@
+RISC-V: load an INT with lwu where its user ignores the upper half, and narrow loads that only feed a
+small cast or a byte/halfword mask (applies after perf-43).
+
+An INT is sign-extended in its register, so every INT load is an lw. ZisK proves lw as a load plus a
+signextend_w operation in the BinaryExtension state machine, and lwu as a plain load. Lowering now
+marks (GTF_ZEXT_LOAD) the GT_IND, GT_LCL_VAR and GT_LCL_FLD INT loads whose single user reads the
+same result from either extension, and codegen loads them with lwu:
+- stores of 4 bytes or fewer, addw/subw/mulw/negw (not overflow-checked), sllw/srlw/sraw and any
+  shift count, casts to a small type, AND with a value in [0, INT32_MAX];
+- EQ/NE and unsigned compares (relops and JCMP) against a value in [0, INT32_MAX];
+- the length of a bounds check (a zero-extended length can only fail more indices, and only a
+  negative length, which no array, string or span has), or its index when the length is in
+  [0, INT32_MAX].
+LowerArrLength marks every array and string length whatever its user: it lies in [0, INT32_MAX],
+where both loads give the same register. A spill of a marked load reloads it with lw, which its user
+accepts. The pass runs last in lowering; none of these users asks IsInt32SignExtendedInReg about the
+operand, so nothing relies on the sign extension a marked load no longer provides.
+
+A cast to a small type of an INT load, or the load AND 0xFF / 0xFFFF, becomes a narrower load at the
+same address (little-endian).
+
+Nethermind stateless guest on ZisK (ziskemu 1.3.0 -X), block 26055159 / 26112793:
+  signextend_w 1,020,341 -> 569,875 on the light block; steps unchanged;
+  cost 9,342,293,548 -> 9,317,067,579 (-0.27%) / 19,294,339,711 -> 19,246,428,030 (-0.25%).
+Outputs identical on 11 mainnet blocks.
+
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -1278,6 +1278,10 @@
+         assert(targetType != TYP_STRUCT);
+ 
+         instruction ins  = ins_Load(targetType);
++        if (((tree->gtFlags & GTF_ZEXT_LOAD) != 0) && (targetType == TYP_INT))
++        {
++            ins = INS_lwu;
++        }
+         emitAttr    attr = emitTypeSize(targetType);
+ 
+         if (RiscV64LclByteWise(m_compiler, tree))
+@@ -5372,7 +5376,8 @@
+         return;
+     }
+ 
+-    emit->emitIns_R_S(ins_Load(targetType), size, targetReg, varNum, offs);
++    const bool zeroExtended = ((tree->gtFlags & GTF_ZEXT_LOAD) != 0) && (targetType == TYP_INT);
++    emit->emitIns_R_S(zeroExtended ? INS_lwu : ins_Load(targetType), size, targetReg, varNum, offs);
+ 
+     genProduceReg(tree);
+ }
+@@ -5550,6 +5555,10 @@
+ 
+     var_types   type      = tree->TypeGet();
+     instruction ins       = ins_Load(type);
++    if (((tree->gtFlags & GTF_ZEXT_LOAD) != 0) && (type == TYP_INT))
++    {
++        ins = INS_lwu;
++    }
+     regNumber   targetReg = tree->GetRegNum();
+     regNumber   tmpReg    = targetReg;
+     emitAttr    attr      = emitActualTypeSize(type);
+diff --git a/src/coreclr/jit/gentree.h b/src/coreclr/jit/gentree.h
+--- a/src/coreclr/jit/gentree.h
++++ b/src/coreclr/jit/gentree.h
+@@ -392,6 +392,11 @@
+                                   // instead of "movzx/movsx", when the user node doesn't need the upper bits.
+ #endif // TARGET_XARCH
+ 
++#ifdef TARGET_RISCV64
++    GTF_ZEXT_LOAD   = 0x00000400, // This INT load may leave the upper 32 bits zero (lwu rather than lw): its user ignores
++                                  // them, or it is an array length (see Lowering::MarkZeroExtendedLoads).
++#endif // TARGET_RISCV64
++
+     GTF_MAKE_CSE    = 0x00000800, // Hoisted expression: try hard to make this into CSE (see optPerformHoistExpr)
+     GTF_DONT_CSE    = 0x00001000, // Don't bother CSE'ing this expr
+     GTF_COLON_COND  = 0x00002000, // This node is conditionally executed (part of ? :)
+diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
+--- a/src/coreclr/jit/lower.cpp
++++ b/src/coreclr/jit/lower.cpp
+@@ -791,10 +791,22 @@
+         BlockRange().InsertAfter(arr, con, addr);
+     }
+ 
++#ifdef TARGET_RISCV64
++    // An array or string length lies in [0, INT32_MAX]: lwu loads the same register as lw.
++    const bool isNonNegativeLength = node->OperIs(GT_ARR_LENGTH);
++#endif
++
+     // Change to a GT_IND.
+     node->ChangeOper(GT_IND);
+     node->AsIndir()->Addr() = addr;
+ 
++#ifdef TARGET_RISCV64
++    if (isNonNegativeLength)
++    {
++        node->gtFlags |= GTF_ZEXT_LOAD;
++    }
++#endif
++
+     return arr->gtNext;
+ }
+ 
+@@ -9197,6 +9209,7 @@
+ 
+ #ifdef TARGET_RISCV64
+     RemoveRedundantExtensions();
++    MarkZeroExtendedLoads();
+ #endif
+ 
+     return PhaseStatus::MODIFIED_EVERYTHING;
+diff --git a/src/coreclr/jit/lower.h b/src/coreclr/jit/lower.h
+--- a/src/coreclr/jit/lower.h
++++ b/src/coreclr/jit/lower.h
+@@ -179,6 +179,7 @@
+     void     SignExtendIfNecessary(GenTree** arg);
+     void     ComputeSignExtendedLocals();
+     void     RemoveRedundantExtensions();
++    void     MarkZeroExtendedLoads();
+     void     TryTailCallNoReturn(GenTreeCall* call);
+ #endif
+     GenTree*   LowerSelect(GenTreeConditional* cond);
+diff --git a/src/coreclr/jit/lowerriscv64.cpp b/src/coreclr/jit/lowerriscv64.cpp
+--- a/src/coreclr/jit/lowerriscv64.cpp
++++ b/src/coreclr/jit/lowerriscv64.cpp
+@@ -812,6 +812,195 @@
+ }
+ 
+ //------------------------------------------------------------------------
++// IsZeroExtendableIntLoad: whether a node is an INT load that could load with lwu instead of lw.
++//
++static bool IsZeroExtendableIntLoad(GenTree* node)
++{
++    if (!node->TypeIs(TYP_INT) || node->isContained())
++        return false;
++
++    // Only a GT_LCL_VAR that is not enregistered loads at its use (genCodeForLclVar).
++    return (node->OperIs(GT_IND) && !node->AsIndir()->IsVolatile()) || node->OperIs(GT_LCL_VAR, GT_LCL_FLD);
++}
++
++//------------------------------------------------------------------------
++// IsInt32RangeNonNegative: whether an operand holds a value in [0, INT32_MAX], so that it reads the same against
++// the zero and the sign extension of an INT.
++//
++static bool IsInt32RangeNonNegative(Compiler* comp, GenTree* node)
++{
++    if (node->IsIntegralConst())
++    {
++        const INT64 value = node->AsIntConCommon()->IntegralValue();
++        return !node->IsIconHandle() && (value >= 0) && (value <= INT32_MAX);
++    }
++
++    return genActualTypeIsInt(node) && Lowering::IsInt32NonNegativeInReg(comp, node);
++}
++
++//------------------------------------------------------------------------
++// IsUpperHalfIgnored: whether a user reads the same result from an INT operand whether its register holds
++// the sign or the zero extension of the operand's low 32 bits.
++//
++// Arguments:
++//    comp - the compiler
++//    user - the user
++//    op   - the INT operand, a zero-extendable load
++//
++static bool IsUpperHalfIgnored(Compiler* comp, GenTree* user, GenTree* op)
++{
++    if (user->isContained())
++        return false;
++
++    GenTree* other = nullptr;
++    bool     equalityOrUnsigned;
++    switch (user->OperGet())
++    {
++        case GT_STOREIND:
++            // sw/sh/sb store the low bits.
++            return (user->AsStoreInd()->Data() == op) && (genTypeSize(user) <= 4);
++
++        case GT_STORE_LCL_FLD:
++            return (user->AsLclFld()->Data() == op) && (genTypeSize(user) <= 4);
++
++        case GT_ADD:
++        case GT_SUB:
++        case GT_MUL:
++        case GT_NEG:
++            // addw/subw/mulw/negw read the low 32 bits. (Not the overflow checks, nor DIV/MOD, whose
++            // INT_MIN / -1 check compares full registers.)
++            return user->TypeIs(TYP_INT) && !user->gtOverflow();
++
++        case GT_LSH:
++        case GT_RSH:
++        case GT_RSZ:
++            // sllw/sraw/srlw read the low 32 bits of the value; every shift reads only the low bits of its count.
++            return user->TypeIs(TYP_INT) || (user->gtGetOp2() == op);
++
++        case GT_CAST:
++            // A cast to a small type reads the low 8 or 16 bits.
++            return !user->gtOverflow() && varTypeIsSmall(user->AsCast()->CastToType());
++
++        case GT_AND:
++            // AND with a value in [0, INT32_MAX] clears the upper half and bit 31 either way.
++            other = (user->gtGetOp1() == op) ? user->gtGetOp2() : user->gtGetOp1();
++            return IsInt32RangeNonNegative(comp, other);
++
++        case GT_EQ:
++        case GT_NE:
++        case GT_LT:
++        case GT_LE:
++        case GT_GE:
++        case GT_GT:
++            other              = (user->gtGetOp1() == op) ? user->gtGetOp2() : user->gtGetOp1();
++            equalityOrUnsigned = user->OperIs(GT_EQ, GT_NE) || user->IsUnsigned();
++            break;
++
++        case GT_JCMP:
++            other              = (user->gtGetOp1() == op) ? user->gtGetOp2() : user->gtGetOp1();
++            equalityOrUnsigned = user->AsOpCC()->gtCondition.Is(GenCondition::EQ, GenCondition::NE) ||
++                                 user->AsOpCC()->gtCondition.IsUnsigned();
++            break;
++
++        case GT_BOUNDS_CHECK:
++        {
++            // bgeu index, length. A zero-extended length can only fail more indices, and only when the length
++            // is negative, which an array, string or span length never is.
++            GenTreeBoundsChk* const check = user->AsBoundsChk();
++            if (check->GetArrayLength() == op)
++                return true;
++
++            other              = check->GetArrayLength();
++            equalityOrUnsigned = true;
++            break;
++        }
++
++        default:
++            return false;
++    }
++
++    // Against a value in [0, INT32_MAX], equality and unsigned order read the same from either extension.
++    return equalityOrUnsigned && IsInt32RangeNonNegative(comp, other);
++}
++
++//------------------------------------------------------------------------
++// MarkZeroExtendedLoads: load with lwu the INT loads whose user ignores their upper 32 bits, and narrow
++// the INT loads that only feed a cast to a small type or a mask of their low byte or halfword.
++//
++// Notes:
++//    An INT is sign-extended in its register, so an INT load is an lw. Under ZisK, lw is a load plus a
++//    sign-extension operation proved by the BinaryExtension state machine, while lwu is a plain load. A
++//    load whose single user reads only its low 32 bits, or compares it in a way the two extensions agree
++//    on, may leave the upper half zero (GTF_ZEXT_LOAD). A spill of such a load reloads it with lw, which
++//    the same user accepts. LowerArrLength marks an array or string length whatever its user: it lies in
++//    [0, INT32_MAX], where both loads agree.
++//    A cast to a small type of an INT load, or an AND of it with 0xFF or 0xFFFF, needs only the load's low
++//    bytes, which a narrower load at the same address reads directly (little-endian).
++//    This runs last in lowering: the users above take nothing from IsInt32SignExtendedInReg about the
++//    operand, so nothing reads the sign extension a marked load no longer provides.
++//
++void Lowering::MarkZeroExtendedLoads()
++{
++    if (m_compiler->opts.OptimizationDisabled() || m_compiler->opts.IsOSR())
++        return;
++
++    for (BasicBlock* const block : m_compiler->Blocks())
++    {
++        LIR::Range& range = LIR::AsRange(block);
++        for (GenTree* node = range.FirstNode(); node != nullptr; node = node->gtNext)
++        {
++            if (!IsZeroExtendableIntLoad(node))
++                continue;
++
++            LIR::Use use;
++            if (!range.TryGetUse(node, &use))
++                continue;
++
++            GenTree* const user = use.User();
++            if (node->OperIs(GT_IND) && !user->isContained())
++            {
++                // (byte)/(short)/(ushort)/(sbyte) of the load, or the load & 0xFF / 0xFFFF.
++                var_types narrowType = TYP_UNDEF;
++                GenTree*  mask       = nullptr;
++                if (user->OperIs(GT_CAST) && !user->gtOverflow() && varTypeIsSmall(user->AsCast()->CastToType()))
++                {
++                    narrowType = user->AsCast()->CastToType();
++                }
++                else if (user->OperIs(GT_AND) && user->TypeIs(TYP_INT))
++                {
++                    mask = (user->gtGetOp1() == node) ? user->gtGetOp2() : user->gtGetOp1();
++                    if (mask->IsIntegralConst(0xFF))
++                    {
++                        narrowType = TYP_UBYTE;
++                    }
++                    else if (mask->IsIntegralConst(0xFFFF))
++                    {
++                        narrowType = TYP_USHORT;
++                    }
++                }
++
++                LIR::Use narrowUse;
++                if ((narrowType != TYP_UNDEF) && range.TryGetUse(user, &narrowUse))
++                {
++                    node->ChangeType(narrowType);
++                    node->gtFlags &= ~GTF_ZEXT_LOAD;
++                    narrowUse.ReplaceWith(node);
++                    range.Remove(user);
++                    if (mask != nullptr)
++                    {
++                        range.Remove(mask);
++                    }
++                    continue;
++                }
++            }
++
++            if (IsUpperHalfIgnored(m_compiler, user, node))
++                node->gtFlags |= GTF_ZEXT_LOAD;
++        }
++    }
++}
++
++//------------------------------------------------------------------------
+ // LowerBinaryArithmetic: lowers the given binary arithmetic node.
+ //
+ // Arguments:
