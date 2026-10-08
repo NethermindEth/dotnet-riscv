@@ -1,0 +1,159 @@
+RISC-V: normalize a small-typed parameter once in the prolog instead of at every load (applies after
+perf-43 and perf-74).
+
+A bool/byte/short parameter is normalize-on-load: a caller may pass an unnarrowed int (IL allows the
+implicit truncation, and the JIT's callers do not narrow), so morph wraps every load of it in a cast,
+and a method that tests a bool parameter in a loop re-does andi 0xff each time. A small-typed
+parameter in one register that is never stored to or address-exposed (lvNormalizedSmallParam, found
+with the other extension facts in ComputeSignExtendedLocals) is now normalized once at the end of
+genHomeRegisterParams, in the register it starts the method in, when it is live there; its loads drop
+the cast (RemoveRedundantExtensions); a load from its stack home (not enregistered) uses the narrow
+lbu/lb/lhu/lh instead of lw, and a reload after a spill already did. The extension predicates know
+the value is extended.
+
+Nethermind stateless guest on ZisK (most of it a bool tested per lane in KeccakHash.AbsorbLanes):
+steps -37,097 / -68,645 (-0.07% / -0.05%) and cost -2.52M / -4.67M on blocks 26055159 / 26112793.
+Outputs identical on 11 mainnet blocks.
+
+diff --git a/src/coreclr/jit/codegencommon.cpp b/src/coreclr/jit/codegencommon.cpp
+--- a/src/coreclr/jit/codegencommon.cpp
++++ b/src/coreclr/jit/codegencommon.cpp
+@@ -3745,6 +3745,37 @@
+             GetEmitter()->emitIns_R_R(INS_sext_w, EA_4BYTE, incomingReg, incomingReg);
+         }
+     }
++
++    // A small-typed parameter holds whatever its caller passed; one that is never redefined is normalized here,
++    // in the register it starts the method in, instead of at every load (see Lowering::ComputeSignExtendedLocals).
++    for (unsigned lclNum = 0; lclNum < m_compiler->info.compArgsCount; lclNum++)
++    {
++        const LclVarDsc* const varDsc = m_compiler->lvaGetDesc(lclNum);
++        if (!varDsc->lvNormalizedSmallParam || !varDsc->lvIsInReg() || !varDsc->lvTracked ||
++            !VarSetOps::IsMember(m_compiler, m_compiler->fgFirstBB->bbLiveIn, varDsc->lvVarIndex))
++        {
++            continue;
++        }
++
++        const regNumber reg        = varDsc->GetRegNum();
++        const unsigned  size       = genTypeSize(varDsc->TypeGet());
++        const bool      isUnsigned = varTypeIsUnsigned(varDsc->TypeGet());
++        if ((size == 1) && isUnsigned)
++        {
++            GetEmitter()->emitIns_R_R_I(INS_andi, EA_PTRSIZE, reg, reg, 0xff);
++        }
++        else if (m_compiler->compOpportunisticallyDependsOn(InstructionSet_Zbb))
++        {
++            GetEmitter()->emitIns_R_R((size == 1) ? INS_sext_b : (isUnsigned ? INS_zext_h : INS_sext_h), EA_PTRSIZE,
++                                      reg, reg);
++        }
++        else
++        {
++            const unsigned shift = 64 - size * 8;
++            GetEmitter()->emitIns_R_R_I(INS_slli, EA_PTRSIZE, reg, reg, shift);
++            GetEmitter()->emitIns_R_R_I(isUnsigned ? INS_srli : INS_srai, EA_PTRSIZE, reg, reg, shift);
++        }
++    }
+ #endif // TARGET_RISCV64
+ }
+ 
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -1283,6 +1283,12 @@
+             ins = INS_lwu;
+         }
+         emitAttr    attr = emitTypeSize(targetType);
++        if (varDsc->lvNormalizedSmallParam)
++        {
++            // Its loads carry no normalizing cast (see Lowering::ComputeSignExtendedLocals): load it narrow.
++            ins  = ins_Load(varDsc->TypeGet());
++            attr = emitTypeSize(varDsc->TypeGet());
++        }
+ 
+         if (RiscV64LclByteWise(m_compiler, tree))
+         {
+diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
+--- a/src/coreclr/jit/compiler.h
++++ b/src/coreclr/jit/compiler.h
+@@ -616,6 +616,8 @@
+                                          // set after lowering (see Lowering::ComputeSignExtendedLocals)
+     unsigned char lvNonNegativeInt : 1;  // INT or small unsigned local whose register always holds a value in
+                                          // [0, INT32_MAX]; set after lowering (see Lowering::ComputeSignExtendedLocals)
++    unsigned char lvNormalizedSmallParam : 1; // small-typed parameter never redefined, normalized once on entry instead
++                                              // of at every load; set after lowering (see ComputeSignExtendedLocals)
+ #endif
+ 
+ #ifdef DEBUG
+diff --git a/src/coreclr/jit/lowerriscv64.cpp b/src/coreclr/jit/lowerriscv64.cpp
+--- a/src/coreclr/jit/lowerriscv64.cpp
++++ b/src/coreclr/jit/lowerriscv64.cpp
+@@ -354,7 +354,8 @@
+         {
+             // A local that lives on the frame is loaded at every use, with lbu/lhu for these node types.
+             const LclVarDsc* const varDsc = comp->lvaGetDesc(node->AsLclVar());
+-            return varDsc->lvNonNegativeInt || (varDsc->lvDoNotEnregister && node->TypeIs(TYP_UBYTE, TYP_USHORT));
++            return varDsc->lvNonNegativeInt || (varDsc->lvNormalizedSmallParam && varTypeIsUnsigned(varDsc->TypeGet())) ||
++                   (varDsc->lvDoNotEnregister && node->TypeIs(TYP_UBYTE, TYP_USHORT));
+         }
+ 
+         default:
+@@ -426,7 +427,7 @@
+         {
+             // A local that lives on the frame is loaded at every use, with lw/lh/lb/lhu/lbu for these node types.
+             const LclVarDsc* const varDsc = comp->lvaGetDesc(node->AsLclVar());
+-            return varDsc->lvSignExtendedInt ||
++            return varDsc->lvSignExtendedInt || varDsc->lvNormalizedSmallParam ||
+                    (varDsc->lvDoNotEnregister && node->TypeIs(TYP_INT, TYP_BYTE, TYP_UBYTE, TYP_SHORT, TYP_USHORT));
+         }
+ 
+@@ -599,6 +600,15 @@
+         varDsc->lvSignExtendedInt = candidate && varDsc->TypeIs(TYP_INT);
+         varDsc->lvNonNegativeInt  = candidate && !varDsc->lvIsParam && !varDsc->lvIsParamRegTarget &&
+                                    varDsc->TypeIs(TYP_INT, TYP_UBYTE, TYP_USHORT);
++
++        // A small-typed parameter arrives as the caller left it, so every load of it carries a normalizing
++        // cast. One that is never redefined is normalized once in the prolog (genHomeRegisterParams) and its
++        // casts go (RemoveRedundantExtensions).
++        varDsc->lvNormalizedSmallParam = varDsc->lvIsParam && !varDsc->IsAddressExposed() && !varDsc->lvIsParamRegTarget &&
++                                         !varDsc->lvIsStructField && varTypeIsSmall(varDsc->TypeGet()) &&
++                                         (lclNum < m_compiler->info.compArgsCount) &&
++                                         m_compiler->lvaGetParameterABIInfo(lclNum).HasExactlyOneRegisterSegment() &&
++                                         !m_compiler->lvaGetParameterABIInfo(lclNum).HasAnyStackSegment();
+     }
+ 
+     ArrayStack<GenTreeLclVarCommon*> stores(m_compiler->getAllocator(CMK_Lower));
+@@ -621,6 +631,8 @@
+                 }
+             }
+ 
++            varDsc->lvNormalizedSmallParam = false;
++
+             if (!varDsc->lvSignExtendedInt && !varDsc->lvNonNegativeInt)
+                 continue;
+ 
+@@ -757,6 +769,25 @@
+         LIR::Range& range = LIR::AsRange(block);
+         for (GenTree* const node : range)
+         {
++            // The normalizing cast of a load of a parameter the prolog normalizes.
++            for (GenTree** const operandUse : node->UseEdges())
++            {
++                GenTree* const operand = *operandUse;
++                if (!operand->OperIs(GT_CAST) || operand->gtOverflow() || operand->isContained() ||
++                    !operand->AsCast()->CastOp()->OperIs(GT_LCL_VAR))
++                {
++                    continue;
++                }
++
++                GenTree* const         lcl    = operand->AsCast()->CastOp();
++                const LclVarDsc* const lclDsc = m_compiler->lvaGetDesc(lcl->AsLclVar());
++                if (lclDsc->lvNormalizedSmallParam && (operand->AsCast()->CastToType() == lclDsc->TypeGet()))
++                {
++                    range.Remove(operand);
++                    *operandUse = lcl;
++                }
++            }
++
+             GenTree** uses[2] = {};
+             if (node->OperIsCmpCompare() || node->OperIs(GT_JCMP))
+             {
