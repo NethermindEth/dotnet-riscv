@@ -1,0 +1,70 @@
+RISC-V: trust the calling convention for INT parameters (applies after perf-43).
+
+The RISC-V psABI passes a 32-bit integer argument sign-extended to 64 bits (also an unsigned one),
+and the JIT's callers keep to it: genPutArgReg sign-extends an INT argument unless
+IsInt32SignExtendedInReg proves it already is, native code follows the psABI, and the runtime's stubs
+pass argument registers through. perf-43 still sign-extended every register-homed INT parameter in
+the prolog; it now does that only for a struct field mapped from a parameter register, whose upper
+half the caller does not define.
+
+Nethermind stateless guest on ZisK: steps -38,510 / -68,293 (-0.07% / -0.05%) and cost -2.76M /
+-4.94M on blocks 26055159 / 26112793. Outputs identical on 11 mainnet blocks.
+
+diff --git a/src/coreclr/jit/codegencommon.cpp b/src/coreclr/jit/codegencommon.cpp
+--- a/src/coreclr/jit/codegencommon.cpp
++++ b/src/coreclr/jit/codegencommon.cpp
+@@ -3720,32 +3720,25 @@
+ 
+ #ifdef TARGET_RISCV64
+     // Lowering took these INT locals to be sign-extended (see Lowering::ComputeSignExtendedLocals). One homed
+-    // in its incoming register still holds whatever the caller left in the upper half.
++    // in its incoming register still holds whatever the caller left in the upper half, unless it is an INT
++    // parameter itself, which the calling convention passes sign-extended (genPutArgReg extends it).
+     for (unsigned lclNum = 0; lclNum < m_compiler->lvaCount; lclNum++)
+     {
+         const LclVarDsc* const varDsc = m_compiler->lvaGetDesc(lclNum);
+-        if (!varDsc->lvSignExtendedInt || !varDsc->lvIsInReg() || (!varDsc->lvIsParam && !varDsc->lvIsParamRegTarget))
++        if (!varDsc->lvSignExtendedInt || !varDsc->lvIsInReg() || !varDsc->lvIsParamRegTarget)
+         {
+             continue;
+         }
+ 
+         regNumber incomingReg = REG_NA;
+-        if (varDsc->lvIsParamRegTarget)
++        for (int i = 0; i < m_compiler->m_paramRegLocalMappings->Height(); i++)
+         {
+-            for (int i = 0; i < m_compiler->m_paramRegLocalMappings->Height(); i++)
++            const ParameterRegisterLocalMapping& mapping = m_compiler->m_paramRegLocalMappings->BottomRef(i);
++            if (mapping.LclNum == lclNum)
+             {
+-                const ParameterRegisterLocalMapping& mapping = m_compiler->m_paramRegLocalMappings->BottomRef(i);
+-                if (mapping.LclNum == lclNum)
+-                {
+-                    incomingReg = mapping.RegisterSegment->GetRegister();
+-                }
++                incomingReg = mapping.RegisterSegment->GetRegister();
+             }
+         }
+-        else if ((lclNum < m_compiler->info.compArgsCount) &&
+-                 m_compiler->lvaGetParameterABIInfo(lclNum).HasExactlyOneRegisterSegment())
+-        {
+-            incomingReg = m_compiler->lvaGetParameterABIInfo(lclNum).Segment(0).GetRegister();
+-        }
+ 
+         if ((incomingReg == varDsc->GetRegNum()) && ((calleeRegArgMaskLiveIn & genRegMask(incomingReg)) != 0))
+         {
+diff --git a/src/coreclr/jit/lowerriscv64.cpp b/src/coreclr/jit/lowerriscv64.cpp
+--- a/src/coreclr/jit/lowerriscv64.cpp
++++ b/src/coreclr/jit/lowerriscv64.cpp
+@@ -547,8 +547,9 @@
+ //    Runs on the final LIR. A local qualifies when every definition is a GT_STORE_LCL_VAR of a value
+ //    IsInt32SignExtendedInReg (IsInt32NonNegativeInReg) accepts, other locals included, hence the
+ //    optimistic fixed point. An INT parameter, or an INT local a parameter register maps to from its
+-//    low bits, is also defined by its incoming register, which the caller need not have extended:
+-//    genHomeRegisterParams sign-extends it in place if the local keeps lvSignExtendedInt (a moved one is
++//    low bits, is also defined by its incoming register. The calling convention passes an INT parameter
++//    sign-extended; a mapped struct field holds whatever the caller left in the upper half, which
++//    genHomeRegisterParams sign-extends in place if the local keeps lvSignExtendedInt (a moved one is
+ //    extended by the move, a spilled one reloaded by lw). Likewise a store of an INT call result, which
+ //    genCodeForStoreLclVar sign-extends in place. A promoted field qualifies only while its struct is
+ //    never defined as a whole.

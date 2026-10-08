@@ -1,0 +1,40 @@
+RISC-V: null-check probes narrower than a pointer load zero-extending (lbu/lhu/lwu).
+
+The probe of a GT_NULLCHECK discards its value into x0. ZisK proves lb/lh/lw as a load plus a
+sign-extension operation (BinaryExtension) and lbu/lhu/lwu as a plain load; the faulting behaviour
+is the same.
+
+Nethermind stateless guest on ZisK: signextend_b 42,325 -> 300 on block 26055159;
+cost -2,364,040 / -4,769,128 on blocks 26055159 / 26112793, steps unchanged.
+Outputs identical on 11 mainnet blocks.
+
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -5178,7 +5178,25 @@
+         type = TYP_LONG;
+     }
+ 
+-    GetEmitter()->emitInsLoadStoreOp(ins_Load(type), emitActualTypeSize(type), REG_R0, tree);
++    // The probe discards its value, so a narrower one need not sign-extend it: ZisK proves lb/lh/lw as a load
++    // plus a sign-extension operation, and lbu/lhu/lwu as a plain load.
++    instruction ins = ins_Load(type);
++    switch (ins)
++    {
++        case INS_lb:
++            ins = INS_lbu;
++            break;
++        case INS_lh:
++            ins = INS_lhu;
++            break;
++        case INS_lw:
++            ins = INS_lwu;
++            break;
++        default:
++            break;
++    }
++
++    GetEmitter()->emitInsLoadStoreOp(ins, emitActualTypeSize(type), REG_R0, tree);
+ }
+ 
+ //------------------------------------------------------------------------
