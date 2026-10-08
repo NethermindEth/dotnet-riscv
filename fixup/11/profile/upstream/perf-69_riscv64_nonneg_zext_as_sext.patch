@@ -1,0 +1,42 @@
+RISC-V: a zero-extending INT->LONG cast of a value known non-negative becomes a sign-extending one
+(applies after perf-43).
+
+Assertion prop turns a sign-extending cast of a non-negative INT into a zero-extending one, which is
+cheaper on x64 and arm64; perf-43 disabled that on RISC-V, where the sign extension is usually free.
+This adds the reverse: optAssertionProp_Cast clears GTF_UNSIGNED on an int->long cast whose operand
+optAssertionProp_RangeProperties proves non-negative (VN, bounds-check and relop assertions,
+range check). Lowering then drops the cast when the operand register is already sign-extended, so
+slli.uw rd, rs, 0 disappears and add.uw / shNadd.uw (two ZisK steps each) become add / shNadd.
+
+Nethermind stateless guest on ZisK, block 26055159 / 26112793:
+  steps 56,072,171 -> 55,880,606 (-0.34%) / 131,086,840 -> 130,703,919 (-0.29%)
+  cost 9,342,293,548 -> 9,310,608,130 (-0.34%) / 19,294,339,711 -> 19,233,259,159 (-0.32%)
+  sll_u_w 321,604 -> 145,663 on the light block.
+Outputs identical on 11 mainnet blocks.
+
+diff --git a/src/coreclr/jit/assertionprop.cpp b/src/coreclr/jit/assertionprop.cpp
+--- a/src/coreclr/jit/assertionprop.cpp
++++ b/src/coreclr/jit/assertionprop.cpp
+@@ -5018,6 +5018,22 @@
+         }
+     }
+ 
++#ifdef TARGET_RISCV64
++    // The reverse on RISC-V, where the sign extension is the cheaper one: an INT register is usually
++    // already sign-extended, while the zero extension takes an instruction (or turns add/shNadd into
++    // add.uw/shNadd.uw).
++    if (cast->IsUnsigned() && !cast->gtOverflow() && genActualTypeIsInt(lcl) && cast->TypeIs(TYP_LONG))
++    {
++        bool isKnownNonZero;
++        bool isKnownNonNegative;
++        optAssertionProp_RangeProperties(assertions, lcl, stmt, block, &isKnownNonZero, &isKnownNonNegative);
++        if (isKnownNonNegative)
++        {
++            cast->ClearUnsigned();
++        }
++    }
++#endif // TARGET_RISCV64
++
+     if (!optLocalAssertionProp)
+     {
+         // Decide whether removing this cast (vs only clearing GTF_OVERFLOW) is safe.
