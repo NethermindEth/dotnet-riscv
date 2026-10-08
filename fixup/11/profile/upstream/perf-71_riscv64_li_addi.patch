@@ -1,0 +1,30 @@
+RISC-V: materialize a 32-bit constant with lui + addi where it gives the register lui + addiw gives.
+
+emitLoadImmediate loads the high 32 bits of a constant with lui + addiw. addi gives the same register
+unless the 32-bit sum wraps, which the emitter knows for the constant at hand. ZisK proves addi with
+its cheap adder (BinaryAdd) and addiw as add_w (Binary); an addi from zero (li) is a plain copy.
+
+Nethermind stateless guest on ZisK: add_w 687,954 -> 601,594 on block 26055159;
+cost -3,784,545 / -7,215,385 on blocks 26055159 / 26112793, steps unchanged.
+Outputs identical on 11 mainnet blocks.
+
+diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
+--- a/src/coreclr/jit/emitriscv64.cpp
++++ b/src/coreclr/jit/emitriscv64.cpp
+@@ -1849,8 +1849,14 @@
+     {
+         if (doEmit)
+         {
+-            ins[numberOfInstructions]    = INS_addiw;
+-            values[numberOfInstructions] = lower;
++            // addi gives the register addiw gives unless the 32-bit sum wraps. ZisK proves addi with its cheaper
++            // adder, and an addi from zero (li) as a plain copy.
++            const int32_t lowerSigned = (int32_t)((lower ^ 0x800) - 0x800);
++            const int64_t luiValue    = (upper != 0) ? (int64_t)(int32_t)(upper << 12) : 0;
++            const bool    wraps       = (int64_t)(int32_t)(luiValue + lowerSigned) != (luiValue + lowerSigned);
++
++            ins[numberOfInstructions]    = wraps ? INS_addiw : INS_addi;
++            values[numberOfInstructions] = wraps ? (int32_t)lower : lowerSigned;
+         }
+         numberOfInstructions += 1;
+     }
