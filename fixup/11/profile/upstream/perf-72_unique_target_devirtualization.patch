@@ -1,0 +1,204 @@
+Devirtualize a virtual or interface call when every class the receiver can have resolves it to the
+same method (NativeAOT).
+
+impDevirtualizeCall gives up on a receiver whose type it knows only as an interface or a non-final
+class, and guarded devirtualization then type-tests at most a few exact classes (getExactClasses,
+from ILC's whole-program view). A class hierarchy that implements an interface once, at its root -
+a configuration base class with one subclass per variant - has more classes than that but one target
+per method. impDevirtualizeToUniqueTarget asks getExactClasses for up to 64 classes, resolves the
+method on each, and when all agree on one method (no value classes, no shared generic code, no
+instantiation argument) turns the call into a direct call to it, with an explicit null check when the
+receiver may be null. The direct call can then be inlined.
+
+Nethermind stateless guest on ZisK, with IReleaseSpec implemented only by ReleaseSpec and its fork
+subclasses in the guest (NethermindEth/nethermind companion change): interface dispatch cells
+1,160 -> 643;
+  block 26055159 steps 55,887,466 -> 55,069,856 (-1.46%), cost 9,278,440,342 -> 9,199,861,389 (-0.85%)
+  block 26112793 steps 130,709,033 -> 129,614,991 (-0.84%), cost 19,170,876,078 -> 19,067,586,567 (-0.54%)
+Without that change the patch removes 7 cells and is neutral (+0.01% steps). Outputs identical on 11 mainnet blocks.
+
+diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
+--- a/src/coreclr/jit/compiler.h
++++ b/src/coreclr/jit/compiler.h
+@@ -5157,6 +5157,17 @@
+                              bool                    isExplicitTailCall,
+                              IL_OFFSET               ilOffset = BAD_IL_OFFSET);
+ 
++    bool impDevirtualizeToUniqueTarget(GenTreeCall*            call,
++                                       CORINFO_METHOD_HANDLE*  method,
++                                       unsigned*               methodFlags,
++                                       CORINFO_CONTEXT_HANDLE* contextHandle,
++                                       CORINFO_CONTEXT_HANDLE* exactContextHandle,
++                                       CORINFO_METHOD_HANDLE   baseMethod,
++                                       CORINFO_CLASS_HANDLE    objClass,
++                                       bool                    objIsNonNull,
++                                       bool                    isExplicitTailCall,
++                                       IL_OFFSET               ilOffset);
++
+     // Information needed to turn a resolved devirtualization target into a direct call.
+     struct DevirtualizedCallInfo
+     {
+diff --git a/src/coreclr/jit/importercalls.cpp b/src/coreclr/jit/importercalls.cpp
+--- a/src/coreclr/jit/importercalls.cpp
++++ b/src/coreclr/jit/importercalls.cpp
+@@ -9990,6 +9990,12 @@
+     {
+         JITDUMP("\nimpDevirtualizeCall: no type available (op=%s)\n", GenTree::OpName(thisObj->OperGet()));
+ 
++        if (impDevirtualizeToUniqueTarget(call, method, methodFlags, pContextHandle, pExactContextHandle, baseMethod,
++                                          baseClass, objIsNonNull, isExplicitTailCall, ilOffset))
++        {
++            return;
++        }
++
+         // Don't try guarded devirtualiztion when we're doing late devirtualization.
+         //
+         if (isLateDevirtualization)
+@@ -10034,6 +10040,12 @@
+     //
+     if ((objClassAttribs & CORINFO_FLG_INTERFACE) != 0)
+     {
++        if (impDevirtualizeToUniqueTarget(call, method, methodFlags, pContextHandle, pExactContextHandle, baseMethod,
++                                          objClass, objIsNonNull, isExplicitTailCall, ilOffset))
++        {
++            return;
++        }
++
+         // Don't try guarded devirtualiztion when we're doing late devirtualization.
+         //
+         if (isLateDevirtualization)
+@@ -10156,6 +10168,12 @@
+         }
+ #endif
+ 
++        if (impDevirtualizeToUniqueTarget(call, method, methodFlags, pContextHandle, pExactContextHandle, baseMethod,
++                                          objClass, objIsNonNull, isExplicitTailCall, ilOffset))
++        {
++            return;
++        }
++
+         // Don't try guarded devirtualiztion if we're doing late devirtualization.
+         //
+         if (isLateDevirtualization)
+@@ -10202,6 +10220,121 @@
+ }
+ 
+ //------------------------------------------------------------------------
++// impDevirtualizeToUniqueTarget: devirtualize a call whose receiver type is not known exactly, when every
++//    class the receiver can have resolves the call to the same method.
++//
++// Arguments:
++//     call               - the virtual or interface call
++//     method             - [IN/OUT] method handle for the call, updated to the target
++//     methodFlags        - [IN/OUT] flags of the method, updated to the target's
++//     contextHandle      - [IN/OUT] context handle for the call
++//     exactContextHandle - [OUT] exact context of the target, if not nullptr
++//     baseMethod         - the virtual method called
++//     objClass           - the best known class (or interface) of the receiver
++//     objIsNonNull       - whether the receiver is known non-null
++//     isExplicitTailCall - whether the call is an explicit tail call
++//     ilOffset           - IL offset of the call
++//
++// Returns:
++//     true if the call was transformed into a direct call.
++//
++// Notes:
++//     Only NativeAOT knows the classes that can implement or derive from a type (getExactClasses, from its
++//     whole program view). Guarded devirtualization uses them for up to a few classes with a type test per
++//     class. When the classes are more, but all of them resolve the call to one method - a class hierarchy
++//     whose members implement an interface or override a virtual once, at the root - no test is needed and
++//     the call becomes a direct call, with an explicit null check if the receiver may be null.
++//
++bool Compiler::impDevirtualizeToUniqueTarget(GenTreeCall*            call,
++                                             CORINFO_METHOD_HANDLE*  method,
++                                             unsigned*               methodFlags,
++                                             CORINFO_CONTEXT_HANDLE* contextHandle,
++                                             CORINFO_CONTEXT_HANDLE* exactContextHandle,
++                                             CORINFO_METHOD_HANDLE   baseMethod,
++                                             CORINFO_CLASS_HANDLE    objClass,
++                                             bool                    objIsNonNull,
++                                             bool                    isExplicitTailCall,
++                                             IL_OFFSET               ilOffset)
++{
++    if (!IsNativeAot() || !JitConfig.JitEnableExactDevirtualization() || (objClass == NO_CLASS_HANDLE) ||
++        call->IsGenericVirtual(this) || ((call->gtCallMoreFlags & GTF_CALL_M_GUARDED_DEVIRT) != 0))
++    {
++        return false;
++    }
++
++    const int            maxClasses = 64;
++    CORINFO_CLASS_HANDLE exactClasses[maxClasses];
++    const int            numClasses = info.compCompHnd->getExactClasses(objClass, maxClasses, exactClasses);
++    if (numClasses <= 0)
++    {
++        return false;
++    }
++
++    CORINFO_DEVIRTUALIZATION_INFO dvInfo;
++    CORINFO_METHOD_HANDLE         target = nullptr;
++    for (int i = 0; i < numClasses; i++)
++    {
++        if ((info.compCompHnd->getClassAttribs(exactClasses[i]) & CORINFO_FLG_VALUECLASS) != 0)
++        {
++            return false;
++        }
++
++        dvInfo.virtualMethod               = baseMethod;
++        dvInfo.objClass                    = exactClasses[i];
++        dvInfo.context                     = *contextHandle;
++        dvInfo.detail                      = CORINFO_DEVIRTUALIZATION_UNKNOWN;
++        dvInfo.pResolvedTokenVirtualMethod = nullptr;
++        if (!info.compCompHnd->resolveVirtualMethod(&dvInfo) || (dvInfo.devirtualizedMethod == nullptr) ||
++            ((target != nullptr) && (dvInfo.devirtualizedMethod != target)))
++        {
++            return false;
++        }
++
++        target = dvInfo.devirtualizedMethod;
++    }
++
++    // The classes share the target, not necessarily its lookup context: take the context of the class that
++    // declares it, which is only sound when its code is not shared between instantiations.
++    CORINFO_CLASS_HANDLE const ownerClass = info.compCompHnd->getMethodClass(target);
++    CORINFO_SIG_INFO           targetSig;
++    info.compCompHnd->getMethodSig(target, &targetSig);
++    if (targetSig.hasTypeArg() || ((info.compCompHnd->getClassAttribs(ownerClass) & CORINFO_FLG_SHAREDINST) != 0))
++    {
++        return false;
++    }
++
++    JITDUMP("All %d classes of %s resolve %s to %s: devirtualizing\n", numClasses, eeGetClassName(objClass),
++            eeGetMethodFullName(baseMethod), eeGetMethodFullName(target));
++
++    unsigned targetAttribs = info.compCompHnd->getMethodAttribs(target);
++
++    DevirtualizedCallInfo dcInfo;
++    dcInfo.tokenLookupContext    = MAKE_CLASSCONTEXT(ownerClass);
++    dcInfo.pInstParamLookup      = &dvInfo.instParamLookup;
++    dcInfo.pResolvedToken        = &dvInfo.resolvedTokenDevirtualizedMethod;
++    dcInfo.pUnboxedResolvedToken = &dvInfo.resolvedTokenDevirtualizedUnboxedMethod;
++    dcInfo.pMethSig              = &targetSig;
++    dcInfo.objIsNonNull          = objIsNonNull;
++    dcInfo.hadImplicitNullCheck  = true;
++    dcInfo.isDelegateCall        = false;
++    dcInfo.isExplicitTailCall    = isExplicitTailCall;
++    dcInfo.objClassIsExact       = false;
++    dcInfo.objClassIsFinal       = false;
++    dcInfo.ilOffset              = ilOffset;
++    impTransformDevirtualizedCall(call, &target, &targetAttribs, &dcInfo, compCurBB,
++                                  contextHandle COMMA_INDEBUG(baseMethod));
++
++    *method      = target;
++    *methodFlags = targetAttribs;
++    if (exactContextHandle != nullptr)
++    {
++        *exactContextHandle = dcInfo.tokenLookupContext;
++    }
++
++    return true;
++}
++
++//------------------------------------------------------------------------
+ // impTransformDevirtualizedCall: transform a resolved virtual call target
+ //    into a direct call.
+ //
