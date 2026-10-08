@@ -1,0 +1,163 @@
+Resolve static interface and GVM dispatch cells against per-module data looked up once (NativeAOT).
+
+Dispatch.ResolveDispatch runs on the first call through every dispatch cell, and again for each new
+receiver type at a polymorphic call site. Each time it called RhGetModuleSection two or three times (a
+linear scan of the module's ReadyToRun section table), re-initialized the module's native references
+table through RhFindBlob (one more scan), and rebuilt the NativeReader and NativeArray header for the
+cell-info section. None of that changes after the modules are loaded, so the cell regions, their decoded
+info arrays and the native references are now computed once per module, on the first resolution, and
+kept in a static array. Resolution itself is unchanged.
+
+Nethermind stateless guest on ZisK (ziskemu 1.3.0): ResolveDispatch 2,035 -> ~1,310 steps per
+resolution; 343 resolutions on block 26055159.
+  block 26055159 steps 56,072,171 -> 55,823,836 (-0.44%)
+  block 26112793 steps 131,086,840 -> 130,833,026 (-0.19%)
+Outputs identical on 11 mainnet blocks.
+
+diff --git a/src/coreclr/nativeaot/System.Private.CoreLib/src/Internal/Runtime/Dispatch.cs b/src/coreclr/nativeaot/System.Private.CoreLib/src/Internal/Runtime/Dispatch.cs
+--- a/src/coreclr/nativeaot/System.Private.CoreLib/src/Internal/Runtime/Dispatch.cs
++++ b/src/coreclr/nativeaot/System.Private.CoreLib/src/Internal/Runtime/Dispatch.cs
+@@ -16,22 +16,70 @@ namespace Internal.Runtime
+ {
+     internal static class Dispatch
+     {
++        // The module sections a static dispatch cell resolution reads never change once the modules are
++        // loaded, so they are looked up once instead of on every resolution. Concurrent first resolutions
++        // may each build the table; the copies are identical.
++        private static ModuleDispatchCells[] s_moduleDispatchCells;
++
++        private unsafe struct DispatchCellRegion
++        {
++            public DispatchCell* Start;
++            public DispatchCell* End;
++            public NativeArray CellInfo;
++
++            public DispatchCellRegion(TypeManagerHandle typeManager, ReadyToRunSectionType cellSection, ReadyToRunSectionType infoSection)
++            {
++                Start = (DispatchCell*)RuntimeImports.RhGetModuleSection(typeManager, cellSection, out int length);
++                End = (DispatchCell*)((byte*)Start + length);
++                CellInfo = default;
++                if (length != 0)
++                {
++                    byte* pInfo = (byte*)RuntimeImports.RhGetModuleSection(typeManager, infoSection, out int infoLength);
++                    CellInfo = new NativeArray(new NativeParser(new NativeReader(pInfo, checked((uint)infoLength)), 0));
++                }
++            }
++
++            public bool Contains(DispatchCell* pCell) => pCell >= Start && pCell < End;
++        }
++
++        private struct ModuleDispatchCells
++        {
++            public DispatchCellRegion InterfaceCells;
++            public DispatchCellRegion GvmCells;
++            public ExternalReferencesTable NativeReferences;
++        }
++
++        private static ModuleDispatchCells[] InitializeModuleDispatchCells()
++        {
++            ReadOnlySpan<TypeManagerHandle> modules = StartupCodeHelpers.GetLoadedModules();
++            var moduleDispatchCells = new ModuleDispatchCells[modules.Length];
++            for (int i = 0; i < modules.Length; i++)
++            {
++                ref ModuleDispatchCells module = ref moduleDispatchCells[i];
++                module.InterfaceCells = new DispatchCellRegion(modules[i], ReadyToRunSectionType.InterfaceDispatchCellRegion, ReadyToRunSectionType.InterfaceDispatchCellInfoRegion);
++                module.GvmCells = new DispatchCellRegion(modules[i], ReadyToRunSectionType.GvmDispatchCellRegion, ReadyToRunSectionType.GvmDispatchCellInfoRegion);
++                module.NativeReferences.InitializeNativeReferences(modules[i]);
++            }
++
++            return s_moduleDispatchCells = moduleDispatchCells;
++        }
++
+         [RuntimeExport("ResolveDispatch")]
+         internal static unsafe IntPtr ResolveDispatch(object pObject, DispatchCell* pCell)
+         {
+             // Assume this is a static dispatch cell first
+-            foreach (TypeManagerHandle typeManager in StartupCodeHelpers.GetLoadedModules())
++            ModuleDispatchCells[] moduleDispatchCells = s_moduleDispatchCells ?? InitializeModuleDispatchCells();
++            for (int i = 0; i < moduleDispatchCells.Length; i++)
+             {
+-                var pDispatchCellRegion = (DispatchCell*)RuntimeImports.RhGetModuleSection(typeManager, ReadyToRunSectionType.InterfaceDispatchCellRegion, out int length);
+-                if ((byte*)pCell >= (byte*)pDispatchCellRegion && (byte*)pCell < (byte*)pDispatchCellRegion + length)
++                ref ModuleDispatchCells module = ref moduleDispatchCells[i];
++                if (module.InterfaceCells.Contains(pCell))
+                 {
+-                    return ResolveStaticInterfaceDispatch(typeManager, pObject, (nuint)(pCell - pDispatchCellRegion));
++                    return ResolveStaticInterfaceDispatch(ref module, pObject, (nuint)(pCell - module.InterfaceCells.Start));
+                 }
+ 
+-                pDispatchCellRegion = (DispatchCell*)RuntimeImports.RhGetModuleSection(typeManager, ReadyToRunSectionType.GvmDispatchCellRegion, out length);
+-                if ((byte*)pCell >= (byte*)pDispatchCellRegion && (byte*)pCell < (byte*)pDispatchCellRegion + length)
++                if (module.GvmCells.Contains(pCell))
+                 {
+-                    return ResolveGvmDispatch(typeManager, pObject, (nuint)(pCell - pDispatchCellRegion));
++                    return ResolveGvmDispatch(ref module, pObject, (nuint)(pCell - module.GvmCells.Start));
+                 }
+             }
+ 
+@@ -53,36 +101,28 @@ namespace Internal.Runtime
+             return CachedInterfaceDispatch.RhResolveDispatchWorker(pObject, (MethodTable*)pDynamicInterfaceCell->InterfaceType, (ushort)pDynamicInterfaceCell->Slot);
+         }
+ 
+-        private static unsafe IntPtr ResolveStaticInterfaceDispatch(TypeManagerHandle typeManager, object pObject, nuint cellIndex)
++        private static unsafe IntPtr ResolveStaticInterfaceDispatch(ref ModuleDispatchCells module, object pObject, nuint cellIndex)
+         {
+-            NativeParser parser = GetDispatchCellInfo(
+-                typeManager,
+-                ReadyToRunSectionType.InterfaceDispatchCellInfoRegion,
+-                checked((uint)cellIndex),
+-                out ExternalReferencesTable externalReferences);
++            NativeParser parser = GetDispatchCellInfo(ref module.InterfaceCells.CellInfo, checked((uint)cellIndex));
+ 
+             uint interfaceTypeIndex = parser.GetUnsigned();
+             uint slot = parser.GetUnsigned();
+ 
+-            MethodTable* interfaceType = (MethodTable*)externalReferences.GetIntPtrFromIndex(interfaceTypeIndex);
++            MethodTable* interfaceType = (MethodTable*)module.NativeReferences.GetIntPtrFromIndex(interfaceTypeIndex);
+             return CachedInterfaceDispatch.RhResolveDispatchWorker(pObject, interfaceType, checked((ushort)slot));
+         }
+ 
+-        private static unsafe IntPtr ResolveGvmDispatch(TypeManagerHandle typeManager, object pObject, nuint cellIndex)
++        private static unsafe IntPtr ResolveGvmDispatch(ref ModuleDispatchCells module, object pObject, nuint cellIndex)
+         {
+-            NativeParser parser = GetDispatchCellInfo(
+-                typeManager,
+-                ReadyToRunSectionType.GvmDispatchCellInfoRegion,
+-                checked((uint)cellIndex),
+-                out ExternalReferencesTable externalReferences);
++            NativeParser parser = GetDispatchCellInfo(ref module.GvmCells.CellInfo, checked((uint)cellIndex));
+ 
+             uint owningTypeIndex = parser.GetUnsigned();
+             uint instantiationIndex = parser.GetUnsigned();
+             uint token = parser.GetUnsigned();
+             uint isAsyncVariant = parser.GetUnsigned();
+ 
+-            MethodTable* owningType = (MethodTable*)externalReferences.GetIntPtrFromIndex(owningTypeIndex);
+-            void* instantiation = (void*)externalReferences.GetIntPtrFromIndex(instantiationIndex);
++            MethodTable* owningType = (MethodTable*)module.NativeReferences.GetIntPtrFromIndex(owningTypeIndex);
++            void* instantiation = (void*)module.NativeReferences.GetIntPtrFromIndex(instantiationIndex);
+ 
+             return RuntimeAugments.TypeLoaderCallbacks.ResolveGenericVirtualMethodTarget(
+                 new RuntimeTypeHandle(pObject.GetMethodTable()),
+@@ -93,20 +133,8 @@ namespace Internal.Runtime
+                 isMethodInstantiationDataRelative: MethodTable.SupportsRelativePointers);
+         }
+ 
+-        private static unsafe NativeParser GetDispatchCellInfo(
+-            TypeManagerHandle typeManager,
+-            ReadyToRunSectionType section,
+-            uint cellIndex,
+-            out ExternalReferencesTable externalReferences)
++        private static NativeParser GetDispatchCellInfo(ref NativeArray entries, uint cellIndex)
+         {
+-            byte* pInfo = (byte*)RuntimeImports.RhGetModuleSection(typeManager, section, out int length);
+-
+-            externalReferences = default;
+-            externalReferences.InitializeNativeReferences(typeManager);
+-
+-            NativeReader reader = new NativeReader(pInfo, checked((uint)length));
+-            NativeArray entries = new NativeArray(new NativeParser(reader, 0));
+-
+             NativeParser parser;
+             while (!entries.TryGetAt(cellIndex, out parser))
+             {
