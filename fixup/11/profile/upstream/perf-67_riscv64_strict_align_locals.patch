@@ -29,14 +29,10 @@ diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
 index ce453ec..4db10e7 100644
 --- a/src/coreclr/jit/lower.cpp
 +++ b/src/coreclr/jit/lower.cpp
-@@ -9129,6 +9129,14 @@ PhaseStatus Lowering::DoPhase()
+@@ -9129,6 +9129,10 @@ PhaseStatus Lowering::DoPhase()
          MapParameterRegisterLocals();
      }
  
-+#ifdef TARGET_RISCV64
-+    ComputeAlignedLocals();
-+#endif
-+
 +#ifdef TARGET_RISCV64
 +    ComputeAlignedLocals();
 +#endif
@@ -176,7 +172,7 @@ index 5cd521e..7f921b9 100644
 -            // base + (index << n) / base + index * n, either order
 -            for (int i = 0; i < 2; i++)
 +            ssize_t sh = shift->AsIntCon()->IconValue();
-+            if ((sh < 0) || (sh >= 64))
++            if ((sh < 0) || (sh >= (ssize_t)(genTypeSize(node->TypeGet()) * 8)))
              {
 -                GenTree* base = (i == 0) ? op1 : op2;
 -                GenTree* idx  = (i == 0) ? op2 : op1;
