@@ -1,0 +1,72 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lukasz.rozmej <lukasz.rozmej@gmail.com>
+Date: Tue, 13 Oct 2026 11:30:00 +0200
+Subject: [PATCH] [NativeAOT] riscv64: keep the array size across the TLS call
+ in NEW_ARRAY_FAST
+
+RhNewString, RhpNewArrayFast and RhpNewPtrArrayFast compute the allocation
+size in t0 and then expand NEW_ARRAY_FAST, which calls __tls_get_addr
+(INLINE_GET_ALLOC_CONTEXT_BASE) before comparing t0 against the space left
+in the alloc context. t0 is caller-saved, and the macro's own comment says
+the call trashes volatile registers: the first call on a thread may run
+the dynamic TLS allocation path (malloc/memset), and any build of
+__tls_get_addr is free to use t0.
+
+A clobbered size makes the fast path bump the alloc pointer by the wrong
+amount: an array that overlaps the next allocation, or a fit check that
+passes for an array that does not fit. It has not shown up because the
+first allocation on a thread has an empty alloc context and takes the slow
+path, which ignores t0, and once the TLS block exists __tls_get_addr
+typically returns without touching t0. RhpNewFast is unaffected: it loads
+the base size after the call.
+
+Spill t0 to the frame across the call. The frame grows from 0x20 to 0x30
+to keep sp 16-byte aligned; the fast path gains one sd and one ld.
+---
+ src/coreclr/runtime/riscv64/AllocFast.S | 11 ++++++++---
+ 1 file changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/src/coreclr/runtime/riscv64/AllocFast.S b/src/coreclr/runtime/riscv64/AllocFast.S
+--- a/src/coreclr/runtime/riscv64/AllocFast.S
++++ b/src/coreclr/runtime/riscv64/AllocFast.S
+@@ -116,16 +116,21 @@ LOCAL_LABEL(NewOutOfMemory):
+ //  t0 == string/array size
+     .macro NEW_ARRAY_FAST
+ 
+-        PROLOG_SAVE_REG_PAIR_INDEXED  fp, ra, 0x20
++        PROLOG_SAVE_REG_PAIR_INDEXED  fp, ra, 0x30
+         PROLOG_SAVE_REG_PAIR          s1, s2, 0x10
+ 
+         // Save MethodTable pointer and string length
+         mv    s1, a0
+         mv    s2, a1
+ 
++        // Keep the size across the call below
++        sd    t0, 0x20(sp)
++
+         // a0 = ee_alloc_context pointer; trashes volatile registers
+         INLINE_GET_ALLOC_CONTEXT_BASE
+ 
++        ld    t0, 0x20(sp)
++
+         // s1 == MethodTable
+         // s2 == element count
+         // t0 == string/array size
+@@ -155,7 +160,7 @@ LOCAL_LABEL(NewOutOfMemory):
+         mv    a0, t1
+ 
+         EPILOG_RESTORE_REG_PAIR          s1, s2, 0x10
+-        EPILOG_RESTORE_REG_PAIR_INDEXED  fp, ra, 0x20
++        EPILOG_RESTORE_REG_PAIR_INDEXED  fp, ra, 0x30
+ 
+         ret
+ 
+@@ -164,7 +169,7 @@ LOCAL_LABEL(NewOutOfMemory):
+         mv    a1, s2
+ 
+         EPILOG_RESTORE_REG_PAIR          s1, s2, 0x10
+-        EPILOG_RESTORE_REG_PAIR_INDEXED  fp, ra, 0x20
++        EPILOG_RESTORE_REG_PAIR_INDEXED  fp, ra, 0x30
+ 
+         tail  C_FUNC(RhpNewVariableSizeObject)
+ 
