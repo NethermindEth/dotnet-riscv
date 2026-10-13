@@ -197,7 +197,7 @@ diff --git a/src/coreclr/jit/objectalloc.cpp b/src/coreclr/jit/objectalloc.cpp
 index 2b62ef110..7952e45ec 100644
 --- a/src/coreclr/jit/objectalloc.cpp
 +++ b/src/coreclr/jit/objectalloc.cpp
-@@ -1797,12 +1797,27 @@ GenTree* ObjectAllocator::MorphAllocObjNodeIntoHelperCall(GenTreeAllocObj* alloc
+@@ -1810,12 +1810,27 @@ GenTree* ObjectAllocator::MorphAllocObjNodeIntoHelperCall(GenTreeAllocObj* alloc
              m_compiler->lvaTable[cellLcl].lvType = TYP_I_IMPL;
              m_compiler->lvaTable[objLcl].lvType  = TYP_I_IMPL;
              m_compiler->lvaTable[hdrLcl].lvType  = TYP_I_IMPL;
@@ -229,7 +229,7 @@ index 2b62ef110..7952e45ec 100644
              GenTree* storeObj =
                  m_compiler->gtNewStoreLclVarNode(objLcl, m_compiler->gtNewOperNode(GT_SUB, TYP_I_IMPL, cur,
                                                                        m_compiler->gtNewIconNode(payload, TYP_I_IMPL)));
-@@ -1812,11 +1827,10 @@ GenTree* ObjectAllocator::MorphAllocObjNodeIntoHelperCall(GenTreeAllocObj* alloc
+@@ -1825,11 +1840,10 @@ GenTree* ObjectAllocator::MorphAllocObjNodeIntoHelperCall(GenTreeAllocObj* alloc
                  hdrLcl, m_compiler->gtNewOperNode(GT_SUB, TYP_I_IMPL, m_compiler->gtNewLclvNode(objLcl, TYP_I_IMPL),
                                              m_compiler->gtNewIconNode(8, TYP_I_IMPL)));
  
@@ -245,7 +245,7 @@ index 2b62ef110..7952e45ec 100644
  
              // Guard: fail fast when hdr <= floor. GT_BOUNDS_CHECK traps on
              // (unsigned)index >= (unsigned)length, so index = floor, length = hdr.
-@@ -1831,8 +1845,8 @@ GenTree* ObjectAllocator::MorphAllocObjNodeIntoHelperCall(GenTreeAllocObj* alloc
+@@ -1844,8 +1858,8 @@ GenTree* ObjectAllocator::MorphAllocObjNodeIntoHelperCall(GenTreeAllocObj* alloc
              guard->gtInxType = TYP_I_IMPL;
  
              // *(intptr*)cell = hdr

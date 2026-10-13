@@ -24,7 +24,7 @@ diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues
 diff --git a/src/coreclr/jit/objectalloc.cpp b/src/coreclr/jit/objectalloc.cpp
 --- a/src/coreclr/jit/objectalloc.cpp
 +++ b/src/coreclr/jit/objectalloc.cpp
-@@ -1632,6 +1632,150 @@ GenTree* ObjectAllocator::MorphAllocObjNodeIntoHelperCall(GenTreeAllocObj* alloc
+@@ -1632,6 +1632,163 @@ GenTree* ObjectAllocator::MorphAllocObjNodeIntoHelperCall(GenTreeAllocObj* alloc
      }
  #endif
  
@@ -89,7 +89,20 @@ diff --git a/src/coreclr/jit/objectalloc.cpp b/src/coreclr/jit/objectalloc.cpp
 +        {
 +            const unsigned MIN_OBJ_SIZE = 0x18;
 +
-+            unsigned baseSize = comp->info.compCompHnd->getHeapClassSize(allocObj->gtAllocObjClsHnd);
++            // For a box, gtAllocObjClsHnd is the value class, whose size does not
++            // include the MethodTable pointer that a reference class's heap size
++            // does: size it as GetBoxedLayout does.
++            CORINFO_CLASS_HANDLE clsHnd = allocObj->gtAllocObjClsHnd;
++            unsigned             baseSize;
++            if (comp->info.compCompHnd->isValueClass(clsHnd))
++            {
++                CORINFO_CLASS_HANDLE boxedClsHnd = comp->info.compCompHnd->getTypeForBox(clsHnd);
++                baseSize = TARGET_POINTER_SIZE + comp->info.compCompHnd->getClassSize(boxedClsHnd);
++            }
++            else
++            {
++                baseSize = comp->info.compCompHnd->getHeapClassSize(clsHnd);
++            }
 +            if (baseSize < MIN_OBJ_SIZE)
 +            {
 +                baseSize = MIN_OBJ_SIZE;
