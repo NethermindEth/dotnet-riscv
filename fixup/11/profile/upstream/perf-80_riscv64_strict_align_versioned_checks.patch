@@ -1,0 +1,739 @@
+Strict alignment: test a base once for a run of accesses through it (applies after perf-76).
+
+Under JitRiscV64StrictAlign every access whose address the JIT cannot prove aligned tests that address
+(andi + beqz), even when an access just before it in the same block tested the same base: the fields
+of a struct passed by reference, the words of a buffer. On the Nethermind SP1 guest, 44% of the tests
+left after perf-76 repeat one made earlier in the function.
+
+Lowering now versions such runs before it lowers the blocks (VersionAlignmentChecks). For the run of
+a block that holds the most tested accesses through one local, the block is split so the run is entered
+through a single test of that local:
+
+    prefix
+    andi  t, base, size-1
+    bnez  t, slow
+    run                  ; base aligned: KnownAlignmentLog2 proves the accesses, no tests
+  rest:
+    ...
+  slow:                  ; rarely run, out of line
+    clone of run         ; every access keeps its test
+    j     rest
+
+The aligned run records the tested alignment as a fact of its block, which KnownAlignmentLog2 reads
+for that local while the block is lowered. A run starts at a statement and ends at its last access; it
+holds no store to the local (or the struct it is a field of) and only simple nodes (no calls, no struct
+values), which the clone copies node for node. Values the run computes for the rest of a statement go
+through temps. The prefix, the aligned run and the rest are searched again for other locals, and the
+clones are capped at the node count of the method. ContainCheckIndir also clears the unaligned flag the
+front end set (Unsafe.ReadUnaligned etc.) on an access whose address it proves aligned.
+
+Nethermind stateless guest on SP1 (sp1-runner v6.6.0, master cd336c4ccc), on top of perf-76, cycles:
+  block 26055159: 102,844,417 -> 101,351,395 (-1.45%), gas -0.59%
+  block 26112793: 226,298,346 -> 222,697,765 (-1.59%), gas -0.74%
+  geomean over 11 mainnet blocks: cycles -1.54%, gas -0.70%; outputs identical on all 11.
+Clearing the front-end flag alone is -0.22% on both blocks. Only builds with JitRiscV64StrictAlign
+change: the ZisK guest builds byte-identical.
+Regression test: tools/tests/StrictAlignment/FastPath.
+
+--- a/src/coreclr/jit/lower.cpp
++++ b/src/coreclr/jit/lower.cpp
+@@ -9162,6 +9162,7 @@
+ 
+ #ifdef TARGET_RISCV64
+     ComputeAlignedLocals();
++    VersionAlignmentChecks();
+ #endif
+ 
+     for (BasicBlock* const block : m_compiler->Blocks())
+@@ -9176,9 +9177,21 @@
+         }
+ #endif //! TARGET_64BIT
+ 
++#ifdef TARGET_RISCV64
++        m_alignFacts = nullptr;
++        if (m_blockAlignFacts != nullptr)
++        {
++            m_blockAlignFacts->Lookup(block, &m_alignFacts);
++        }
++#endif
++
+         LowerBlock(block);
+     }
+ 
++#ifdef TARGET_RISCV64
++    m_alignFacts = nullptr;
++#endif
++
+     AfterLowerBlocks();
+ 
+ #ifdef DEBUG
+--- a/src/coreclr/jit/lower.h
++++ b/src/coreclr/jit/lower.h
+@@ -185,6 +185,19 @@
+     // created during lowering are past m_lclAlignCount and unknown.
+     unsigned char* m_lclAlignLog2  = nullptr;
+     unsigned       m_lclAlignCount = 0;
++    // A local that holds a value aligned to 1 << log2 throughout a block (see VersionAlignmentChecks).
++    struct AlignFact
++    {
++        unsigned         lclNum;
++        unsigned         log2;
++        const AlignFact* next;
++    };
++    typedef JitHashTable<BasicBlock*, JitPtrKeyFuncs<BasicBlock>, const AlignFact*> BlockAlignFacts;
++    BlockAlignFacts* m_blockAlignFacts = nullptr;
++    // The facts of the block being lowered (or analyzed by VersionAlignmentChecks).
++    const AlignFact* m_alignFacts = nullptr;
++    void             VersionAlignmentChecks();
++    bool             TryVersionAlignmentChecks(BasicBlock* block, ArrayStack<BasicBlock*>* work, unsigned* budget);
+     void     RemoveRedundantExtensions();
+     void     MarkZeroExtendedLoads();
+     void     TryTailCallNoReturn(GenTreeCall* call);
+--- a/src/coreclr/jit/lowerriscv64.cpp
++++ b/src/coreclr/jit/lowerriscv64.cpp
+@@ -1209,7 +1209,8 @@
+ // handles (statics, string literals, frozen objects) at least pointer-aligned. Arithmetic keeps the low zero bits it can prove:
+ // a sum, difference or OR has as many as the weaker operand, a shift by n adds n, a product adds both
+ // operands', an AND has at least the stronger operand's (masking only clears bits) and an integral cast
+-// keeps them. A local has the alignment ComputeAlignedLocals found for every value stored to it.
++// keeps them. A local has the alignment ComputeAlignedLocals found for every value stored to it, or
++// the one VersionAlignmentChecks tested on entry to the block being lowered.
+ // Everything else - a byref parameter, a load from memory - is unknown.
+ //
+ unsigned Lowering::KnownAlignmentLog2(GenTree* node, int depth) const
+@@ -1240,7 +1241,15 @@
+         case GT_LCL_VAR:
+         {
+             unsigned lclNum = node->AsLclVar()->GetLclNum();
+-            return (lclNum < m_lclAlignCount) ? m_lclAlignLog2[lclNum] : 0;
++            unsigned log2   = (lclNum < m_lclAlignCount) ? m_lclAlignLog2[lclNum] : 0;
++            for (const AlignFact* fact = m_alignFacts; fact != nullptr; fact = fact->next)
++            {
++                if (fact->lclNum == lclNum)
++                {
++                    log2 = max(log2, fact->log2);
++                }
++            }
++            return log2;
+         }
+ 
+         case GT_LCL_ADDR:
+@@ -1419,6 +1428,595 @@
+     } while (changed);
+ }
+ 
++// Nodes VersionAlignmentChecks clones: no calls, no struct or SIMD values, nothing that throws other
++// than a null dereference or a bounds check (whose throw block the EH region shares).
++static bool IsAlignmentVersionableNode(GenTree* node)
++{
++    if (varTypeIsStruct(node) || node->gtOverflowEx())
++    {
++        return false;
++    }
++
++    switch (node->OperGet())
++    {
++        case GT_IL_OFFSET:
++        case GT_LCL_VAR:
++        case GT_LCL_FLD:
++        case GT_LCL_ADDR:
++        case GT_STORE_LCL_VAR:
++        case GT_STORE_LCL_FLD:
++        case GT_CNS_INT:
++        case GT_CNS_LNG:
++        case GT_CNS_DBL:
++        case GT_IND:
++        case GT_STOREIND:
++        case GT_NULLCHECK:
++        case GT_BOUNDS_CHECK:
++        case GT_ARR_ADDR:
++        case GT_ADD:
++        case GT_SUB:
++        case GT_MUL:
++        case GT_MULHI:
++        case GT_AND:
++        case GT_OR:
++        case GT_XOR:
++        case GT_LSH:
++        case GT_RSH:
++        case GT_RSZ:
++        case GT_ROL:
++        case GT_ROR:
++        case GT_NEG:
++        case GT_NOT:
++        case GT_BSWAP:
++        case GT_BSWAP16:
++        case GT_CAST:
++        case GT_EQ:
++        case GT_NE:
++        case GT_LT:
++        case GT_LE:
++        case GT_GT:
++        case GT_GE:
++            return true;
++
++        default:
++            return false;
++    }
++}
++
++//------------------------------------------------------------------------
++// CloneAlignmentVersionedRange: append a copy of the complete trees [first..last] to `range`.
++//
++// Return Value:
++//    false if a node of the range is used outside of it.
++//
++// Notes:
++//    gtCloneExpr copies the tree of each root of the range (a node nothing uses: a store, an unused
++//    value, or a store of a CSE embedded in another tree); the copies are then threaded in the order
++//    of the originals, so the clone evaluates exactly as the original does. IL offsets are debug info
++//    and are not copied.
++//
++static bool CloneAlignmentVersionedRange(Compiler* compiler, GenTree* first, GenTree* last, LIR::Range* range)
++{
++    CompAllocator                                             alloc = compiler->getAllocator(CMK_Lower);
++    JitHashTable<GenTree*, JitPtrKeyFuncs<GenTree>, GenTree*> copies(alloc);
++    ArrayStack<GenTree*>                                      origStack(alloc);
++    ArrayStack<GenTree*>                                      copyStack(alloc);
++
++    unsigned nodeCount = 0;
++    for (GenTree* node = first;; node = node->gtNext)
++    {
++        if (!node->OperIs(GT_IL_OFFSET))
++        {
++            nodeCount++;
++            if (!node->IsValue() || node->IsUnusedValue())
++            {
++                GenTree* const root = compiler->gtCloneExpr(node);
++                if (node->IsUnusedValue())
++                {
++                    root->SetUnusedValue();
++                }
++                origStack.Push(node);
++                copyStack.Push(root);
++                while (!origStack.Empty())
++                {
++                    GenTree* const orig = origStack.Pop();
++                    GenTree* const copy = copyStack.Pop();
++                    if ((copy->OperGet() != orig->OperGet()) || copies.Lookup(orig))
++                    {
++                        return false;
++                    }
++                    copies.Set(orig, copy);
++
++                    unsigned origCount = 0;
++                    orig->VisitOperands([&](GenTree* operand) {
++                        origStack.Push(operand);
++                        origCount++;
++                        return GenTree::VisitResult::Continue;
++                    });
++                    unsigned copyCount = 0;
++                    copy->VisitOperands([&](GenTree* operand) {
++                        copyStack.Push(operand);
++                        copyCount++;
++                        return GenTree::VisitResult::Continue;
++                    });
++                    if (origCount != copyCount)
++                    {
++                        return false;
++                    }
++                }
++            }
++        }
++        if (node == last)
++        {
++            break;
++        }
++    }
++    if (copies.GetCount() != nodeCount)
++    {
++        return false;
++    }
++
++    for (GenTree* node = first;; node = node->gtNext)
++    {
++        GenTree* copy;
++        if (copies.Lookup(node, &copy))
++        {
++            copy->gtPrev = nullptr;
++            copy->gtNext = nullptr;
++            range->InsertAtEnd(copy);
++        }
++        if (node == last)
++        {
++            break;
++        }
++    }
++    return true;
++}
++
++//------------------------------------------------------------------------
++// VersionAlignmentChecks: test the alignment of a base local once for a run of accesses through it.
++//
++// Notes:
++//    Under strict alignment each access whose address cannot be proven aligned tests it at run time.
++//    A block often accesses one base several times (the fields of a struct passed by reference, the
++//    words of a buffer) and every access repeats the test. For the run of a block that holds the most
++//    such accesses through one local, the block is split so the run is entered through a single test
++//    of that local:
++//
++//        prefix
++//        if ((base & (size - 1)) != 0) goto slow
++//        run                 // base aligned: the accesses need no test
++//      rest:
++//        ...
++//
++//      slow:                 // rarely run, out of line
++//        clone of run        // every access keeps its test
++//        goto rest
++//
++//    A run starts at a statement and ends at its last access. It holds no store to the local, so the
++//    test holds for all of it, and only simple nodes (IsAlignmentVersionableNode), which are cloned
++//    node for node. When it ends inside a statement, the values it computed for the rest of that
++//    statement go through temps. This runs before the blocks are lowered: the aligned run records the
++//    alignment of the local as a fact of its block, which KnownAlignmentLog2 uses, so lowering proves
++//    the accesses. The prefix, the aligned run and the rest are searched again, for other locals. The
++//    clones are limited to as many nodes as the method has.
++//
++void Lowering::VersionAlignmentChecks()
++{
++    // m_lclAlignLog2 is set when strict alignment applies and the method is optimized (see
++    // ComputeAlignedLocals). A single-block method with a tail call relies on staying a single block
++    // (see LowerFastTailCall).
++    if ((m_lclAlignLog2 == nullptr) || (m_compiler->fgFirstColdBlock != nullptr) ||
++        (m_compiler->compTailCallUsed && (m_compiler->fgBBcount == 1)))
++    {
++        return;
++    }
++
++    ArrayStack<BasicBlock*> work(m_compiler->getAllocator(CMK_Lower));
++    unsigned                budget = 0;
++    for (BasicBlock* const block : m_compiler->Blocks())
++    {
++        work.Push(block);
++        for (GenTree* const node : LIR::AsRange(block))
++        {
++            budget++;
++        }
++    }
++
++    bool changed = false;
++    while (!work.Empty())
++    {
++        changed |= TryVersionAlignmentChecks(work.Pop(), &work, &budget);
++    }
++
++    m_alignFacts = nullptr;
++    if (changed)
++    {
++        m_compiler->fgInvalidateDfsTree();
++    }
++}
++
++//------------------------------------------------------------------------
++// TryVersionAlignmentChecks: version the best run of `block` (see VersionAlignmentChecks).
++//
++// Arguments:
++//    block  - the block to search
++//    work   - receives the aligned run and the rest of the block when the block is split
++//    budget - the number of nodes that may still be cloned; reduced by the clone
++//
++// Return Value:
++//    true if the block was split.
++//
++bool Lowering::TryVersionAlignmentChecks(BasicBlock* block, ArrayStack<BasicBlock*>* work, unsigned* budget)
++{
++    if (!block->KindIs(BBJ_ALWAYS, BBJ_COND, BBJ_RETURN, BBJ_THROW, BBJ_SWITCH) || block->isRunRarely())
++    {
++        return false;
++    }
++
++    m_alignFacts = nullptr;
++    if (m_blockAlignFacts != nullptr)
++    {
++        m_blockAlignFacts->Lookup(block, &m_alignFacts);
++    }
++
++    // A local whose value only changes through stores in the block's LIR.
++    auto isBaseLocal = [this](GenTree* node) {
++        if (!node->OperIs(GT_LCL_VAR) || !node->TypeIs(TYP_BYREF, TYP_I_IMPL))
++        {
++            return false;
++        }
++        const unsigned   lclNum = node->AsLclVar()->GetLclNum();
++        const LclVarDsc* varDsc = m_compiler->lvaGetDesc(lclNum);
++        return (lclNum < m_lclAlignCount) && !varDsc->IsAddressExposed() && !varDsc->lvPromoted &&
++               (genActualType(varDsc->TypeGet()) == node->TypeGet()) &&
++               (!varDsc->lvIsStructField || !m_compiler->lvaGetDesc(varDsc->lvParentLcl)->IsAddressExposed());
++    };
++
++    // An access lowering will test at run time, through a base local plus a multiple of its size.
++    auto isTestedAccess = [this, &isBaseLocal](GenTreeIndir* indir, unsigned* lclNum, unsigned* size) {
++        const unsigned accessSize = genTypeSize(indir->TypeGet());
++        GenTree*       addr       = indir->Addr();
++        if (indir->TypeIs(TYP_STRUCT) || (accessSize <= 1) || IsAddrKnownAligned(addr, accessSize))
++        {
++            return false;
++        }
++        ssize_t offset = 0;
++        if (addr->OperIs(GT_ADD) && !addr->gtOverflow())
++        {
++            GenTree* base  = addr->gtGetOp1();
++            GenTree* other = addr->gtGetOp2();
++            if (base->IsCnsIntOrI())
++            {
++                std::swap(base, other);
++            }
++            if (!other->IsCnsIntOrI() || other->IsIconHandle())
++            {
++                return false;
++            }
++            offset = other->AsIntCon()->IconValue();
++            addr   = base;
++        }
++        if (((offset % (ssize_t)accessSize) != 0) || !isBaseLocal(addr))
++        {
++            return false;
++        }
++        *lclNum = addr->AsLclVar()->GetLclNum();
++        *size   = accessSize;
++        return true;
++    };
++
++    // In LIR order: the tested accesses through a local, the stores to a local or its address, and the
++    // nodes the clone cannot copy.
++    enum class EventKind
++    {
++        Access,
++        Store,
++        Opaque,
++    };
++    struct Event
++    {
++        unsigned  pos;
++        EventKind kind;
++        unsigned  lclNum;
++        unsigned  size;
++        bool      canEndRun;
++    };
++
++    CompAllocator        alloc = m_compiler->getAllocator(CMK_Lower);
++    ArrayStack<GenTree*> nodes(alloc);
++    ArrayStack<unsigned> stmtStart(alloc);
++    ArrayStack<Event>    events(alloc);
++    ArrayStack<unsigned> accessLcls(alloc);
++    ArrayStack<GenTree*> pendingValues(alloc);
++
++    JitHashTable<GenTree*, JitPtrKeyFuncs<GenTree>, GenTree*> users(alloc);
++    for (GenTree* const node : LIR::AsRange(block))
++    {
++        node->VisitOperands([&](GenTree* operand) {
++            users.Set(operand, node);
++            return GenTree::VisitResult::Continue;
++        });
++    }
++
++    // A run that ends inside a statement passes the values it computed for the rest of the statement
++    // through temps. A value can go through a temp unless its user needs the node itself: a constant
++    // (an immediate), an address the user takes apart, a compare a branch consumes, or anything a call
++    // or another opaque node other than a return consumes.
++    auto canPassThroughTemp = [&users](GenTree* value) {
++        GenTree* user;
++        if (!users.Lookup(value, &user) || value->OperIsConst() || value->OperIs(GT_LCL_ADDR, GT_ARR_ADDR) ||
++            value->OperIsCompare())
++        {
++            return false;
++        }
++        return IsAlignmentVersionableNode(user) || user->OperIs(GT_RETURN);
++    };
++
++    // Before lowering, a block is a sequence of complete trees: a statement ends where no value waits
++    // for its user.
++    unsigned curStmtStart = 0;
++    for (GenTree* const node : LIR::AsRange(block))
++    {
++        const unsigned pos = (unsigned)nodes.Height();
++        if (pendingValues.Empty())
++        {
++            curStmtStart = pos;
++        }
++        nodes.Push(node);
++        stmtStart.Push(curStmtStart);
++
++        bool consumed = true;
++        node->VisitOperands([&](GenTree* operand) {
++            int i = pendingValues.Height() - 1;
++            while ((i >= 0) && (pendingValues.Bottom(i) != operand))
++            {
++                i--;
++            }
++            if (i < 0)
++            {
++                consumed = false;
++                return GenTree::VisitResult::Abort;
++            }
++            for (; i < pendingValues.Height() - 1; i++)
++            {
++                pendingValues.BottomRef(i) = pendingValues.Bottom(i + 1);
++            }
++            pendingValues.Pop();
++            return GenTree::VisitResult::Continue;
++        });
++        if (!consumed)
++        {
++            return false;
++        }
++        if (node->IsValue() && !node->IsUnusedValue())
++        {
++            pendingValues.Push(node);
++        }
++
++        unsigned lclNum;
++        unsigned size;
++        if (!IsAlignmentVersionableNode(node))
++        {
++            events.Push({pos, EventKind::Opaque, BAD_VAR_NUM, 0, false});
++        }
++        else if (node->OperIsLocalStore() || node->OperIs(GT_LCL_ADDR))
++        {
++            events.Push({pos, EventKind::Store, node->AsLclVarCommon()->GetLclNum(), 0, false});
++        }
++        else if (node->OperIs(GT_IND, GT_STOREIND) && isTestedAccess(node->AsIndir(), &lclNum, &size))
++        {
++            bool canEndRun = true;
++            for (int i = 0; canEndRun && (i < pendingValues.Height()); i++)
++            {
++                canEndRun = canPassThroughTemp(pendingValues.Bottom(i));
++            }
++            events.Push({pos, EventKind::Access, lclNum, size, canEndRun});
++            accessLcls.Push(lclNum);
++        }
++    }
++    if (!pendingValues.Empty() || (accessLcls.Height() < 2))
++    {
++        return false;
++    }
++
++    // A run of a local starts at a statement and ends at a tested access through it. It holds no store
++    // to the local (or to the struct it is a field of) and no opaque node, and a statement where one
++    // occurs cannot start a run. The best run holds the most tested accesses through its local, at
++    // least two, and the fewest nodes on a tie.
++    unsigned bestLcl   = BAD_VAR_NUM;
++    unsigned bestStart = 0;
++    unsigned bestEnd   = 0;
++    unsigned bestCount = 1;
++    unsigned bestSize  = 0;
++
++    JitHashTable<unsigned, JitSmallPrimitiveKeyFuncs<unsigned>, bool> searched(alloc);
++    for (int i = 0; i < accessLcls.Height(); i++)
++    {
++        const unsigned lclNum = accessLcls.Bottom(i);
++        if (searched.Lookup(lclNum))
++        {
++            continue;
++        }
++        searched.Set(lclNum, true);
++
++        const LclVarDsc* const varDsc    = m_compiler->lvaGetDesc(lclNum);
++        const unsigned         parentLcl = varDsc->lvIsStructField ? varDsc->lvParentLcl : BAD_VAR_NUM;
++
++        // The run so far, and the longest prefix of it that can end the run.
++        bool     open     = false;
++        unsigned start    = 0;
++        unsigned size     = 0;
++        unsigned count    = 0;
++        unsigned endCount = 0;
++        unsigned end      = 0;
++        unsigned endSize  = 0;
++        unsigned blocked  = UINT_MAX;
++        for (int e = 0; e <= events.Height(); e++)
++        {
++            if (e < events.Height())
++            {
++                const Event& event = events.Bottom(e);
++                if (event.kind == EventKind::Access)
++                {
++                    if (event.lclNum != lclNum)
++                    {
++                        continue;
++                    }
++                    if (!open)
++                    {
++                        if (stmtStart.Bottom(event.pos) == blocked)
++                        {
++                            continue;
++                        }
++                        open  = true;
++                        start = stmtStart.Bottom(event.pos);
++                    }
++                    count++;
++                    size = max(size, event.size);
++                    if (event.canEndRun)
++                    {
++                        endCount = count;
++                        end      = event.pos;
++                        endSize  = size;
++                    }
++                    continue;
++                }
++                if ((event.kind == EventKind::Store) && (event.lclNum != lclNum) && (event.lclNum != parentLcl))
++                {
++                    continue;
++                }
++                blocked = stmtStart.Bottom(event.pos);
++            }
++
++            const unsigned nodeCount = end - start + 1;
++            if (open && (endCount > 1) && (nodeCount <= *budget) &&
++                ((endCount > bestCount) || ((endCount == bestCount) && (nodeCount < bestEnd - bestStart + 1))))
++            {
++                bestLcl   = lclNum;
++                bestStart = start;
++                bestEnd   = end;
++                bestCount = endCount;
++                bestSize  = endSize;
++            }
++            open     = false;
++            size     = 0;
++            count    = 0;
++            endCount = 0;
++        }
++    }
++
++    if (bestLcl == BAD_VAR_NUM)
++    {
++        return false;
++    }
++
++    LIR::Range& range   = LIR::AsRange(block);
++    GenTree*    runHead = nodes.Bottom(bestStart);
++    GenTree*    runTail = nodes.Bottom(bestEnd);
++
++    // The run may end inside a statement: the values it computes for the rest of that statement go
++    // through new temps, so the run becomes complete statements.
++    JitHashTable<GenTree*, JitPtrKeyFuncs<GenTree>, bool> inRun(alloc);
++    for (unsigned pos = bestStart; pos <= bestEnd; pos++)
++    {
++        inRun.Set(nodes.Bottom(pos), true);
++    }
++    int pending = 0;
++    for (unsigned pos = stmtStart.Bottom(bestEnd); pos <= bestEnd; pos++)
++    {
++        GenTree* const node = nodes.Bottom(pos);
++        node->VisitOperands([&pending](GenTree* operand) {
++            pending--;
++            return GenTree::VisitResult::Continue;
++        });
++        if (node->IsValue() && !node->IsUnusedValue())
++        {
++            pending++;
++        }
++    }
++    for (GenTree* user = runTail->gtNext; (pending > 0) && (user != nullptr); user = user->gtNext)
++    {
++        user->VisitOperandUses([&](GenTree** use) {
++            GenTree* const operand = *use;
++            if (inRun.Lookup(operand))
++            {
++                const unsigned tempNum = m_compiler->lvaGrabTemp(true DEBUGARG("alignment versioning"));
++                GenTree* const store   = m_compiler->gtNewTempStore(tempNum, operand);
++                GenTree* const load =
++                    new (m_compiler, GT_LCL_VAR) GenTreeLclVar(GT_LCL_VAR, store->TypeGet(), tempNum);
++                range.InsertAfter(operand, store);
++                range.InsertBefore(user, load);
++                if (operand == runTail)
++                {
++                    runTail = store;
++                }
++                *use = load;
++                pending--;
++            }
++            return GenTree::VisitResult::Continue;
++        });
++    }
++
++    // The clone is made before the block is split, so a run it cannot copy leaves the flow graph untouched.
++    LIR::Range slowRange = LIR::EmptyRange();
++    if (!CloneAlignmentVersionedRange(m_compiler, runHead, runTail, &slowRange))
++    {
++        return false;
++    }
++    *budget -= min(*budget, bestEnd - bestStart + 1);
++
++    JITDUMP("Versioning the alignment test of V%02u (size %u) for %u accesses in " FMT_BB "\n", bestLcl, bestSize,
++            bestCount, block->bbNum);
++
++    const var_types baseType = genActualType(m_compiler->lvaGetDesc(bestLcl)->TypeGet());
++    GenTree* const  base     = m_compiler->gtNewLclvNode(bestLcl, baseType);
++    GenTree* const  mask     = m_compiler->gtNewIconNode((ssize_t)bestSize - 1, TYP_I_IMPL);
++    GenTree* const  test     = m_compiler->gtNewOperNode(GT_AND, TYP_I_IMPL, base, mask);
++    GenTree* const  zero     = m_compiler->gtNewIconNode(0, TYP_I_IMPL);
++    GenTree* const  cond     = m_compiler->gtNewOperNode(GT_NE, TYP_INT, test, zero);
++    cond->gtFlags |= (GTF_RELOP_JMP_USED | GTF_DONT_CSE);
++    GenTree* const jtrue = m_compiler->gtNewOperNode(GT_JTRUE, TYP_VOID, cond);
++    range.InsertBefore(runHead, LIR::SeqTree(m_compiler, jtrue));
++
++    BasicBlock* const fast = m_compiler->fgSplitBlockAfterNode(block, jtrue);
++    BasicBlock* const rest = m_compiler->fgSplitBlockAfterNode(fast, runTail);
++    const bool        inEH = block->hasTryIndex() || block->hasHndIndex();
++    BasicBlock* const slow = m_compiler->fgNewBBinRegion(BBJ_ALWAYS, block, /* runRarely */ true, !inEH);
++    LIR::AsRange(slow).InsertAtEnd(std::move(slowRange));
++    slow->bbCodeOffs    = fast->bbCodeOffs;
++    slow->bbCodeOffsEnd = fast->bbCodeOffsEnd;
++    slow->bbSetRunRarely();
++
++    FlowEdge* const slowToRest = m_compiler->fgAddRefPred(rest, slow);
++    slowToRest->setLikelihood(1.0);
++    slow->SetKindAndTargetEdge(BBJ_ALWAYS, slowToRest);
++
++    FlowEdge* const toFast = block->GetTargetEdge();
++    FlowEdge* const toSlow = m_compiler->fgAddRefPred(slow, block);
++    toFast->setLikelihood(1.0);
++    toSlow->setLikelihood(0.0);
++    block->SetCond(toSlow, toFast);
++
++    if (m_blockAlignFacts == nullptr)
++    {
++        m_blockAlignFacts = new (alloc) BlockAlignFacts(alloc);
++    }
++    AlignFact* const fact = new (alloc) AlignFact{bestLcl, genLog2(bestSize), m_alignFacts};
++    m_blockAlignFacts->Set(fast, fact);
++    if (m_alignFacts != nullptr)
++    {
++        m_blockAlignFacts->Set(slow, m_alignFacts);
++        m_blockAlignFacts->Set(rest, m_alignFacts);
++    }
++
++    // The prefix can still hold a run of another local.
++    work->Push(block);
++    work->Push(fast);
++    work->Push(rest);
++    return true;
++}
++
+ void Lowering::ContainBlockStoreAddress(GenTreeBlk* blkNode, unsigned size, GenTree* addr, GenTree* addrParent)
+ {
+     assert(blkNode->OperIs(GT_STORE_BLK) && (blkNode->gtBlkOpKind == GenTreeBlk::BlkOpKindUnroll));
+@@ -2005,11 +2603,18 @@
+     // Strict alignment: a scalar access whose address cannot be proven naturally
+     // aligned is marked unaligned here, before LSRA and codegen look at the flag,
+     // and then takes the checked wide/byte-wise path below.
+-    if (RiscV64StrictAlign() && indirNode->OperIs(GT_IND, GT_STOREIND) && !indirNode->IsUnaligned() &&
+-        (genTypeSize(indirNode->TypeGet()) > 1) &&
+-        !IsAddrKnownAligned(indirNode->Addr(), genTypeSize(indirNode->TypeGet())))
++    // An access the front end flagged unaligned (Unsafe.ReadUnaligned etc.) whose address is proven
++    // aligned needs no check either.
++    if (RiscV64StrictAlign() && indirNode->OperIs(GT_IND, GT_STOREIND) && (genTypeSize(indirNode->TypeGet()) > 1))
+     {
+-        indirNode->gtFlags |= GTF_IND_UNALIGNED;
++        if (IsAddrKnownAligned(indirNode->Addr(), genTypeSize(indirNode->TypeGet())))
++        {
++            indirNode->gtFlags &= ~GTF_IND_UNALIGNED;
++        }
++        else
++        {
++            indirNode->gtFlags |= GTF_IND_UNALIGNED;
++        }
+     }
+ 
+     // No-unaligned mode: an unaligned scalar access is expanded byte-wise off a base
