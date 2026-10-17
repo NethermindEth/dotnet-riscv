@@ -1,0 +1,341 @@
+Strict alignment: keep the aligned path of a checked access to the test and the access (applies after
+perf-35, perf-39 and perf-67).
+
+Under JitRiscV64StrictAlign an access whose address the JIT cannot prove aligned is emitted as
+
+    addi  t, base, off
+    andi  tmp, t, size-1
+    bnez  tmp, slow
+    ld    dst, 0(t)
+    j     done
+  slow:
+    <byte-wise>
+  done:
+
+so the usual, aligned case runs five instructions for one load. Three changes cut it to three:
+
+- The byte-wise sequence comes first and the test branches over it (beqz tmp, fast). On a zkVM a taken
+  branch costs what an untaken one does, so the j now sits on the rare path. The alignment-checked
+  unrolled block copy gets the same order.
+- An address that is a base plus an offset that is a multiple of the access size stays an address mode:
+  the base then has the alignment of the address, so the test reads the base, the wide access takes the
+  offset in its immediate and so does every byte of the fallback (offset..offset+size-1 must fit a
+  12-bit immediate). No addi.
+- localloc space is STACK_ALIGN'ed (genLclHeap), so KnownAlignmentLog2 proves accesses through a
+  stackalloc'd buffer and they lose the test altogether.
+
+Nethermind stateless guest on SP1 (sp1-runner v6.6.0, master cd336c4ccc), cycles:
+  block 26055159: 108,404,988 -> 102,844,417 (-5.13%), gas -1.44%
+  block 26112793: 240,469,267 -> 226,298,346 (-5.89%), gas -1.86%
+  geomean over 11 mainnet blocks: cycles -5.57%, gas -1.72%; outputs identical on all 11.
+The JIT change alone, without the localloc proof, was -3.4% / -3.8%. Only builds with
+JitNoUnalignedAccess change: the ZisK guest builds byte-identical.
+Regression test: tools/tests/StrictAlignment/FastPath.
+
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -2125,13 +2125,19 @@
+ //   emit    - the emitter
+ //   type    - the scalar type being loaded; size must be 2, 4 or 8
+ //   dstReg  - destination register (integer or float)
+-//   addrReg - register holding the base address (accessed at offsets 0..size-1)
++//   addrReg - register holding the base address (accessed at offsets offset..offset+size-1)
+ //   intTmp  - integer scratch for the byte being merged in
+ //   intAcc  - integer accumulator: for a float load it is built up and then moved
+ //             into dstReg; for an integer load pass dstReg itself
++//   offset  - offset of the value from addrReg
+ //
+-static void genRiscV64ByteWiseLoad(
+-    emitter* emit, var_types type, regNumber dstReg, regNumber addrReg, regNumber intTmp, regNumber intAcc)
++static void genRiscV64ByteWiseLoad(emitter*  emit,
++                                   var_types type,
++                                   regNumber dstReg,
++                                   regNumber addrReg,
++                                   regNumber intTmp,
++                                   regNumber intAcc,
++                                   int       offset = 0)
+ {
+     const unsigned size       = genTypeSize(type);
+     const bool     isFloat    = varTypeUsesFloatReg(type);
+@@ -2140,7 +2146,7 @@
+     assert(intAcc != REG_NA);
+ 
+     // Low byte: always zero-extended; the OR chain fills the bytes above it.
+-    emit->emitIns_R_R_I(INS_lbu, EA_PTRSIZE, intAcc, addrReg, 0);
++    emit->emitIns_R_R_I(INS_lbu, EA_PTRSIZE, intAcc, addrReg, offset);
+ 
+     for (unsigned i = 1; i < size; i++)
+     {
+@@ -2148,7 +2154,7 @@
+         // so the value matches a native lh/lw; every other byte (and all bytes of an
+         // unsigned or float load) is zero-extended.
+         instruction lbIns = (!isFloat && !isUnsigned && (i == size - 1)) ? INS_lb : INS_lbu;
+-        emit->emitIns_R_R_I(lbIns, EA_PTRSIZE, intTmp, addrReg, (int)i);
++        emit->emitIns_R_R_I(lbIns, EA_PTRSIZE, intTmp, addrReg, offset + (int)i);
+         emit->emitIns_R_R_I(INS_slli, EA_PTRSIZE, intTmp, intTmp, (int)(i * 8));
+         emit->emitIns_R_R_R(INS_or, EA_PTRSIZE, intAcc, intAcc, intTmp);
+     }
+@@ -2168,12 +2174,13 @@
+ //   type    - the scalar type being stored; size must be 2, 4 or 8
+ //   dataReg - source register holding the value (integer/float, or REG_R0 for a
+ //             contained integer zero)
+-//   addrReg - register holding the base address (accessed at offsets 0..size-1)
++//   addrReg - register holding the base address (accessed at offsets offset..offset+size-1)
+ //   intTmp  - integer scratch; for a float store it receives the bit pattern and is
+ //             then shifted down in place
++//   offset  - offset of the value from addrReg
+ //
+ static void genRiscV64ByteWiseStore(
+-    emitter* emit, var_types type, regNumber dataReg, regNumber addrReg, regNumber intTmp)
++    emitter* emit, var_types type, regNumber dataReg, regNumber addrReg, regNumber intTmp, int offset = 0)
+ {
+     const unsigned size    = genTypeSize(type);
+     const bool     isFloat = varTypeUsesFloatReg(type);
+@@ -2190,18 +2197,18 @@
+         bits = dataReg; // a live operand: must not be clobbered, so shift into intTmp
+     }
+ 
+-    emit->emitIns_R_R_I(INS_sb, EA_PTRSIZE, bits, addrReg, 0);
++    emit->emitIns_R_R_I(INS_sb, EA_PTRSIZE, bits, addrReg, offset);
+     for (unsigned i = 1; i < size; i++)
+     {
+         if (isFloat)
+         {
+             emit->emitIns_R_R_I(INS_srli, EA_PTRSIZE, bits, bits, 8);
+-            emit->emitIns_R_R_I(INS_sb, EA_PTRSIZE, bits, addrReg, (int)i);
++            emit->emitIns_R_R_I(INS_sb, EA_PTRSIZE, bits, addrReg, offset + (int)i);
+         }
+         else
+         {
+             emit->emitIns_R_R_I(INS_srli, EA_PTRSIZE, intTmp, bits, (int)(i * 8));
+-            emit->emitIns_R_R_I(INS_sb, EA_PTRSIZE, intTmp, addrReg, (int)i);
++            emit->emitIns_R_R_I(INS_sb, EA_PTRSIZE, intTmp, addrReg, offset + (int)i);
+         }
+     }
+ }
+@@ -2214,13 +2221,17 @@
+ //   sequence otherwise:
+ //
+ //       andi  tmp, addr, size-1
+-//       bnez  tmp, slow
+-//       ld/sd dst, 0(addr)
+-//       j     done
+-//     slow:
++//       beqz  tmp, fast
+ //       <byte-wise>
++//       j     done
++//     fast:
++//       ld/sd dst, 0(addr)
+ //     done:
+ //
++//   The byte-wise sequence comes first so the usual, aligned case takes the branch
++//   and runs no jump: on a zkVM a taken branch costs what an untaken one does, so
++//   the jump is pure overhead and belongs on the rare path.
++//
+ 
+ // Generate code for InitBlk by performing a loop unroll
+ // Preconditions:
+@@ -3167,22 +3178,25 @@
+             // Expand the unaligned store into a naturally-aligned byte sequence.
+             // The address was forced into a register (ContainCheckIndir) and LSRA
+             // reserved the scratch register (BuildIndir).
+-            regNumber addrReg = addr->GetRegNum();
++            // A contained address is a base plus a size-multiple offset (ContainCheckIndir).
++            GenTree*  base    = addr->isContained() ? addr->AsAddrMode()->Base() : addr;
++            int       offset  = addr->isContained() ? addr->AsAddrMode()->Offset() : 0;
++            regNumber addrReg = base->GetRegNum();
+             regNumber intTmp  = internalRegisters.GetSingle(tree);
+ 
+             // genConsumeAddress marked addrReg dead, but the byte sequence reuses it; if
+             // it holds a (possibly interior) GC pointer keep it reported until the last
+             // byte is stored.
+-            gcInfo.gcMarkRegPtrVal(addrReg, addr->TypeGet());
++            gcInfo.gcMarkRegPtrVal(addrReg, base->TypeGet());
+             {
+-                BasicBlock* slow = genCreateTempLabel();
++                BasicBlock* fast = genCreateTempLabel();
+                 BasicBlock* done = genCreateTempLabel();
+                 GetEmitter()->emitIns_R_R_I(INS_andi, EA_PTRSIZE, intTmp, addrReg, (int)(genTypeSize(type) - 1));
+-                GetEmitter()->emitIns_J_cond_la(INS_bne, slow, intTmp, REG_R0);
+-                GetEmitter()->emitIns_R_R_I(ins, emitActualTypeSize(type), dataReg, addrReg, 0);
++                GetEmitter()->emitIns_J_cond_la(INS_beq, fast, intTmp, REG_R0);
++                genRiscV64ByteWiseStore(GetEmitter(), type, dataReg, addrReg, intTmp, offset);
+                 GetEmitter()->emitIns_J(INS_j, done);
+-                genDefineTempLabel(slow);
+-                genRiscV64ByteWiseStore(GetEmitter(), type, dataReg, addrReg, intTmp);
++                genDefineTempLabel(fast);
++                GetEmitter()->emitIns_R_R_I(ins, emitActualTypeSize(type), dataReg, addrReg, offset);
+                 genDefineTempLabel(done);
+             }
+             gcInfo.gcMarkRegSetNpt(genRegMask(addrReg));
+@@ -5600,23 +5614,27 @@
+         // Expand the unaligned load into a naturally-aligned byte sequence. The
+         // address was forced into a register (ContainCheckIndir) and LSRA reserved the
+         // scratch register(s) (BuildIndir).
+-        regNumber addrReg = tree->Addr()->GetRegNum();
++        // A contained address is a base plus a size-multiple offset (ContainCheckIndir).
++        GenTree*  addr    = tree->Addr();
++        GenTree*  base    = addr->isContained() ? addr->AsAddrMode()->Base() : addr;
++        int       offs    = addr->isContained() ? addr->AsAddrMode()->Offset() : 0;
++        regNumber addrReg = base->GetRegNum();
+         regNumber intTmp  = internalRegisters.Extract(tree);
+         regNumber intAcc  = varTypeUsesFloatReg(type) ? internalRegisters.Extract(tree) : targetReg;
+ 
+         // genConsumeAddress marked addrReg dead, but the byte sequence reuses it; if it
+         // holds a (possibly interior) GC pointer - e.g. ReadUnaligned off a byref into a
+         // managed array - keep it reported until the last byte is loaded.
+-        gcInfo.gcMarkRegPtrVal(addrReg, tree->Addr()->TypeGet());
++        gcInfo.gcMarkRegPtrVal(addrReg, base->TypeGet());
+         {
+-            BasicBlock* slow = genCreateTempLabel();
++            BasicBlock* fast = genCreateTempLabel();
+             BasicBlock* done = genCreateTempLabel();
+             GetEmitter()->emitIns_R_R_I(INS_andi, EA_PTRSIZE, intTmp, addrReg, (int)(genTypeSize(type) - 1));
+-            GetEmitter()->emitIns_J_cond_la(INS_bne, slow, intTmp, REG_R0);
+-            GetEmitter()->emitIns_R_R_I(ins, emitActualTypeSize(type), targetReg, addrReg, 0);
++            GetEmitter()->emitIns_J_cond_la(INS_beq, fast, intTmp, REG_R0);
++            genRiscV64ByteWiseLoad(GetEmitter(), type, targetReg, addrReg, intTmp, intAcc, offs);
+             GetEmitter()->emitIns_J(INS_j, done);
+-            genDefineTempLabel(slow);
+-            genRiscV64ByteWiseLoad(GetEmitter(), type, targetReg, addrReg, intTmp, intAcc);
++            genDefineTempLabel(fast);
++            GetEmitter()->emitIns_R_R_I(ins, emitActualTypeSize(type), targetReg, addrReg, offs);
+             genDefineTempLabel(done);
+         }
+         gcInfo.gcMarkRegSetNpt(genRegMask(addrReg));
+@@ -5779,7 +5797,7 @@
+     // registers alone, test the low bits of both addresses at run time and take the
+     // wide unrolled copy when they are clear; otherwise, and on the slow path, copy one
+     // byte at a time so every load/store is naturally aligned regardless of the base.
+-    BasicBlock* slowLabel = nullptr;
++    BasicBlock* wideLabel = nullptr;
+     BasicBlock* doneLabel = nullptr;
+     bool        byteWise  = genRiscV64NoUnalignedAccess() && cpBlkNode->IsUnaligned();
+     if (byteWise && (size >= 2))
+@@ -5790,7 +5808,7 @@
+         const bool     offsOk = ((srcOffset % (int)align) == 0) && ((dstOffset % (int)align) == 0);
+         if (offsOk && (srcReg || dstReg))
+         {
+-            slowLabel = genCreateTempLabel();
++            wideLabel = genCreateTempLabel();
+             doneLabel = genCreateTempLabel();
+             if (srcReg && dstReg)
+             {
+@@ -5802,20 +5820,12 @@
+                 emit->emitIns_R_R_I(INS_andi, EA_PTRSIZE, tempReg, srcReg ? srcAddrBaseReg : dstAddrBaseReg,
+                                     (int)(align - 1));
+             }
+-            emit->emitIns_J_cond_la(INS_bne, slowLabel, tempReg, REG_R0);
++            emit->emitIns_J_cond_la(INS_beq, wideLabel, tempReg, REG_R0);
+         }
+     }
+ 
+     if (byteWise)
+     {
+-        if (slowLabel != nullptr)
+-        {
+-            // Wide (aligned) path first, then jump over the slow path.
+-            genRiscV64CpBlkUnrollWide(emit, size, tempReg, tempReg2, srcLclNum, srcAddrBaseReg, srcOffset, dstLclNum,
+-                                      dstAddrBaseReg, dstOffset);
+-            emit->emitIns_J(INS_j, doneLabel);
+-            genDefineTempLabel(slowLabel);
+-        }
+         for (unsigned i = 0; i < size; i++)
+         {
+             if (srcLclNum != BAD_VAR_NUM)
+@@ -5836,8 +5846,14 @@
+                 emit->emitIns_R_R_I(INS_sb, EA_4BYTE, tempReg, dstAddrBaseReg, dstOffset + (int)i);
+             }
+         }
+-        if (doneLabel != nullptr)
++        if (wideLabel != nullptr)
+         {
++            // The byte-wise copy is the rare path, so it jumps over the wide (aligned) copy the
++            // usual case branches to (see the alignment-checked accesses above).
++            emit->emitIns_J(INS_j, doneLabel);
++            genDefineTempLabel(wideLabel);
++            genRiscV64CpBlkUnrollWide(emit, size, tempReg, tempReg2, srcLclNum, srcAddrBaseReg, srcOffset, dstLclNum,
++                                      dstAddrBaseReg, dstOffset);
+             genDefineTempLabel(doneLabel);
+         }
+ 
+diff --git a/src/coreclr/jit/lowerriscv64.cpp b/src/coreclr/jit/lowerriscv64.cpp
+--- a/src/coreclr/jit/lowerriscv64.cpp
++++ b/src/coreclr/jit/lowerriscv64.cpp
+@@ -1205,8 +1205,8 @@
+ //
+ // KnownAlignmentLog2: log2 of a power of two `node`'s value is provably a multiple of (0 if unknown).
+ //
+-// Object references are 8-byte aligned, stack locals pointer-aligned and handles (statics, string
+-// literals, frozen objects) at least pointer-aligned. Arithmetic keeps the low zero bits it can prove:
++// Object references are 8-byte aligned, stack locals pointer-aligned, localloc space STACK_ALIGN'ed and
++// handles (statics, string literals, frozen objects) at least pointer-aligned. Arithmetic keeps the low zero bits it can prove:
+ // a sum, difference or OR has as many as the weaker operand, a shift by n adds n, a product adds both
+ // operands', an AND has at least the stronger operand's (masking only clears bits) and an integral cast
+ // keeps them. A local has the alignment ComputeAlignedLocals found for every value stored to it.
+@@ -1315,6 +1315,10 @@
+         case GT_ARR_ADDR:
+             return KnownAlignmentLog2(node->AsArrAddr()->Addr(), depth + 1);
+ 
++        case GT_LCLHEAP:
++            // genLclHeap hands out STACK_ALIGN'ed space (and null for a zero size).
++            return (unsigned)BitOperations::TrailingZeroCount((unsigned)STACK_ALIGN);
++
+         default:
+             return 0;
+     }
+@@ -2010,10 +2014,25 @@
+ 
+     // No-unaligned mode: an unaligned scalar access is expanded byte-wise off a base
+     // register (see genCodeForIndir/genCodeForStoreInd), so its address must be left
+-    // in a register rather than folded into an addressing mode.
++    // in a register rather than folded into an addressing mode - unless it is a base
++    // plus an offset that is a multiple of the access size: the base then has the
++    // alignment of the address, so the run-time test reads it directly, and the wide
++    // access and every byte of the fallback take the offset in their immediate.
+     if ((JitConfig.JitNoUnalignedAccess() != 0) && indirNode->IsUnaligned() &&
+         (genTypeSize(indirNode->TypeGet()) > 1))
+     {
++        GenTree*  addr = indirNode->Addr();
++        const int size = (int)genTypeSize(indirNode->TypeGet());
++        if (addr->OperIs(GT_LEA) && addr->AsAddrMode()->HasBase() && !addr->AsAddrMode()->HasIndex() &&
++            !addr->AsAddrMode()->Base()->isContained())
++        {
++            const int offset = addr->AsAddrMode()->Offset();
++            if (((offset % size) == 0) && emitter::isValidSimm12(offset) && emitter::isValidSimm12(offset + size - 1) &&
++                IsSafeToContainMem(indirNode, addr))
++            {
++                MakeSrcContained(indirNode, addr);
++            }
++        }
+         return;
+     }
+ 
+diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
+--- a/src/coreclr/jit/lsrariscv64.cpp
++++ b/src/coreclr/jit/lsrariscv64.cpp
+@@ -955,7 +955,8 @@
+     if ((JitConfig.JitNoUnalignedAccess() != 0) && indirTree->IsUnaligned() &&
+         indirTree->OperIs(GT_IND, GT_STOREIND) && (genTypeSize(indirTree->TypeGet()) > 1))
+     {
+-        assert(!addr->isContained());
++        // A contained address is a base plus a size-multiple offset (ContainCheckIndir).
++        GenTree*   addrUse = addr->isContained() ? addr->AsAddrMode()->Base() : addr;
+         const bool isLoad  = indirTree->OperIs(GT_IND);
+         const bool isFloat = varTypeUsesFloatReg(indirTree->TypeGet());
+ 
+@@ -968,11 +969,11 @@
+         // corrupts register bookkeeping in release ones).
+         if (isLoad)
+         {
+-            setDelayFree(BuildUse(addr));
++            setDelayFree(BuildUse(addrUse));
+         }
+         else
+         {
+-            BuildUse(addr);
++            BuildUse(addrUse);
+         }
+         int srcCount = 1;
+ 
