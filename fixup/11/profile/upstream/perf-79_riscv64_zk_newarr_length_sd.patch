@@ -1,0 +1,29 @@
+RISC-V zkVM: store an inline-allocated array's length with one aligned sd (applies after perf-49).
+
+perf-49's inline newarr stored the length as a 4-byte sw at offset 8, which a ZisK charges as a MemAlign
+read-modify-write. The length local is a long that the guard keeps in [0, CORINFO_Array_MaxLength] (a constant
+length outside it never takes the inline path), so its 64-bit value is the length followed by a zero padding word,
+the value perf-73 relies on. One aligned sd stores both; the array's size is at least 16 bytes, so the store stays
+inside it.
+
+Nethermind stateless guest on ZisK, on top of perf-78, block 26055159 / 26112793: steps unchanged; cost -0.05% /
+-0.05%; MemAlign rows -2.2% / -1.7%. SP1 cycles unchanged. Outputs identical on 11 mainnet blocks.
+
+diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
+--- a/src/coreclr/jit/morph.cpp
++++ b/src/coreclr/jit/morph.cpp
+@@ -6781,11 +6781,11 @@ GenTree* Compiler::fgRiscV64TryInlineNewArr(GenTreeCall* call)
+     // *(intptr*)obj = MethodTable
+     GenTree* storeMt = gtNewStoreIndNode(TYP_I_IMPL, gtNewLclvNode(objLcl, TYP_I_IMPL), clsArg);
+ 
+-    // *(int32*)(obj + OFFSETOF__CORINFO_Array__length) = (int)len
++    // *(int64*)(obj + OFFSETOF__CORINFO_Array__length) = len: the length and its zero padding word in one aligned
++    // store (len lies in [0, CORINFO_Array_MaxLength], see the guard), which a zkVM charges less than a 4-byte one.
+     GenTree* lenAddr   = gtNewOperNode(GT_ADD, TYP_I_IMPL, gtNewLclvNode(objLcl, TYP_I_IMPL),
+                                        gtNewIconNode(OFFSETOF__CORINFO_Array__length, TYP_I_IMPL));
+-    GenTree* storeLenF = gtNewStoreIndNode(
+-        TYP_INT, lenAddr, gtNewCastNode(TYP_INT, gtNewLclvNode(lenLcl, TYP_LONG), /* unsigned */ false, TYP_INT));
++    GenTree* storeLenF = gtNewStoreIndNode(TYP_LONG, lenAddr, gtNewLclvNode(lenLcl, TYP_LONG));
+ 
+     // ref = (object)obj
+     GenTree* storeRef = gtNewStoreLclVarNode(refLcl, gtNewLclvNode(objLcl, TYP_I_IMPL));
