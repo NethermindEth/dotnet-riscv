@@ -1,0 +1,274 @@
+RISC-V zkVM: give small integer locals and INT spill temps a whole aligned 8-byte stack home (applies after
+perf-74 and perf-75).
+
+ZisK charges a 1-, 2- or 4-byte access, or one not aligned to 8 bytes, several times an aligned 8-byte one: it
+runs through the MemAlign state machine (a 4-byte store reads and rewrites the word). The JIT gives an INT (or
+smaller) local a 4-byte home and spills a register to a 4-byte temp, so every store to it is an sw and every
+reload an lw. On the Nethermind guest these frame accesses were about a fifth of all MemAlign rows; most were a
+handful of trie and RLP methods keeping a span length or a bool parameter on the frame across calls.
+
+Under JitZkBumpAddr (every zkVM libc, never a real riscv64 target) such a home is now a whole aligned 8-byte
+slot (lvaIsZkWideHome: an integer local of at most 4 bytes that is not address-exposed and not a field of a
+dependently promoted struct, including a parameter passed in one register and a local a parameter register
+maps to), and an INT spill temp is 8 bytes and 8-byte aligned. The emitter widens the frame accesses at offset 0
+of such a slot (lvaIsZkWideHomeAccess):
+- a store that covers the local (not a partial LCL_FLD store) becomes sd, so the slot always holds the whole
+  register that was saved;
+- a load becomes ld when the local is a register candidate or a spill temp. ld restores the register bit for bit,
+  where lw/lh/lb would re-extend its low bits. Code is correct for the register value it had before the spill,
+  and nothing relies on a reload extending it, except two cases that are kept narrow or fixed up:
+  - a local that is not a register candidate is read at every use and Lowering::IsInt32SignExtendedInReg trusts
+    those loads to be extended (it may also have LCL_FLD stores): its loads stay narrow;
+  - a small parameter normalized once on entry (perf-75) has its home filled with the register as the caller
+    passed it: its loads stay narrow.
+  A local Lowering took to be sign-extended (lvSignExtendedInt) must hold an extended value in its slot as it
+  does in its register: genCodeForStoreLclVar sign-extends a call result stored straight to the slot, as it
+  already did for a store to the register, and genSpillOrAddRegisterParam sign-extends a mapped parameter
+  register in place before homing it (perf-74 did that only for one homed in a register).
+
+Little-endian keeps the low bytes of the slot equal to the narrow value, so a narrow load that stays (lwu, a
+partial LCL_FLD, a non-candidate) reads the same bytes as before.
+
+Nethermind stateless guest on ZisK (ziskemu 1.3.2 -X --mem-full-stats, plan from cargo-zisk execute), block
+26055159 / 26112793: cost -0.80% / -0.75%; MemAlign rows -23.0% / -18.8%; steps +6,069 / +11,993 (+0.01%, the
+sign extensions above and lui/add for frame offsets that no longer fit 12 bits). SP1 cycles +287 / +454.
+Outputs identical on 11 mainnet blocks.
+
+diff --git a/src/coreclr/jit/codegencommon.cpp b/src/coreclr/jit/codegencommon.cpp
+--- a/src/coreclr/jit/codegencommon.cpp
++++ b/src/coreclr/jit/codegencommon.cpp
+@@ -3399,6 +3399,16 @@ void CodeGen::genSpillOrAddRegisterParam(
+             storeType = genActualType(varDsc);
+         }
+ 
++#ifdef TARGET_RISCV64
++        // A wide home is reloaded with ld (see Compiler::lvaIsZkWideHomeAccess): extend the upper half the caller
++        // left in the register of a local Lowering took to be sign-extended, which is that register's only target.
++        if (varDsc->lvIsParamRegTarget && varDsc->lvSignExtendedInt && (offset == 0) &&
++            m_compiler->lvaIsZkWideHome(lclNum))
++        {
++            GetEmitter()->emitIns_R_R(INS_sext_w, EA_4BYTE, segment.GetRegister(), segment.GetRegister());
++        }
++#endif
++
+         GetEmitter()->emitIns_S_R(ins_Store(storeType), emitActualTypeSize(storeType), segment.GetRegister(), lclNum,
+                                   offset);
+     }
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -1485,6 +1485,13 @@ void CodeGen::genCodeForStoreLclVar(GenTreeLclVar* lclNode)
+             }
+             else
+             {
++                // A wide home is reloaded with ld (see Compiler::lvaIsZkWideHomeAccess): give a local that
++                // Lowering took to be sign-extended the extension a store to its register would (below).
++                if (varDsc->lvSignExtendedInt && data->gtSkipReloadOrCopy()->IsCall() &&
++                    !Lowering::IsInt32SignExtendedInReg(m_compiler, data) && m_compiler->lvaIsZkWideHome(varNum))
++                {
++                    emit->emitIns_R_R(INS_sext_w, EA_4BYTE, dataReg, dataReg);
++                }
+                 emit->emitIns_S_R(ins, attr, dataReg, varNum, /* offset */ 0);
+             }
+ 
+diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
+--- a/src/coreclr/jit/compiler.h
++++ b/src/coreclr/jit/compiler.h
+@@ -4853,6 +4853,10 @@ public:
+ 
+     unsigned lvaLclStackHomeSize(unsigned varNum);
+     unsigned lvaLclExactSize(unsigned varNum);
++#ifdef TARGET_RISCV64
++    bool lvaIsZkWideHome(unsigned varNum);
++    bool lvaIsZkWideHomeAccess(int varx, unsigned width, bool isLoad);
++#endif
+     ValueSize lvaLclValueSize(unsigned varNum);
+ 
+     //-----------------------------------------------------------------------------
+diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
+--- a/src/coreclr/jit/emitriscv64.cpp
++++ b/src/coreclr/jit/emitriscv64.cpp
+@@ -342,6 +342,16 @@ void emitter::emitIns_S_R_R(instruction ins, emitAttr attr, regNumber reg1, regN
+     } // end switch (ins)
+ #endif
+ 
++    if ((offs == 0) && (tmpReg == REG_NA) && ((ins == INS_sw) || (ins == INS_sh) || (ins == INS_sb)))
++    {
++        const unsigned width = (ins == INS_sw) ? 4 : ((ins == INS_sh) ? 2 : 1);
++        if (m_compiler->lvaIsZkWideHomeAccess(varx, width, /* isLoad */ false))
++        {
++            ins  = INS_sd;
++            attr = EA_8BYTE;
++        }
++    }
++
+     /* Figure out the variable's frame position */
+     int  base;
+     bool FPbased;
+@@ -438,6 +448,16 @@ void emitter::emitIns_R_S(instruction ins, emitAttr attr, regNumber reg1, int va
+     } // end switch (ins)
+ #endif
+ 
++    if ((offs == 0) && ((ins == INS_lw) || (ins == INS_lh) || (ins == INS_lhu) || (ins == INS_lb) || (ins == INS_lbu)))
++    {
++        const unsigned width = (ins == INS_lw) ? 4 : (((ins == INS_lh) || (ins == INS_lhu)) ? 2 : 1);
++        if (m_compiler->lvaIsZkWideHomeAccess(varx, width, /* isLoad */ true))
++        {
++            ins  = INS_ld;
++            attr = EA_8BYTE;
++        }
++    }
++
+     /* Figure out the variable's frame position */
+     int  base;
+     bool FPbased;
+diff --git a/src/coreclr/jit/lclvars.cpp b/src/coreclr/jit/lclvars.cpp
+--- a/src/coreclr/jit/lclvars.cpp
++++ b/src/coreclr/jit/lclvars.cpp
+@@ -2874,6 +2874,101 @@ void Compiler::lvaUpdateClass(unsigned varNum, GenTree* tree, CORINFO_CLASS_HAND
+     }
+ }
+ 
++#ifdef TARGET_RISCV64
++//------------------------------------------------------------------------
++// lvaIsZkWideHome: whether a small integer local gets a whole aligned 8-byte stack home on a zkVM.
++//
++// Arguments:
++//    varNum -- variable to query
++//
++// Return Value:
++//    True, when JitZkBumpAddr is set, for an INT or smaller integer local that is not address-exposed
++//    and not a field of a dependently promoted struct: a local, a parameter passed in one register,
++//    or a local a parameter register maps to (lvIsParamRegTarget).
++//
++// Notes:
++//    A zkVM charges a 1-, 2- or 4-byte access, or one not aligned to 8 bytes, several times an
++//    aligned 64-bit one (ZisK runs each through its MemAlign state machine). Such a local's home is
++//    the whole aligned 8-byte slot, so every store that covers the local writes the register with
++//    sd, and a load of a register candidate reads it back with ld (see lvaIsZkWideHomeAccess). The
++//    locals left out have homes the caller or a containing struct writes narrow.
++//
++bool Compiler::lvaIsZkWideHome(unsigned varNum)
++{
++    if (JitConfig.JitZkBumpAddr() == 0)
++    {
++        return false;
++    }
++
++    const LclVarDsc* const varDsc = lvaGetDesc(varNum);
++    if (!varTypeIsIntegral(varDsc) || (genTypeSize(varDsc) > 4) || varDsc->IsAddressExposed() ||
++        lvaIsFieldOfDependentlyPromotedStruct(varDsc))
++    {
++        return false;
++    }
++
++    if (varDsc->lvIsParam && !varDsc->lvIsParamRegTarget)
++    {
++        // A field of a struct parameter inherits lvIsParam; only the parameter itself has ABI information.
++        return !varDsc->lvIsStructField && (varNum < info.compArgsCount) &&
++               lvaGetParameterABIInfo(varNum).HasExactlyOneRegisterSegment() &&
++               !lvaGetParameterABIInfo(varNum).HasAnyStackSegment();
++    }
++
++    return true;
++}
++
++//------------------------------------------------------------------------
++// lvaIsZkWideHomeAccess: whether a narrow frame access at offset 0 of a local or spill temp can use
++// the whole 8-byte slot instead.
++//
++// Arguments:
++//    varx   -- the local (>= 0) or spill temp (< 0) accessed
++//    width  -- the width of the access in bytes
++//    isLoad -- whether the access is a load
++//
++// Return Value:
++//    True if a store can be widened to sd, or a load to ld, without changing what the program
++//    computes.
++//
++// Notes:
++//    Every store that covers a wide home (lvaIsZkWideHome) or an INT spill temp (8 bytes on a zkVM,
++//    see RegSet::tmpPreAllocateTemps) writes the whole register with sd, so the slot holds exactly
++//    the register a spill or a store saved. A reload with ld restores that register bit for bit,
++//    where lw/lh/lb (or the zero-extending forms) would re-extend its low bits: the code that uses
++//    the value is correct for the register it had before the spill, and it never relies on a reload
++//    extending it. That holds for spill temps and register candidates. A local that is not a register
++//    candidate is read at every use and the JIT trusts those loads to be extended (see
++//    Lowering::IsInt32SignExtendedInReg), and it may have partial (LCL_FLD) stores, so its loads stay
++//    narrow; a partial store, narrower than the local, is never widened. So do the loads of a small
++//    parameter normalized once on entry (lvNormalizedSmallParam), whose home the prolog fills with the
++//    register as the caller passed it. The prolog sign-extends a mapped parameter register before it
++//    homes a local Lowering took to be sign-extended (see CodeGen::genSpillOrAddRegisterParam).
++//
++bool Compiler::lvaIsZkWideHomeAccess(int varx, unsigned width, bool isLoad)
++{
++    if (JitConfig.JitZkBumpAddr() == 0)
++    {
++        return false;
++    }
++
++    if (varx < 0)
++    {
++        const TempDsc* const temp = codeGen->regSet.tmpGetNum(varx);
++        return (temp->tdTempType() == TYP_INT) && (temp->tdTempSize() == TARGET_POINTER_SIZE);
++    }
++
++    if (!lvaIsZkWideHome((unsigned)varx))
++    {
++        return false;
++    }
++
++    const LclVarDsc* const varDsc = lvaGetDesc((unsigned)varx);
++    return (width >= genTypeSize(varDsc)) &&
++           (!isLoad || (varDsc->lvIsRegCandidate() && !varDsc->lvNormalizedSmallParam));
++}
++#endif // TARGET_RISCV64
++
+ //------------------------------------------------------------------------
+ // lvaLclStackHomeSize: returns size of stack home of a local variable, in bytes
+ //
+@@ -2892,6 +2987,13 @@ unsigned Compiler::lvaLclStackHomeSize(unsigned varNum)
+ 
+     if (!varTypeIsStruct(varType))
+     {
++#ifdef TARGET_RISCV64
++        if (lvaIsZkWideHome(varNum))
++        {
++            return TARGET_POINTER_SIZE;
++        }
++#endif
++
+ #ifdef TARGET_64BIT
+         // We only need this Quirk for TARGET_64BIT
+         if (varDsc->lvQuirkToLong)
+@@ -6206,7 +6308,12 @@ int Compiler::lvaAllocateTemps(int stkOffs, bool mustDoubleAlign)
+             /* Need to align the offset? */
+ 
+ #ifdef TARGET_64BIT
+-            if (varTypeIsGC(tempType) && ((stkOffs % TARGET_POINTER_SIZE) != 0))
++            bool alignTemp = varTypeIsGC(tempType);
++#ifdef TARGET_RISCV64
++            // An INT spill temp of a zkVM is a whole aligned slot (see lvaIsZkWideHomeAccess).
++            alignTemp |= (tempType == TYP_INT) && (size == TARGET_POINTER_SIZE);
++#endif
++            if (alignTemp && ((stkOffs % TARGET_POINTER_SIZE) != 0))
+             {
+                 // Calculate 'pad' as the number of bytes to align up 'stkOffs' to be a multiple of TARGET_POINTER_SIZE
+                 // In practice this is really just a fancy way of writing 4. (as all stack locations are at least 4-byte
+diff --git a/src/coreclr/jit/regset.cpp b/src/coreclr/jit/regset.cpp
+--- a/src/coreclr/jit/regset.cpp
++++ b/src/coreclr/jit/regset.cpp
+@@ -685,6 +685,13 @@ void RegSet::tmpPreAllocateTemps(var_types type, unsigned count)
+ {
+     assert(type == tmpNormalizeType(type));
+     unsigned size = genTypeSize(type);
++#ifdef TARGET_RISCV64
++    if ((type == TYP_INT) && (JitConfig.JitZkBumpAddr() != 0))
++    {
++        // A whole aligned slot, spilled with sd and reloaded with ld (see Compiler::lvaIsZkWideHomeAccess).
++        size = TARGET_POINTER_SIZE;
++    }
++#endif
+ 
+     // Find the slot to search for a free temp of the right size.
+     // Note that slots can be shared by types of the identical size (e.g., TYP_REF and TYP_LONG on AMD64),

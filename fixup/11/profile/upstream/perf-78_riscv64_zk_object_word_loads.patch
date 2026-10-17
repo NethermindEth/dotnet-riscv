@@ -1,0 +1,99 @@
+RISC-V zkVM: load an object's INT field at an 8-byte aligned offset with ld when its user never reads the upper
+half (applies after perf-68 and perf-73).
+
+perf-68 loads with lwu an INT whose single user ignores the upper 32 bits or compares it in a way the two
+extensions agree on. A ZisK 4-byte load still costs a MemAlign row. Some of those users never read the upper half
+at all: a 4-byte or narrower store, a 32-bit add/sub/mul/neg or shift (W-form instructions), a shift count, a cast
+to a small type, an AND with a value in [0, INT32_MAX]. They take whatever the upper half holds, so the load can
+read the whole aligned word with ld when its address is 8-byte aligned. MarkZeroExtendedLoads marks such a load
+(GTF_IND_ZK_WORD_LOAD) under JitZkBumpAddr when its address is an object reference plus a multiple of 8 (an object,
+frozen ones included, starts at a multiple of 8, so the word lies inside the object's allocation); compares,
+JCMP and bounds checks, which read the full register, are left out. Codegen loads it with ld, as it does a padded
+array length (perf-73).
+
+Nethermind stateless guest on ZisK, on top of perf-77, block 26055159 / 26112793: steps unchanged; cost -0.06% /
+-0.07%; MemAlign rows -2.9% / -2.6%. SP1 cycles unchanged. Outputs identical on 11 mainnet blocks.
+
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -5628,9 +5628,10 @@ void CodeGen::genCodeForIndir(GenTreeIndir* tree)
+         }
+         gcInfo.gcMarkRegSetNpt(genRegMask(addrReg));
+     }
+-    else if (((tree->gtFlags & GTF_IND_PADDED_LENGTH) != 0) && (type == TYP_INT))
++    else if (((tree->gtFlags & (GTF_IND_PADDED_LENGTH | GTF_IND_ZK_WORD_LOAD)) != 0) && (type == TYP_INT))
+     {
+-        // The padding word after the length is zero (see Lowering::LowerArrLength).
++        // The padding word after the length is zero (see Lowering::LowerArrLength), or the user never reads the
++        // upper half (see Lowering::MarkZeroExtendedLoads).
+         GetEmitter()->emitInsLoadStoreOp(INS_ld, EA_8BYTE, targetReg, tree);
+     }
+     else
+diff --git a/src/coreclr/jit/gentree.h b/src/coreclr/jit/gentree.h
+--- a/src/coreclr/jit/gentree.h
++++ b/src/coreclr/jit/gentree.h
+@@ -493,6 +493,8 @@ enum GenTreeFlags : unsigned
+     GTF_IND_ALLOW_NON_ATOMIC    = 0x00100000, // GT_IND -- this memory access does not need to be atomic
+ #ifdef TARGET_RISCV64
+     GTF_IND_PADDED_LENGTH       = 0x04000000, // GT_IND -- an array length whose padding word is zero: ld reads it
++    GTF_IND_ZK_WORD_LOAD        = 0x00080000, // GT_IND -- an INT load from an 8-byte aligned address whose user never reads
++                                              //           the upper 32 bits: ld reads it on a zkVM
+ #endif
+ 
+     // Represents flags that an indirection based on another indirection must preserve
+diff --git a/src/coreclr/jit/lowerriscv64.cpp b/src/coreclr/jit/lowerriscv64.cpp
+--- a/src/coreclr/jit/lowerriscv64.cpp
++++ b/src/coreclr/jit/lowerriscv64.cpp
+@@ -955,6 +955,30 @@ static bool IsUpperHalfIgnored(Compiler* comp, GenTree* user, GenTree* op)
+     return equalityOrUnsigned && IsInt32RangeNonNegative(comp, other);
+ }
+ 
++//------------------------------------------------------------------------
++// IsObjectWordAddr: whether an address is an object reference plus a multiple of 8, so that it is 8-byte aligned
++// (every object, a frozen one included, starts at a multiple of 8).
++//
++static bool IsObjectWordAddr(GenTree* addr)
++{
++    if (addr->TypeIs(TYP_REF))
++        return true;
++
++    if (addr->OperIs(GT_LEA))
++    {
++        GenTreeAddrMode* const lea = addr->AsAddrMode();
++        return lea->HasBase() && lea->Base()->TypeIs(TYP_REF) && !lea->HasIndex() && ((lea->Offset() % 8) == 0);
++    }
++
++    if (addr->OperIs(GT_ADD) && addr->gtGetOp1()->TypeIs(TYP_REF) && addr->gtGetOp2()->IsCnsIntOrI())
++    {
++        const GenTreeIntCon* const offset = addr->gtGetOp2()->AsIntCon();
++        return !offset->IsIconHandle() && ((offset->IconValue() % 8) == 0);
++    }
++
++    return false;
++}
++
+ //------------------------------------------------------------------------
+ // MarkZeroExtendedLoads: load with lwu the INT loads whose user ignores their upper 32 bits, and narrow
+ // the INT loads that only feed a cast to a small type or a mask of their low byte or halfword.
+@@ -1027,7 +1051,20 @@ void Lowering::MarkZeroExtendedLoads()
+             }
+ 
+             if (IsUpperHalfIgnored(m_compiler, user, node))
++            {
+                 node->gtFlags |= GTF_ZEXT_LOAD;
++
++                // A zkVM charges a 4-byte load several times an aligned 8-byte one. A user that never reads the
++                // upper half, unlike a compare that only accepts either extension, takes the whole word ld
++                // loads from an 8-byte aligned address, which lies within one aligned word and so in mapped
++                // memory whenever the INT does.
++                if ((JitConfig.JitZkBumpAddr() != 0) && node->OperIs(GT_IND) &&
++                    !user->OperIsCompare() && !user->OperIs(GT_JCMP, GT_BOUNDS_CHECK) &&
++                    IsObjectWordAddr(node->AsIndir()->Addr()))
++                {
++                    node->gtFlags |= GTF_IND_ZK_WORD_LOAD;
++                }
++            }
+         }
+     }
+ }
