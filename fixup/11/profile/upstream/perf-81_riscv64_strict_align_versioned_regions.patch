@@ -154,7 +154,7 @@ Regression test: tools/tests/StrictAlignment/FastPath.
      while (!work.Empty())
      {
          changed |= TryVersionAlignmentChecks(work.Pop(), &work, &budget);
-@@ -1637,74 +1703,436 @@
+@@ -1637,74 +1703,444 @@
  }
  
  //------------------------------------------------------------------------
@@ -224,13 +224,15 @@ Regression test: tools/tests/StrictAlignment/FastPath.
 +        unsigned lclNum;
 +        unsigned size;
 +    };
++    typedef JitHashTable<unsigned, JitSmallPrimitiveKeyFuncs<unsigned>, unsigned> LocalMap;
 +    struct BlockInfo
 +    {
-+        unsigned nodeCount;
-+        int      firstRef;
-+        int      refCount;
-+        unsigned region;
-+        int      position;
++        unsigned  nodeCount;
++        int       firstRef;
++        int       refCount;
++        unsigned  region;
++        int       position;
++        LocalMap* accessSizes;
 +    };
 +    JitHashTable<BasicBlock*, JitPtrKeyFuncs<BasicBlock>, BlockInfo> infos(alloc);
 +    ArrayStack<LclRef>                                               refs(alloc);
@@ -242,7 +244,7 @@ Regression test: tools/tests/StrictAlignment/FastPath.
 +            continue;
 +        }
 +        m_alignFacts        = factsOf(block);
-+        BlockInfo info      = {0, refs.Height(), 0, 0, 0};
++        BlockInfo info      = {0, refs.Height(), 0, 0, 0, nullptr};
 +        bool      cloneable = true;
 +        for (GenTree* const node : LIR::AsRange(block))
 +        {
@@ -266,6 +268,18 @@ Regression test: tools/tests/StrictAlignment/FastPath.
 +        if (cloneable)
 +        {
 +            info.refCount = refs.Height() - info.firstRef;
++            if (info.refCount != 0)
++            {
++                info.accessSizes = new (alloc) LocalMap(alloc);
++                for (int r = info.firstRef; r < info.firstRef + info.refCount; r++)
++                {
++                    const LclRef ref  = refs.Bottom(r);
++                    unsigned     size = 0;
++                    info.accessSizes->Lookup(ref.lclNum, &size);
++                    size = (ref.size == 0) ? UINT_MAX : max(size, ref.size);
++                    info.accessSizes->Set(ref.lclNum, size, LocalMap::Overwrite);
++                }
++            }
 +            infos.Set(block, info);
 +        }
 +        else
@@ -280,27 +294,25 @@ Regression test: tools/tests/StrictAlignment/FastPath.
 -        if (!node->OperIs(GT_LCL_VAR) || !node->TypeIs(TYP_BYREF, TYP_I_IMPL))
 +    // The widest tested access through lclNum in a block, 0 if there is none, UINT_MAX if the block
 +    // stores lclNum or parentLcl.
-+    auto accessSize = [&refs](const BlockInfo* info, unsigned lclNum, unsigned parentLcl) {
-+        unsigned size = 0;
-+        for (int i = info->firstRef; i < info->firstRef + info->refCount; i++)
++    auto accessSize = [](const BlockInfo* info, unsigned lclNum, unsigned parentLcl) {
++        if (info->accessSizes == nullptr)
          {
 -            return false;
-+            const LclRef ref = refs.Bottom(i);
-+            if ((ref.size == 0) && ((ref.lclNum == lclNum) || (ref.lclNum == parentLcl)))
-+            {
-+                return UINT_MAX;
-+            }
-+            if (ref.lclNum == lclNum)
-+            {
-+                size = max(size, ref.size);
-+            }
++            return 0u;
          }
 -        const unsigned   lclNum = node->AsLclVar()->GetLclNum();
 -        const LclVarDsc* varDsc = m_compiler->lvaGetDesc(lclNum);
 -        return (lclNum < m_lclAlignCount) && !varDsc->IsAddressExposed() && !varDsc->lvPromoted &&
 -               (genActualType(varDsc->TypeGet()) == node->TypeGet()) &&
 -               (!varDsc->lvIsStructField || !m_compiler->lvaGetDesc(varDsc->lvParentLcl)->IsAddressExposed());
-+        return size;
++        unsigned size       = 0;
++        unsigned parentSize = 0;
++        info->accessSizes->Lookup(lclNum, &size);
++        if (parentLcl != BAD_VAR_NUM)
++        {
++            info->accessSizes->Lookup(parentLcl, &parentSize);
++        }
++        return (parentSize == UINT_MAX) ? UINT_MAX : size;
 +    };
 +
 +    auto parentOf = [this](unsigned lclNum) {
@@ -322,7 +334,7 @@ Regression test: tools/tests/StrictAlignment/FastPath.
 +    ArrayStack<unsigned>    sizes(alloc);
 +    ArrayStack<bool>        kept(alloc);
 +    ArrayStack<unsigned>    bases(alloc);
-+    ArrayStack<unsigned>    seen(alloc);
++    LocalMap                seen(alloc);
 +    unsigned                regionId = 0;
 +    auto                    grow     = [&](BasicBlock* entry, unsigned lclNum) {
 +        regionId++;
@@ -330,7 +342,6 @@ Regression test: tools/tests/StrictAlignment/FastPath.
 +        sizes.Reset();
 +        kept.Reset();
 +        bases.Reset();
-+        seen.Reset();
 +        const unsigned   parentLcl = parentOf(lclNum);
 +        BlockInfo* const entryInfo = infos.LookupPointer(entry);
 +        entryInfo->region          = regionId;
@@ -365,23 +376,20 @@ Regression test: tools/tests/StrictAlignment/FastPath.
 +        // tests and costs an `or` at the entry.
 +        const weight_t entryWeight = entry->bbWeight;
 +        weight_t       gain        = -2 * entryWeight;
-+        seen.Push(lclNum);
++        seen.Set(lclNum, regionId, LocalMap::Overwrite);
 +        for (int i = 0; i < region.Height(); i++)
 +        {
 +            const BlockInfo* const info = infos.LookupPointer(region.Bottom(i));
 +            for (int r = info->firstRef; r < info->firstRef + info->refCount; r++)
 +            {
-+                const unsigned base    = refs.Bottom(r).lclNum;
-+                bool           isFirst = refs.Bottom(r).size != 0;
-+                for (int s = 0; isFirst && (s < seen.Height()); s++)
-+                {
-+                    isFirst = seen.Bottom(s) != base;
-+                }
-+                if (!isFirst)
++                const unsigned base       = refs.Bottom(r).lclNum;
++                unsigned       seenRegion = 0;
++                seen.Lookup(base, &seenRegion);
++                if ((refs.Bottom(r).size == 0) || (seenRegion == regionId))
 +                {
 +                    continue;
 +                }
-+                seen.Push(base);
++                seen.Set(base, regionId, LocalMap::Overwrite);
 +                weight_t hits   = 0;
 +                bool     stored = false;
 +                for (int j = 0; !stored && (j < region.Height()); j++)
@@ -431,6 +439,7 @@ Regression test: tools/tests/StrictAlignment/FastPath.
 +    unsigned    bestLcl   = BAD_VAR_NUM;
 +    weight_t    bestGain  = 0;
 +    unsigned    bestNodes = 0;
++    LocalMap    searched(alloc);
 +    for (BasicBlock* const entry : m_compiler->Blocks())
 +    {
 +        const BlockInfo* const entryInfo = infos.LookupPointer(entry);
@@ -445,19 +454,18 @@ Regression test: tools/tests/StrictAlignment/FastPath.
 +        const int endRef   = firstRef + entryInfo->refCount;
 +        for (int r = firstRef; r < endRef; r++)
 +        {
-+            const unsigned lclNum = refs.Bottom(r).lclNum;
-+            bool           first  = refs.Bottom(r).size != 0;
-+            for (int p = firstRef; first && (p < r); p++)
-+            {
-+                first = (refs.Bottom(p).size == 0) || (refs.Bottom(p).lclNum != lclNum);
-+            }
-+            if (!first || (accessSize(entryInfo, lclNum, parentOf(lclNum)) == UINT_MAX))
++            const unsigned lclNum        = refs.Bottom(r).lclNum;
++            unsigned       searchedBlock = 0;
++            searched.Lookup(lclNum, &searchedBlock);
++            if ((refs.Bottom(r).size == 0) || (searchedBlock == entry->bbNum) ||
++                (accessSize(entryInfo, lclNum, parentOf(lclNum)) == UINT_MAX))
              {
 -                std::swap(base, other);
 +                continue;
              }
 -            if (!other->IsCnsIntOrI() || other->IsIconHandle())
 +
++            searched.Set(lclNum, entry->bbNum, LocalMap::Overwrite);
 +            const weight_t gain  = grow(entry, lclNum);
 +            unsigned       nodes = 0;
 +            for (int i = 0; i < region.Height(); i++)
@@ -632,7 +640,7 @@ Regression test: tools/tests/StrictAlignment/FastPath.
  
      // In LIR order: the tested accesses through a local, the stores to a local or its address, and the
      // nodes the clone cannot copy.
-@@ -1804,7 +2232,7 @@
+@@ -1804,7 +2240,7 @@
          {
              events.Push({pos, EventKind::Store, node->AsLclVarCommon()->GetLclNum(), 0, false});
          }
