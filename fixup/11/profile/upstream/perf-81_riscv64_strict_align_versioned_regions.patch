@@ -1,0 +1,643 @@
+Strict alignment: test bases once for their accesses in several blocks (applies after perf-80).
+
+perf-80 tests a base once for a run of accesses inside one block, so a base read between the branches
+of a carry chain or a compare is still tested in every block: the limbs of a UInt256 passed by `in`,
+the fields of a struct passed by reference. UInt256.AddMod and ReduceSumAssumingLT2m kept 16 tests of
+their parameters on the hot path, one per block and parameter.
+
+Lowering now first versions regions of blocks (TryVersionAlignmentRegion): an entry block that
+accesses a base and the blocks only the region leads to. One test at the start of the entry covers
+that base and every other base the region accesses and never stores; a misaligned base runs a clone of
+the region whose accesses keep their tests:
+
+    entry:
+      or    t, base, other
+      andi  t, t, size-1
+      bnez  t, slow
+      region             ; bases aligned: KnownAlignmentLog2 proves their accesses, no tests
+  slow:                  ; rarely run, out of line
+    clone of region      ; every access keeps its test, exits go where the region's do
+
+A block joins the region when all its predecessors are in it, it ends in a jump or a conditional jump,
+it is in no EH region and not rarely run, its nodes are ones perf-80 clones (plus the conditional jump)
+and it stores neither the base nor the struct it is a field of. So the region is entered only through
+the test (a jump back to the entry tests again) and the bases keep their tested values throughout.
+Blocks that lead to no access through the bases are left out, and another base is covered only when its
+accesses run more often than the entry. Of all regions, the one that saves the most instructions,
+weighted by block weight, is versioned; up to 16 per method, within the clone budget perf-80 already
+has. The region's blocks record the tested alignment as facts, which perf-80's runs then build on; the
+clones keep the facts of their originals.
+
+Nethermind stateless guest on SP1 (sp1-runner v6.6.0), on top of perf-76..80, cycles:
+  block 26055159:  96,594,868 ->  96,097,609 (-0.51%), gas -0.20%
+  block 26112793: 210,570,273 -> 209,036,962 (-0.73%), gas -0.33%
+  block 11940631 (Glamsterdam): 611,675,441 -> 607,594,579 (-0.67%), gas -0.57%
+  outputs identical. On 26112793 the alignment tests fall from 5.43% to 4.67% of cycles, and tests that
+  repeat one made earlier in the function from 1.29M to 0.36M; AddMod and ReduceSumAssumingLT2m keep 4 of
+  their 16 tests and cost 18 cycles less per ADDMOD. The SP1 guest ELF grows by 140 KB (+1.6%).
+Only builds with JitRiscV64StrictAlign change: the ZisK guest builds byte-identical.
+Regression test: tools/tests/StrictAlignment/FastPath.
+
+--- a/src/coreclr/jit/lower.h
++++ b/src/coreclr/jit/lower.h
+@@ -197,6 +197,8 @@
+     // The facts of the block being lowered (or analyzed by VersionAlignmentChecks).
+     const AlignFact* m_alignFacts = nullptr;
+     void             VersionAlignmentChecks();
++    bool             IsAlignmentTestedAccess(GenTreeIndir* indir, unsigned* lclNum, unsigned* size) const;
++    bool             TryVersionAlignmentRegion(unsigned* budget);
+     bool             TryVersionAlignmentChecks(BasicBlock* block, ArrayStack<BasicBlock*>* work, unsigned* budget);
+     void     RemoveRedundantExtensions();
+     void     MarkZeroExtendedLoads();
+--- a/src/coreclr/jit/lowerriscv64.cpp
++++ b/src/coreclr/jit/lowerriscv64.cpp
+@@ -1574,6 +1574,60 @@
+ }
+ 
+ //------------------------------------------------------------------------
++// IsAlignmentTestedAccess: is `indir` an access lowering will test at run time, through a base local
++// plus a multiple of its size?
++//
++// Arguments:
++//    indir  - the access, in the block whose facts m_alignFacts holds
++//    lclNum - receives the base local
++//    size   - receives the size of the access
++//
++// Notes:
++//    The base is a local whose value only changes through stores in the LIR: not address-exposed, and
++//    not a field of an address-exposed struct.
++//
++bool Lowering::IsAlignmentTestedAccess(GenTreeIndir* indir, unsigned* lclNum, unsigned* size) const
++{
++    const unsigned accessSize = genTypeSize(indir->TypeGet());
++    GenTree*       addr       = indir->Addr();
++    if (indir->TypeIs(TYP_STRUCT) || (accessSize <= 1) || IsAddrKnownAligned(addr, accessSize))
++    {
++        return false;
++    }
++    ssize_t offset = 0;
++    if (addr->OperIs(GT_ADD) && !addr->gtOverflow())
++    {
++        GenTree* base  = addr->gtGetOp1();
++        GenTree* other = addr->gtGetOp2();
++        if (base->IsCnsIntOrI())
++        {
++            std::swap(base, other);
++        }
++        if (!other->IsCnsIntOrI() || other->IsIconHandle())
++        {
++            return false;
++        }
++        offset = other->AsIntCon()->IconValue();
++        addr   = base;
++    }
++    if (((offset % (ssize_t)accessSize) != 0) || !addr->OperIs(GT_LCL_VAR) || !addr->TypeIs(TYP_BYREF, TYP_I_IMPL))
++    {
++        return false;
++    }
++    const unsigned   baseLcl = addr->AsLclVar()->GetLclNum();
++    const LclVarDsc* varDsc  = m_compiler->lvaGetDesc(baseLcl);
++    if ((baseLcl >= m_lclAlignCount) || varDsc->IsAddressExposed() || varDsc->lvPromoted ||
++        (genActualType(varDsc->TypeGet()) != addr->TypeGet()) ||
++        (varDsc->lvIsStructField && m_compiler->lvaGetDesc(varDsc->lvParentLcl)->IsAddressExposed()))
++    {
++        return false;
++    }
++    *lclNum = baseLcl;
++    *size   = accessSize;
++    return true;
++}
++
++//------------------------------------------------------------------------
+ // VersionAlignmentChecks: test the alignment of a base local once for a run of accesses through it.
+ //
+ // Notes:
+@@ -1601,6 +1655,8 @@
+ //    the accesses. The prefix, the aligned run and the rest are searched again, for other locals. The
+ //    clones are limited to as many nodes as the method has.
+ //
++//    Before that, accesses through one local in several blocks share a test (TryVersionAlignmentRegion).
++//
+ void Lowering::VersionAlignmentChecks()
+ {
+     // m_lclAlignLog2 is set when strict alignment applies and the method is optimized (see
+@@ -1612,18 +1668,28 @@
+         return;
+     }
+ 
+-    ArrayStack<BasicBlock*> work(m_compiler->getAllocator(CMK_Lower));
+-    unsigned                budget = 0;
++    unsigned budget = 0;
+     for (BasicBlock* const block : m_compiler->Blocks())
+     {
+-        work.Push(block);
+         for (GenTree* const node : LIR::AsRange(block))
+         {
+             budget++;
+         }
+     }
+ 
+-    bool changed = false;
++    const unsigned maxRegions = 16;
++    bool           changed    = false;
++    for (unsigned regions = 0; (regions < maxRegions) && TryVersionAlignmentRegion(&budget); regions++)
++    {
++        changed = true;
++    }
++
++    ArrayStack<BasicBlock*> work(m_compiler->getAllocator(CMK_Lower));
++    for (BasicBlock* const block : m_compiler->Blocks())
++    {
++        work.Push(block);
++    }
++
+     while (!work.Empty())
+     {
+         changed |= TryVersionAlignmentChecks(work.Pop(), &work, &budget);
+@@ -1637,74 +1703,436 @@
+ }
+ 
+ //------------------------------------------------------------------------
+-// TryVersionAlignmentChecks: version the best run of `block` (see VersionAlignmentChecks).
++// TryVersionAlignmentRegion: test the alignment of base locals once for their accesses in several blocks.
+ //
+ // Arguments:
+-//    block  - the block to search
+-//    work   - receives the aligned run and the rest of the block when the block is split
+ //    budget - the number of nodes that may still be cloned; reduced by the clone
+ //
+ // Return Value:
+-//    true if the block was split.
++//    true if a region was versioned.
+ //
+-bool Lowering::TryVersionAlignmentChecks(BasicBlock* block, ArrayStack<BasicBlock*>* work, unsigned* budget)
++// Notes:
++//    The blocks along a path often each test the same bases: the limbs of numbers passed by reference,
++//    read between the branches of a carry chain or of a compare. A run (TryVersionAlignmentChecks) ends
++//    with its block, so this versions a region of blocks: an entry block that accesses a base and the
++//    blocks only the region leads to. One test at the start of the entry covers that base and the other
++//    bases the region accesses:
++//
++//        entry:
++//          if (((base | other bases) & (size - 1)) != 0) goto slow
++//          region                  // bases aligned: their accesses need no test
++//
++//        slow:                     // rarely run, out of line
++//          clone of region         // every access keeps its test; the exits go where the region's do
++//
++//    A block joins the region when all its predecessors are in it, it ends in a jump or a conditional
++//    jump to two blocks, it is in no EH region and not rarely run, it holds only nodes the clone copies
++//    (IsAlignmentVersionableNode, and the conditional jump) and no store to the base or to the struct
++//    it is a field of. So the region is entered only through the test (a jump back to the entry tests
++//    again) and the base holds the tested value throughout; another base is covered when no block of
++//    the region stores it either. Blocks that lead to no access through the bases are left out. Of all
++//    regions, the one that saves the most instructions, weighted by how often blocks run, is versioned.
++//    Its blocks record the tested alignment of the bases as facts. The clones keep the facts of their
++//    originals, which hold for them too: a path through the clones takes the tests and stores of a path
++//    through the originals.
++//
++bool Lowering::TryVersionAlignmentRegion(unsigned* budget)
+ {
+-    if (!block->KindIs(BBJ_ALWAYS, BBJ_COND, BBJ_RETURN, BBJ_THROW, BBJ_SWITCH) || block->isRunRarely())
+-    {
+-        return false;
+-    }
++    const int     maxRegionBlocks = 64;
++    CompAllocator alloc           = m_compiler->getAllocator(CMK_Lower);
+ 
+-    m_alignFacts = nullptr;
+-    if (m_blockAlignFacts != nullptr)
++    auto factsOf = [this](BasicBlock* block) {
++        const AlignFact* facts = nullptr;
++        if (m_blockAlignFacts != nullptr)
++        {
++            m_blockAlignFacts->Lookup(block, &facts);
++        }
++        return facts;
++    };
++
++    // The blocks that can be in a region, with their tested accesses and local stores (size 0), and the
++    // region being grown.
++    struct LclRef
+     {
+-        m_blockAlignFacts->Lookup(block, &m_alignFacts);
++        unsigned lclNum;
++        unsigned size;
++    };
++    struct BlockInfo
++    {
++        unsigned nodeCount;
++        int      firstRef;
++        int      refCount;
++        unsigned region;
++        int      position;
++    };
++    JitHashTable<BasicBlock*, JitPtrKeyFuncs<BasicBlock>, BlockInfo> infos(alloc);
++    ArrayStack<LclRef>                                               refs(alloc);
++    for (BasicBlock* const block : m_compiler->Blocks())
++    {
++        if (!block->KindIs(BBJ_ALWAYS, BBJ_COND) || block->hasTryIndex() || block->hasHndIndex() ||
++            block->isRunRarely() || (block->KindIs(BBJ_COND) && block->TrueTargetIs(block->GetFalseTarget())))
++        {
++            continue;
++        }
++        m_alignFacts        = factsOf(block);
++        BlockInfo info      = {0, refs.Height(), 0, 0, 0};
++        bool      cloneable = true;
++        for (GenTree* const node : LIR::AsRange(block))
++        {
++            unsigned lclNum;
++            unsigned size;
++            info.nodeCount++;
++            if (!IsAlignmentVersionableNode(node) && !node->OperIs(GT_JTRUE))
++            {
++                cloneable = false;
++                break;
++            }
++            if (node->OperIsLocalStore() || node->OperIs(GT_LCL_ADDR))
++            {
++                refs.Push({node->AsLclVarCommon()->GetLclNum(), 0});
++            }
++            else if (node->OperIs(GT_IND, GT_STOREIND) && IsAlignmentTestedAccess(node->AsIndir(), &lclNum, &size))
++            {
++                refs.Push({lclNum, size});
++            }
++        }
++        if (cloneable)
++        {
++            info.refCount = refs.Height() - info.firstRef;
++            infos.Set(block, info);
++        }
++        else
++        {
++            refs.Pop(refs.Height() - info.firstRef);
++        }
+     }
++    m_alignFacts = nullptr;
+ 
+-    // A local whose value only changes through stores in the block's LIR.
+-    auto isBaseLocal = [this](GenTree* node) {
+-        if (!node->OperIs(GT_LCL_VAR) || !node->TypeIs(TYP_BYREF, TYP_I_IMPL))
++    // The widest tested access through lclNum in a block, 0 if there is none, UINT_MAX if the block
++    // stores lclNum or parentLcl.
++    auto accessSize = [&refs](const BlockInfo* info, unsigned lclNum, unsigned parentLcl) {
++        unsigned size = 0;
++        for (int i = info->firstRef; i < info->firstRef + info->refCount; i++)
+         {
+-            return false;
++            const LclRef ref = refs.Bottom(i);
++            if ((ref.size == 0) && ((ref.lclNum == lclNum) || (ref.lclNum == parentLcl)))
++            {
++                return UINT_MAX;
++            }
++            if (ref.lclNum == lclNum)
++            {
++                size = max(size, ref.size);
++            }
+         }
+-        const unsigned   lclNum = node->AsLclVar()->GetLclNum();
+-        const LclVarDsc* varDsc = m_compiler->lvaGetDesc(lclNum);
+-        return (lclNum < m_lclAlignCount) && !varDsc->IsAddressExposed() && !varDsc->lvPromoted &&
+-               (genActualType(varDsc->TypeGet()) == node->TypeGet()) &&
+-               (!varDsc->lvIsStructField || !m_compiler->lvaGetDesc(varDsc->lvParentLcl)->IsAddressExposed());
++        return size;
++    };
++
++    auto parentOf = [this](unsigned lclNum) {
++        const LclVarDsc* const varDsc = m_compiler->lvaGetDesc(lclNum);
++        return varDsc->lvIsStructField ? varDsc->lvParentLcl : BAD_VAR_NUM;
+     };
+ 
+-    // An access lowering will test at run time, through a base local plus a multiple of its size.
+-    auto isTestedAccess = [this, &isBaseLocal](GenTreeIndir* indir, unsigned* lclNum, unsigned* size) {
+-        const unsigned accessSize = genTypeSize(indir->TypeGet());
+-        GenTree*       addr       = indir->Addr();
+-        if (indir->TypeIs(TYP_STRUCT) || (accessSize <= 1) || IsAddrKnownAligned(addr, accessSize))
++    // grow: the region of lclNum entered at `entry`, in the order its blocks join it (each after its
++    // predecessors other than the entry). The test covers lclNum and every other base the region
++    // accesses and never stores, when those accesses run more often than the entry: one `or` replaces
++    // their tests. Then, per block, the widest tested access through those bases and whether the block
++    // holds or leads to one. Returns the instructions the test saves, weighted by how often blocks run.
++    ArrayStack<BasicBlock*> region(alloc);
++    ArrayStack<unsigned>    sizes(alloc);
++    ArrayStack<bool>        kept(alloc);
++    ArrayStack<unsigned>    bases(alloc);
++    ArrayStack<unsigned>    seen(alloc);
++    unsigned                regionId = 0;
++    auto                    grow     = [&](BasicBlock* entry, unsigned lclNum) {
++        regionId++;
++        region.Reset();
++        sizes.Reset();
++        kept.Reset();
++        bases.Reset();
++        seen.Reset();
++        const unsigned   parentLcl = parentOf(lclNum);
++        BlockInfo* const entryInfo = infos.LookupPointer(entry);
++        entryInfo->region          = regionId;
++        entryInfo->position        = 0;
++        region.Push(entry);
++        for (int i = 0; i < region.Height(); i++)
+         {
+-            return false;
++            for (BasicBlock* const succ : region.Bottom(i)->Succs())
++            {
++                BlockInfo* const info = infos.LookupPointer(succ);
++                if ((region.Height() == maxRegionBlocks) || (info == nullptr) || (info->region == regionId))
++                {
++                    continue;
++                }
++                bool joins = accessSize(info, lclNum, parentLcl) != UINT_MAX;
++                for (BasicBlock* const pred : succ->PredBlocks())
++                {
++                    const BlockInfo* const predInfo = infos.LookupPointer(pred);
++                    joins = joins && (predInfo != nullptr) && (predInfo->region == regionId);
++                }
++                if (joins)
++                {
++                    info->region   = regionId;
++                    info->position = region.Height();
++                    region.Push(succ);
++                }
++            }
++        }
++
++        // The tests of lclNum in blocks other than the entry are saved; each other base saves all its
++        // tests and costs an `or` at the entry.
++        const weight_t entryWeight = entry->bbWeight;
++        weight_t       gain        = -2 * entryWeight;
++        seen.Push(lclNum);
++        for (int i = 0; i < region.Height(); i++)
++        {
++            const BlockInfo* const info = infos.LookupPointer(region.Bottom(i));
++            for (int r = info->firstRef; r < info->firstRef + info->refCount; r++)
++            {
++                const unsigned base    = refs.Bottom(r).lclNum;
++                bool           isFirst = refs.Bottom(r).size != 0;
++                for (int s = 0; isFirst && (s < seen.Height()); s++)
++                {
++                    isFirst = seen.Bottom(s) != base;
++                }
++                if (!isFirst)
++                {
++                    continue;
++                }
++                seen.Push(base);
++                weight_t hits   = 0;
++                bool     stored = false;
++                for (int j = 0; !stored && (j < region.Height()); j++)
++                {
++                    const unsigned size = accessSize(infos.LookupPointer(region.Bottom(j)), base, parentOf(base));
++                    stored = size == UINT_MAX;
++                    hits += (size != 0) ? region.Bottom(j)->bbWeight : 0;
++                }
++                if (!stored && (2 * hits > entryWeight))
++                {
++                    bases.Push(base);
++                    gain += 2 * hits - entryWeight;
++                }
++            }
+         }
+-        ssize_t offset = 0;
+-        if (addr->OperIs(GT_ADD) && !addr->gtOverflow())
++        for (int i = 0; i < region.Height(); i++)
++        {
++            const BlockInfo* const info = infos.LookupPointer(region.Bottom(i));
++            unsigned               size = accessSize(info, lclNum, parentLcl);
++            gain += (size != 0) ? 2 * region.Bottom(i)->bbWeight : 0;
++            for (int b = 0; b < bases.Height(); b++)
++            {
++                size = max(size, accessSize(info, bases.Bottom(b), parentOf(bases.Bottom(b))));
++            }
++            sizes.Push(size);
++            kept.Push(size != 0);
++        }
++        bases.Push(lclNum);
++        for (int i = region.Height() - 1; i >= 0; i--)
++        {
++            for (BasicBlock* const succ : region.Bottom(i)->Succs())
++            {
++                const BlockInfo* const info = infos.LookupPointer(succ);
++                if ((info != nullptr) && (info->region == regionId) && (info->position > 0) &&
++                    kept.Bottom(info->position))
++                {
++                    kept.BottomRef(i) = true;
++                }
++            }
++        }
++        return gain;
++    };
++
++    BasicBlock* bestEntry = nullptr;
++    unsigned    bestLcl   = BAD_VAR_NUM;
++    weight_t    bestGain  = 0;
++    unsigned    bestNodes = 0;
++    for (BasicBlock* const entry : m_compiler->Blocks())
++    {
++        const BlockInfo* const entryInfo = infos.LookupPointer(entry);
++        if (entryInfo == nullptr)
+         {
+-            GenTree* base  = addr->gtGetOp1();
+-            GenTree* other = addr->gtGetOp2();
+-            if (base->IsCnsIntOrI())
++            continue;
++        }
++        const int firstRef = entryInfo->firstRef;
++        const int endRef   = firstRef + entryInfo->refCount;
++        for (int r = firstRef; r < endRef; r++)
++        {
++            const unsigned lclNum = refs.Bottom(r).lclNum;
++            bool           first  = refs.Bottom(r).size != 0;
++            for (int p = firstRef; first && (p < r); p++)
++            {
++                first = (refs.Bottom(p).size == 0) || (refs.Bottom(p).lclNum != lclNum);
++            }
++            if (!first || (accessSize(entryInfo, lclNum, parentOf(lclNum)) == UINT_MAX))
+             {
+-                std::swap(base, other);
++                continue;
+             }
+-            if (!other->IsCnsIntOrI() || other->IsIconHandle())
++
++            const weight_t gain  = grow(entry, lclNum);
++            unsigned       nodes = 0;
++            for (int i = 0; i < region.Height(); i++)
+             {
+-                return false;
++                nodes += kept.Bottom(i) ? infos.LookupPointer(region.Bottom(i))->nodeCount : 0;
++            }
++            if ((gain > 0) && (nodes <= *budget) && ((gain > bestGain) || ((gain == bestGain) && (nodes < bestNodes))))
++            {
++                bestEntry = entry;
++                bestLcl   = lclNum;
++                bestGain  = gain;
++                bestNodes = nodes;
+             }
+-            offset = other->AsIntCon()->IconValue();
+-            addr   = base;
+         }
+-        if (((offset % (ssize_t)accessSize) != 0) || !isBaseLocal(addr))
++    }
++
++    if (bestEntry == nullptr)
++    {
++        return false;
++    }
++
++    grow(bestEntry, bestLcl);
++
++    // The clones are made before the flow graph changes, so a region the clone cannot copy leaves it
++    // untouched.
++    ArrayStack<BasicBlock*> blocks(alloc);
++    ArrayStack<GenTree*>    cloneFirst(alloc);
++    ArrayStack<GenTree*>    cloneLast(alloc);
++    LIR::Range              clones = LIR::EmptyRange();
++    unsigned                size   = 0;
++    for (int i = 0; i < region.Height(); i++)
++    {
++        if (!kept.Bottom(i))
++        {
++            continue;
++        }
++        BasicBlock* const block = region.Bottom(i);
++        LIR::Range&       range = LIR::AsRange(block);
++        GenTree* const    prev  = clones.LastNode();
++        if (!range.IsEmpty() && !CloneAlignmentVersionedRange(m_compiler, range.FirstNode(), range.LastNode(), &clones))
+         {
+             return false;
+         }
+-        *lclNum = addr->AsLclVar()->GetLclNum();
+-        *size   = accessSize;
+-        return true;
++        GenTree* const first = (prev == nullptr) ? clones.FirstNode() : prev->gtNext;
++        blocks.Push(block);
++        cloneFirst.Push(first);
++        cloneLast.Push((first == nullptr) ? nullptr : clones.LastNode());
++        size = max(size, sizes.Bottom(i));
++    }
++    *budget -= min(*budget, bestNodes);
++
++    JITDUMP("Versioning the alignment test of V%02u and %d other bases (size %u) for a region of %d blocks entered "
++            "at " FMT_BB "\n",
++            bestLcl, bases.Height() - 1, size, blocks.Height(), bestEntry->bbNum);
++
++    const AlignFact* const entryFacts = factsOf(bestEntry);
++    GenTree*               base       = nullptr;
++    for (int b = 0; b < bases.Height(); b++)
++    {
++        const unsigned lclNum = bases.Bottom(b);
++        GenTree* const lcl =
++            m_compiler->gtNewLclvNode(lclNum, genActualType(m_compiler->lvaGetDesc(lclNum)->TypeGet()));
++        base = (base == nullptr) ? lcl : m_compiler->gtNewOperNode(GT_OR, TYP_I_IMPL, base, lcl);
++    }
++    GenTree* const mask = m_compiler->gtNewIconNode((ssize_t)size - 1, TYP_I_IMPL);
++    GenTree* const test = m_compiler->gtNewOperNode(GT_AND, TYP_I_IMPL, base, mask);
++    GenTree* const zero = m_compiler->gtNewIconNode(0, TYP_I_IMPL);
++    GenTree* const cond = m_compiler->gtNewOperNode(GT_NE, TYP_INT, test, zero);
++    cond->gtFlags |= (GTF_RELOP_JMP_USED | GTF_DONT_CSE);
++    GenTree* const jtrue      = m_compiler->gtNewOperNode(GT_JTRUE, TYP_VOID, cond);
++    LIR::Range&    entryRange = LIR::AsRange(bestEntry);
++    entryRange.InsertBefore(entryRange.FirstNode(), LIR::SeqTree(m_compiler, jtrue));
++    blocks.BottomRef(0) = m_compiler->fgSplitBlockAfterNode(bestEntry, jtrue);
++
++    JitHashTable<BasicBlock*, JitPtrKeyFuncs<BasicBlock>, BasicBlock*> cloneOf(alloc);
++    for (int i = 0; i < blocks.Height(); i++)
++    {
++        BasicBlock* const block = blocks.Bottom(i);
++        BasicBlock* const clone = m_compiler->fgNewBBinRegion(BBJ_ALWAYS, block, /* runRarely */ true,
++                                                              /* insertAtEnd */ true);
++        if (cloneFirst.Bottom(i) != nullptr)
++        {
++            LIR::AsRange(clone).InsertAtEnd(clones.Remove(cloneFirst.Bottom(i), cloneLast.Bottom(i)));
++        }
++        clone->bbCodeOffs    = block->bbCodeOffs;
++        clone->bbCodeOffsEnd = block->bbCodeOffsEnd;
++        clone->CopyFlags(block, BBF_COPY_PROPAGATE);
++        clone->bbSetRunRarely();
++        cloneOf.Set(block, clone);
++    }
++
++    auto cloneTarget = [&cloneOf](BasicBlock* target) {
++        BasicBlock* clone;
++        return cloneOf.Lookup(target, &clone) ? clone : target;
+     };
++    for (int i = 0; i < blocks.Height(); i++)
++    {
++        BasicBlock* const block = blocks.Bottom(i);
++        BasicBlock* const clone = cloneOf[block];
++        if (block->KindIs(BBJ_ALWAYS))
++        {
++            clone->SetKindAndTargetEdge(BBJ_ALWAYS, m_compiler->fgAddRefPred(cloneTarget(block->GetTarget()), clone));
++        }
++        else
++        {
++            FlowEdge* const trueEdge  = m_compiler->fgAddRefPred(cloneTarget(block->GetTrueTarget()), clone);
++            FlowEdge* const falseEdge = m_compiler->fgAddRefPred(cloneTarget(block->GetFalseTarget()), clone);
++            trueEdge->setLikelihood(block->GetTrueEdge()->getLikelihood());
++            falseEdge->setLikelihood(block->GetFalseEdge()->getLikelihood());
++            clone->SetCond(trueEdge, falseEdge);
++        }
++    }
++
++    FlowEdge* const toFast = bestEntry->GetTargetEdge();
++    FlowEdge* const toSlow = m_compiler->fgAddRefPred(cloneOf[blocks.Bottom(0)], bestEntry);
++    toFast->setLikelihood(1.0);
++    toSlow->setLikelihood(0.0);
++    bestEntry->SetCond(toSlow, toFast);
++
++    if (m_blockAlignFacts == nullptr)
++    {
++        m_blockAlignFacts = new (alloc) BlockAlignFacts(alloc);
++    }
++    for (int i = 0; i < blocks.Height(); i++)
++    {
++        BasicBlock* const      block    = blocks.Bottom(i);
++        const AlignFact* const facts    = (i == 0) ? entryFacts : factsOf(block);
++        const AlignFact*       newFacts = facts;
++        for (int b = 0; b < bases.Height(); b++)
++        {
++            newFacts = new (alloc) AlignFact{bases.Bottom(b), genLog2(size), newFacts};
++        }
++        m_blockAlignFacts->Set(block, newFacts, BlockAlignFacts::Overwrite);
++        if (facts != nullptr)
++        {
++            m_blockAlignFacts->Set(cloneOf[block], facts);
++        }
++    }
++    return true;
++}
++
++//------------------------------------------------------------------------
++// TryVersionAlignmentChecks: version the best run of `block` (see VersionAlignmentChecks).
++//
++// Arguments:
++//    block  - the block to search
++//    work   - receives the aligned run and the rest of the block when the block is split
++//    budget - the number of nodes that may still be cloned; reduced by the clone
++//
++// Return Value:
++//    true if the block was split.
++//
++bool Lowering::TryVersionAlignmentChecks(BasicBlock* block, ArrayStack<BasicBlock*>* work, unsigned* budget)
++{
++    if (!block->KindIs(BBJ_ALWAYS, BBJ_COND, BBJ_RETURN, BBJ_THROW, BBJ_SWITCH) || block->isRunRarely())
++    {
++        return false;
++    }
++
++    m_alignFacts = nullptr;
++    if (m_blockAlignFacts != nullptr)
++    {
++        m_blockAlignFacts->Lookup(block, &m_alignFacts);
++    }
+ 
+     // In LIR order: the tested accesses through a local, the stores to a local or its address, and the
+     // nodes the clone cannot copy.
+@@ -1804,7 +2232,7 @@
+         {
+             events.Push({pos, EventKind::Store, node->AsLclVarCommon()->GetLclNum(), 0, false});
+         }
+-        else if (node->OperIs(GT_IND, GT_STOREIND) && isTestedAccess(node->AsIndir(), &lclNum, &size))
++        else if (node->OperIs(GT_IND, GT_STOREIND) && IsAlignmentTestedAccess(node->AsIndir(), &lclNum, &size))
+         {
+             bool canEndRun = true;
+             for (int i = 0; canEndRun && (i < pendingValues.Height()); i++)
