@@ -1,0 +1,202 @@
+Strict alignment: regions take in loops and returns (applies after perf-81).
+
+perf-81 grows a region only by blocks whose predecessors are all in it already, so it cannot take in a
+loop: the header's back edge comes from a block that has not joined yet. The JIT also hoists invariant
+work out of loops, so the header often holds no access through the base, and the base's accesses in the
+loop body kept a test per iteration. Return blocks could not join either, so the block that reads the
+last value and returns kept its own test.
+
+The region is now the largest single-entry set of blocks: it starts as every block the entry reaches
+through blocks that can join, then drops each block a predecessor outside the region enters, until no
+block is. Loops whose back edges stay in the region join whole. As before, no block of the region stores
+the base or its parent struct, so the base keeps the tested value around the loop, and a jump back to
+the entry tests again; another base is covered only when no region block stores it. A return block
+(other than the merged return block) can join as well; its clone returns too. Whether a block leads to an
+access is now found by a fixpoint, since the region may have cycles. The other conditions are perf-81's:
+no EH regions, only nodes perf-80 clones, single entry and the clone budget.
+
+    entry:                     ; perf-81 tested again in every iteration and after the loop
+      andi  t, base, size-1
+      bnez  t, slow
+      access
+    loop:
+      access                   ; no test
+      bnez  i, loop
+      access                   ; no test
+      ret
+
+Nethermind stateless guest on SP1 (sp1-runner v6.6.0), on top of perf-76..81, cycles:
+  block 26055159:  96,097,609 ->  96,065,170 (-0.03%), gas -0.01%
+  block 26112793: 209,036,962 -> 208,977,814 (-0.03%), gas -0.01%
+  block 11940631 (Glamsterdam): 607,594,579 -> 607,490,774 (-0.02%), gas -0.01%
+  outputs identical. The SP1 guest ELF grows by 16 KB (+0.2%).
+Only builds with JitRiscV64StrictAlign change: the ZisK guest builds byte-identical.
+Regression test: tools/tests/StrictAlignment/FastPath.
+
+--- a/src/coreclr/jit/lowerriscv64.cpp
++++ b/src/coreclr/jit/lowerriscv64.cpp
+@@ -1725,13 +1725,17 @@
+ //        slow:                     // rarely run, out of line
+ //          clone of region         // every access keeps its test; the exits go where the region's do
+ //
+-//    A block joins the region when all its predecessors are in it, it ends in a jump or a conditional
+-//    jump to two blocks, it is in no EH region and not rarely run, it holds only nodes the clone copies
+-//    (IsAlignmentVersionableNode, and the conditional jump) and no store to the base or to the struct
+-//    it is a field of. So the region is entered only through the test (a jump back to the entry tests
+-//    again) and the base holds the tested value throughout; another base is covered when no block of
+-//    the region stores it either. Blocks that lead to no access through the bases are left out. Of all
+-//    regions, the one that saves the most instructions, weighted by how often blocks run, is versioned.
++//    A block can join the region when it ends in a jump, a conditional jump to two blocks or a return
++//    (other than the merged return block), it is in no EH region and not rarely run, and it holds only
++//    nodes the clone copies (IsAlignmentVersionableNode, and the conditional jump or the return) and no
++//    store to the base or to the struct it is a field of. The region starts as every such block the
++//    entry reaches through such blocks; a block a predecessor outside the region enters then leaves it,
++//    until no block does. So loops join whole when their back edges stay in the region, and the region
++//    is entered only through the test (a jump back to the entry tests again): as no block of it stores
++//    the base, the base holds the tested value throughout, around loops too. Another base is covered
++//    when no block of the region stores it either. Blocks that lead to no access through the bases are
++//    left out. Of all regions, the one that saves the most instructions, weighted by how often blocks
++//    run, is versioned.
+ //    Its blocks record the tested alignment of the bases as facts. The clones keep the facts of their
+ //    originals, which hold for them too: a path through the clones takes the tests and stores of a path
+ //    through the originals.
+@@ -1771,8 +1775,9 @@
+     ArrayStack<LclRef>                                               refs(alloc);
+     for (BasicBlock* const block : m_compiler->Blocks())
+     {
+-        if (!block->KindIs(BBJ_ALWAYS, BBJ_COND) || block->hasTryIndex() || block->hasHndIndex() ||
+-            block->isRunRarely() || (block->KindIs(BBJ_COND) && block->TrueTargetIs(block->GetFalseTarget())))
++        if (!block->KindIs(BBJ_ALWAYS, BBJ_COND, BBJ_RETURN) || (block == m_compiler->genReturnBB) ||
++            block->hasTryIndex() || block->hasHndIndex() || block->isRunRarely() ||
++            (block->KindIs(BBJ_COND) && block->TrueTargetIs(block->GetFalseTarget())))
+         {
+             continue;
+         }
+@@ -1784,7 +1789,8 @@
+             unsigned lclNum;
+             unsigned size;
+             info.nodeCount++;
+-            if (!IsAlignmentVersionableNode(node) && !node->OperIs(GT_JTRUE))
++            if (!IsAlignmentVersionableNode(node) && !node->OperIs(GT_JTRUE) &&
++                !(node->OperIs(GT_RETURN) && !varTypeIsStruct(node)))
+             {
+                 cloneable = false;
+                 break;
+@@ -1844,11 +1850,11 @@
+         return varDsc->lvIsStructField ? varDsc->lvParentLcl : BAD_VAR_NUM;
+     };
+ 
+-    // grow: the region of lclNum entered at `entry`, in the order its blocks join it (each after its
+-    // predecessors other than the entry). The test covers lclNum and every other base the region
+-    // accesses and never stores, when those accesses run more often than the entry: one `or` replaces
+-    // their tests. Then, per block, the widest tested access through those bases and whether the block
+-    // holds or leads to one. Returns the instructions the test saves, weighted by how often blocks run.
++    // grow: the region of lclNum entered at `entry`, the entry first. The test covers lclNum and every
++    // other base the region accesses and never stores, when those accesses run more often than the
++    // entry: one `or` replaces their tests. Then, per block, the widest tested access through those bases
++    // and whether the block holds or leads to one. Returns the instructions the test saves, weighted by
++    // how often blocks run.
+     ArrayStack<BasicBlock*> region(alloc);
+     ArrayStack<unsigned>    sizes(alloc);
+     ArrayStack<bool>        kept(alloc);
+@@ -1871,24 +1877,50 @@
+             for (BasicBlock* const succ : region.Bottom(i)->Succs())
+             {
+                 BlockInfo* const info = infos.LookupPointer(succ);
+-                if ((region.Height() == maxRegionBlocks) || (info == nullptr) || (info->region == regionId))
++                if ((region.Height() < maxRegionBlocks) && (info != nullptr) && (info->region != regionId) &&
++                    (accessSize(info, lclNum, parentLcl) != UINT_MAX))
+                 {
+-                    continue;
++                    info->region = regionId;
++                    region.Push(succ);
+                 }
+-                bool joins = accessSize(info, lclNum, parentLcl) != UINT_MAX;
+-                for (BasicBlock* const pred : succ->PredBlocks())
++            }
++        }
++
++        // Blocks entered from outside leave until none is. Each block left has all its predecessors in
++        // the region, so it is still reached from the entry through the region.
++        for (bool dropped = true; dropped;)
++        {
++            dropped = false;
++            for (int i = 1; i < region.Height(); i++)
++            {
++                BlockInfo* const info = infos.LookupPointer(region.Bottom(i));
++                if (info->region != regionId)
+                 {
+-                    const BlockInfo* const predInfo = infos.LookupPointer(pred);
+-                    joins = joins && (predInfo != nullptr) && (predInfo->region == regionId);
++                    continue;
+                 }
+-                if (joins)
++                for (BasicBlock* const pred : region.Bottom(i)->PredBlocks())
+                 {
+-                    info->region   = regionId;
+-                    info->position = region.Height();
+-                    region.Push(succ);
++                    const BlockInfo* const predInfo = infos.LookupPointer(pred);
++                    if ((predInfo == nullptr) || (predInfo->region != regionId))
++                    {
++                        info->region = 0;
++                        dropped      = true;
++                        break;
++                    }
+                 }
+             }
+         }
++        int height = 0;
++        for (int i = 0; i < region.Height(); i++)
++        {
++            BlockInfo* const info = infos.LookupPointer(region.Bottom(i));
++            if (info->region == regionId)
++            {
++                info->position             = height;
++                region.BottomRef(height++) = region.Bottom(i);
++            }
++        }
++        region.Pop(region.Height() - height);
+ 
+         // The tests of lclNum in blocks other than the entry are saved; each other base saves all its
+         // tests and costs an `or` at the entry.
+@@ -1936,15 +1968,20 @@
+             kept.Push(size != 0);
+         }
+         bases.Push(lclNum);
+-        for (int i = region.Height() - 1; i >= 0; i--)
++        for (bool changed = true; changed;)
+         {
+-            for (BasicBlock* const succ : region.Bottom(i)->Succs())
++            changed = false;
++            for (int i = region.Height() - 1; i >= 0; i--)
+             {
+-                const BlockInfo* const info = infos.LookupPointer(succ);
+-                if ((info != nullptr) && (info->region == regionId) && (info->position > 0) &&
+-                    kept.Bottom(info->position))
++                for (BasicBlock* const succ : region.Bottom(i)->Succs())
+                 {
+-                    kept.BottomRef(i) = true;
++                    const BlockInfo* const info = infos.LookupPointer(succ);
++                    if (!kept.Bottom(i) && (info != nullptr) && (info->region == regionId) && (info->position > 0) &&
++                        kept.Bottom(info->position))
++                    {
++                        kept.BottomRef(i) = true;
++                        changed           = true;
++                    }
+                 }
+             }
+         }
+@@ -2076,7 +2113,11 @@
+     {
+         BasicBlock* const block = blocks.Bottom(i);
+         BasicBlock* const clone = cloneOf[block];
+-        if (block->KindIs(BBJ_ALWAYS))
++        if (block->KindIs(BBJ_RETURN))
++        {
++            clone->SetKindAndTargetEdge(BBJ_RETURN);
++        }
++        else if (block->KindIs(BBJ_ALWAYS))
+         {
+             clone->SetKindAndTargetEdge(BBJ_ALWAYS, m_compiler->fgAddRefPred(cloneTarget(block->GetTarget()), clone));
+         }

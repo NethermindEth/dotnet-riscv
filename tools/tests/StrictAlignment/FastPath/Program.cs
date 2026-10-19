@@ -160,6 +160,55 @@ static unsafe class Program
                 Check(Expected(at + 16, 4), exit >= 2 ? 0x1516171AUL : 0);
             }
         }
+
+        for (int i = 0; i < Buffer.Length; i++)
+            Buffer[i] = (byte)(i * 37 + 11);
+
+        for (int misalignment = 0; misalignment < 8; misalignment++)
+        {
+            int at = 64 + misalignment;
+            ref byte p = ref Buffer[at];
+            for (int count = 0; count <= 3; count++)
+            {
+                ulong limbs = Expected(at + 24, 8);
+                for (int i = 0; i < count; i++)
+                {
+                    limbs += Expected(at, 8);
+                    if ((limbs & 1) != 0)
+                        limbs ^= Expected(at + 8, 8);
+                }
+                Check(LoopIn(in Unsafe.As<byte, Limbs>(ref p), count), limbs + Expected(at + 16, 8));
+
+                ulong span = Expected(at + 16, 8);
+                for (int i = 0; i < count; i++)
+                    span = (span << 1) + Expected(at, 8) - Expected(at + 8, 4);
+                Check(LoopSpan(Buffer.AsSpan(at, 24), count), span);
+
+                ulong middle = Expected(at, 8);
+                for (int i = 0; i == 0 || i < count; i++)
+                {
+                    middle += Expected(at + 8, 8);
+                    if ((middle & 1) != 0)
+                        middle ^= Expected(at + 16, 4);
+                }
+                Check(MiddleBackEdge(ref p, count), middle);
+
+                for (int step = 0; step < 8; step++)
+                {
+                    int other = 96 + step;
+                    ulong moved = Expected(at, 8) + Expected(other, 8);
+                    for (int i = 0; i < count; i++)
+                        moved += Expected(at + 8, 8) ^ Expected(other + i * step + 8, 8);
+                    Check(StoredInLoop(ref p, ref Buffer[other], step, count), moved + Expected(at + 16, 8));
+                }
+            }
+
+            ulong early = Expected(at, 8);
+            Check(EarlyReturns(ref p, 0), early ^ Expected(at + 24, 8));
+            early += Expected(at + 8, 8);
+            Check(EarlyReturns(ref p, 1), early - Expected(at + 28, 4));
+            Check(EarlyReturns(ref p, 2), early * Expected(at + 16, 8));
+        }
         return 0;
     }
 
@@ -416,5 +465,77 @@ static unsafe class Program
         if (exit == 1)
             return;
         Unsafe.WriteUnaligned(ref Unsafe.Add(ref p, 16), (uint)value + 2);
+    }
+
+    // a is read before, in and after the loop; the stores keep the reads in the loop, whose blocks hold
+    // no access before the first read.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static ulong LoopIn(in Limbs a, int count)
+    {
+        ulong sum = a.U3;
+        for (int i = 0; i < count; i++)
+        {
+            sum += a.U0;
+            if ((sum & 1) != 0)
+                sum ^= a.U1;
+            _sink = sum;
+        }
+        return sum + a.U2;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static ulong LoopSpan(ReadOnlySpan<byte> span, int count)
+    {
+        ulong sum = Read64(ref MemoryMarshal.GetReference(span), 16);
+        for (int i = 0; i < count; i++)
+        {
+            sum = (sum << 1) + Read64(ref MemoryMarshal.GetReference(span), 0) -
+                Read32(ref MemoryMarshal.GetReference(span), 8);
+            _sink = sum;
+        }
+        return sum;
+    }
+
+    // The loop jumps back to its first block, which follows the block p is first read in.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static ulong MiddleBackEdge(ref byte p, int count)
+    {
+        ulong sum = Read64(ref p, 0);
+        int i = 0;
+        do
+        {
+            sum += Read64(ref p, 8);
+            if ((sum & 1) != 0)
+                sum ^= Read32(ref p, 16);
+            _sink = sum;
+        } while (++i < count);
+        return sum;
+    }
+
+    // q moves in the loop, so its reads keep their tests; p is never stored.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static ulong StoredInLoop(ref byte p, ref byte q, int step, int count)
+    {
+        ulong sum = Read64(ref p, 0) + Read64(ref q, 0);
+        for (int i = 0; i < count; i++)
+        {
+            sum += Read64(ref p, 8) ^ Read64(ref q, 8);
+            q = ref Unsafe.Add(ref q, step);
+            _sink = sum;
+        }
+        return sum + Read64(ref p, 16);
+    }
+
+    // Each return reads a value of its own.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static ulong EarlyReturns(ref byte p, int exit)
+    {
+        ulong sum = Read64(ref p, 0);
+        if (exit == 0)
+            return sum ^ Read64(ref p, 24);
+        sum += Read64(ref p, 8);
+        if (exit == 1)
+            return sum - Read32(ref p, 28);
+        return sum * Read64(ref p, 16);
     }
 }
