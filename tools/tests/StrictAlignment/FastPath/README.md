@@ -1,4 +1,4 @@
-# Strict alignment fast path (perf-76, perf-80, perf-81)
+# Strict alignment fast path (perf-76, perf-80, perf-81, perf-82)
 
 Run with a RISC-V bflat toolchain built from this patch series and Docker:
 
@@ -19,7 +19,10 @@ a span field, also reassigned, plus stores. Last come accesses spread over sever
 test perf-81 shares: a chain of reads with an early return after each, narrow reads before wide
 ones, a diamond, a loop whose body jumps back to its first block, a base reassigned between the
 blocks, a second base moved between them, a compare of two `in` structs that returns at every
-limb, and a chain of stores. SP1 rejects any misaligned access, so the run also proves that an
+limb, and a chain of stores. Then come regions that take in loops and returns (perf-82): loops over an
+`in` struct and over a span field, read before, in and after the loop, a loop that jumps back to the
+block after the first read, a second base moved in the loop, whose reads keep their tests, and returns
+that each read a value of their own. SP1 rejects any misaligned access, so the run also proves that an
 aligned path is only taken on an aligned address. Success exits with code 0; a wrong value exits
 with the number of the failed check (modulo 255: SP1 keeps 8 bits of the exit code) and the
 runner reports it.
