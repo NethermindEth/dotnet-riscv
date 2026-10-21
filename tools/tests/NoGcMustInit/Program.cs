@@ -3,6 +3,7 @@
 
 using System;
 using System.Runtime.CompilerServices;
+using System.Threading;
 
 internal static class Program
 {
@@ -37,9 +38,6 @@ internal static class Program
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static bool IsNull(ref object o) => o is null;
 
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private static void Keep(Box b) => s_sink += b.A;
-
     [SkipLocalsInit]
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static bool DefaultStruct()
@@ -61,10 +59,10 @@ internal static class Program
     private static bool NewObject()
     {
         Box b = new();
-        bool zero = b.Obj is null && (b.A | b.B | b.C | b.D) == 0;
-        b.A = 1;
-        Keep(b);
-        return zero;
+        // Volatile reads keep the field loads observable without making the object escape.
+        return Volatile.Read(ref b.Obj) is null &&
+            (Volatile.Read(ref b.A) | Volatile.Read(ref b.B) |
+             Volatile.Read(ref b.C) | Volatile.Read(ref b.D)) == 0;
     }
 
     private static int Main()
