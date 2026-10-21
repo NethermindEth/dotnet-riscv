@@ -1,0 +1,186 @@
+RISC-V zkVM: zero GC-ref stack slots in the prolog only where a GC-free local would be zeroed (JitZkNoGcMustInit)
+
+A zkVM guest links a GC that never collects (the Nethermind ZisK guest's uGC: GarbageCollect is a stub), so
+no stack is ever scanned. The JIT still zeroes, in every prolog, each frame slot a GC could report before it is
+written. On the Nethermind ZisK guest that is about three quarters of all executed DMA memsets (e.g. 152 bytes
+on every ExecuteSLoad), plus the explicit zero stores and spill-temp stores that come with it.
+
+JitZkNoGcMustInit=1 (default 0 = unchanged) gives a local or temp that holds GC references the zero-init
+treatment of a GC-free local of the same shape. Disabled reasons, each one exists only for GC reporting:
+- an untracked local with GC references is must-init (genCheckUseBlockInit): untracked GC slots are reported
+  live for the whole method;
+- a tracked struct with GC references is must-init (genCheckUseBlockInit): struct GC liveness is not reported
+  precisely (TODO-1stClassStructs);
+- a GC temp is not skipped like a GC-free temp (genCheckUseBlockInit), so it reaches the two reasons above;
+- a GC local live into a finally is must-init (liveness MarkMustInitAndEHVars, LSRA insertZeroInitRefPositions
+  for enregistered EH vars): handler-live slots are reported untracked;
+- a GC spill temp is zeroed (genCheckUseBlockInit, genFnProlog, genZeroInitFrame): spill temps are reported
+  untracked; a spill temp is always written before it is reloaded;
+- a GC local whose first reference is an explicit init is not marked lvHasExplicitInit when a GC safe point
+  precedes that init (optRemoveRedundantZeroInits).
+fgVarNeedsExplicitZeroInit used to rely on the first two reasons to drop explicit zeroing of GC locals and GC
+structs (newobj temps, inlinee locals with localsinit, initobj, stack-allocated objects, promotion and
+tail-call-to-loop re-inits). With the knob it answers as for a GC-free local, so these inits are emitted where
+semantics need them and all its consumers (importer, inliner, object allocator, promotion, redundant zero-init
+removal, value numbering's initial values, async analysis) stay consistent with the prolog.
+
+Kept: compInitMem (localsinit) zeroing, a tracked local with GC references read before its first write
+(live-in to the first block; zeroed as before), and everything that does not depend on GC-ness (GS cookie,
+localloc, OSR, P/Invoke frame, parameters).
+
+Only valid when the runtime never scans a stack: a GC (or any stack walk that reads GC slots) would see
+garbage in unzeroed slots.
+
+diff --git a/src/coreclr/jit/codegencommon.cpp b/src/coreclr/jit/codegencommon.cpp
+index 366f335..e757f32 100644
+--- a/src/coreclr/jit/codegencommon.cpp
++++ b/src/coreclr/jit/codegencommon.cpp
+@@ -3982,6 +3982,7 @@ void CodeGen::genCheckUseBlockInit()
+ 
+         const bool isTemp      = varDsc->lvIsTemp;
+         const bool hasGCPtr    = varDsc->HasGCPtr();
++        const bool gcMustInit  = hasGCPtr && (JitConfig.JitZkNoGcMustInit() == 0);
+         const bool isTracked   = varDsc->lvTracked;
+         const bool isStruct    = varTypeIsStruct(varDsc);
+         const bool compInitMem = m_compiler->info.compInitMem;
+@@ -4036,12 +4037,12 @@ void CodeGen::genCheckUseBlockInit()
+             if (varDsc->lvOnFrame)
+             {
+                 bool mustInitThisVar = false;
+-                if (hasGCPtr && !isTracked)
++                if (gcMustInit && !isTracked)
+                 {
+                     JITDUMP("must init V%02u because it has a GC ref\n", varNum);
+                     mustInitThisVar = true;
+                 }
+-                else if (hasGCPtr && isStruct)
++                else if (gcMustInit && isStruct)
+                 {
+                     // TODO-1stClassStructs: support precise liveness reporting for such structs.
+                     JITDUMP("must init a tracked V%02u because it a struct with a GC ref\n", varNum);
+@@ -4060,8 +4061,8 @@ void CodeGen::genCheckUseBlockInit()
+                     // We are done with tracked or GC vars, now look at untracked vars without GC refs.
+                     if (!isTracked)
+                     {
+-                        assert(!hasGCPtr && !isTemp);
+-                        if (compInitMem)
++                        assert(!gcMustInit && (!isTemp || hasGCPtr));
++                        if (compInitMem && !isTemp)
+                         {
+                             JITDUMP("must init V%02u because compInitMem is set and it is not a temp\n", varNum);
+                             mustInitThisVar = true;
+@@ -4087,7 +4088,7 @@ void CodeGen::genCheckUseBlockInit()
+     assert(regSet.tmpAllFree());
+     for (TempDsc* tempThis = regSet.tmpListBeg(); tempThis != nullptr; tempThis = regSet.tmpListNxt(tempThis))
+     {
+-        if (varTypeIsGC(tempThis->tdTempType()))
++        if (varTypeIsGC(tempThis->tdTempType()) && (JitConfig.JitZkNoGcMustInit() == 0))
+         {
+             initStkLclCnt++;
+         }
+@@ -4385,7 +4386,7 @@ void CodeGen::genZeroInitFrame(int untrLclHi, int untrLclLo, regNumber initReg,
+         assert(regSet.tmpAllFree());
+         for (TempDsc* tempThis = regSet.tmpListBeg(); tempThis != nullptr; tempThis = regSet.tmpListNxt(tempThis))
+         {
+-            if (!varTypeIsGC(tempThis->tdTempType()))
++            if (!varTypeIsGC(tempThis->tdTempType()) || (JitConfig.JitZkNoGcMustInit() != 0))
+             {
+                 continue;
+             }
+@@ -5577,7 +5578,7 @@ void CodeGen::genFnProlog()
+     assert(regSet.tmpAllFree());
+     for (TempDsc* tempThis = regSet.tmpListBeg(); tempThis != nullptr; tempThis = regSet.tmpListNxt(tempThis))
+     {
+-        if (!varTypeIsGC(tempThis->tdTempType()))
++        if (!varTypeIsGC(tempThis->tdTempType()) || (JitConfig.JitZkNoGcMustInit() != 0))
+         {
+             continue;
+         }
+diff --git a/src/coreclr/jit/compiler.hpp b/src/coreclr/jit/compiler.hpp
+index ff31620..99bb151 100644
+--- a/src/coreclr/jit/compiler.hpp
++++ b/src/coreclr/jit/compiler.hpp
+@@ -4400,6 +4400,12 @@ bool Compiler::fgVarNeedsExplicitZeroInit(unsigned varNum, bool bbInALoop, bool
+         return true;
+     }
+ 
++    // JitZkNoGcMustInit: the prolog zeroes GC references only where it would zero any other local.
++    if (JitConfig.JitZkNoGcMustInit() != 0)
++    {
++        return !info.compInitMem || varDsc->lvIsTemp;
++    }
++
+     if (varTypeIsGC(varDsc->lvType))
+     {
+         return false;
+diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
+index 7e48067..b600c21 100644
+--- a/src/coreclr/jit/jitconfigvalues.h
++++ b/src/coreclr/jit/jitconfigvalues.h
+@@ -564,6 +564,11 @@ RELEASE_CONFIG_INTEGER(JitZkMemsetCsr, "JitZkMemsetCsr", 0)
+ // unrolled into load/store pairs is emitted as the DMA memcpy idiom (see JitZkCsrPInvokes),
+ // `csrrs x0, 0x813, <source>; add x0, <destination>, <length>`.
+ RELEASE_CONFIG_INTEGER(JitZkMemcpyCsr, "JitZkMemcpyCsr", 0)
++// zkVM: non-zero zero-initializes a local or spill temp that contains GC references only when a
++// local without them would be: localsinit, a read before the first write, newobj/initobj/inlinee
++// zeroing. The other prolog zeroing of GC slots exists so that a GC never scans garbage and is
++// dropped. Valid only on a runtime that never scans stacks (a non-collecting GC). Default 0.
++RELEASE_CONFIG_INTEGER(JitZkNoGcMustInit, "JitZkNoGcMustInit", 0)
+ // riscv64 zkVM (ZisK): a precompile runs when a CSR is written with the address of its
+ // operand block. libziskos wraps each one in a two-instruction function (csrs; ret) that
+ // managed code reaches through a P/Invoke, so one keccak-f costs the call pair, the stub,
+diff --git a/src/coreclr/jit/liveness.cpp b/src/coreclr/jit/liveness.cpp
+index 9198ab6..fdbcdab 100644
+--- a/src/coreclr/jit/liveness.cpp
++++ b/src/coreclr/jit/liveness.cpp
+@@ -1386,7 +1386,8 @@ void Liveness<TLiveness>::MarkMustInitAndEHVars(VARSET_VALARG_TP finallyVars, VA
+             if (isFinallyVar)
+             {
+                 // Set lvMustInit only if we have a non-arg, GC pointer.
+-                if (!varDsc->lvIsParam && !varDsc->lvIsParamRegTarget && varTypeIsGC(varDsc->TypeGet()))
++                if (!varDsc->lvIsParam && !varDsc->lvIsParamRegTarget && varTypeIsGC(varDsc->TypeGet()) &&
++                    (JitConfig.JitZkNoGcMustInit() == 0))
+                 {
+                     varDsc->lvMustInit = true;
+                 }
+diff --git a/src/coreclr/jit/lsra.cpp b/src/coreclr/jit/lsra.cpp
+index 846eb1e..f50ff35 100644
+--- a/src/coreclr/jit/lsra.cpp
++++ b/src/coreclr/jit/lsra.cpp
+@@ -1593,7 +1593,7 @@ void LinearScan::identifyCandidatesExceptionDataflow()
+         assert(varDsc->IsLiveInOutOfHandler());
+ 
+         if (varTypeIsGC(varDsc) && VarSetOps::IsMember(m_compiler, finallyVars, varIndex) && !varDsc->lvIsParam &&
+-            !varDsc->lvIsParamRegTarget)
++            !varDsc->lvIsParamRegTarget && (JitConfig.JitZkNoGcMustInit() == 0))
+         {
+             assert(varDsc->lvMustInit);
+         }
+diff --git a/src/coreclr/jit/lsrabuild.cpp b/src/coreclr/jit/lsrabuild.cpp
+index 14c71dd..60d4a50 100644
+--- a/src/coreclr/jit/lsrabuild.cpp
++++ b/src/coreclr/jit/lsrabuild.cpp
+@@ -2124,7 +2124,8 @@ void LinearScan::insertZeroInitRefPositions()
+             {
+                 JITDUMP("V%02u is a finally var:", m_compiler->lvaTrackedIndexToLclNum(varIndex));
+                 Interval* interval = getIntervalForLocalVar(varIndex);
+-                if (m_compiler->info.compInitMem || varTypeIsGC(varDsc->TypeGet()))
++                if (m_compiler->info.compInitMem ||
++                    (varTypeIsGC(varDsc->TypeGet()) && (JitConfig.JitZkNoGcMustInit() == 0)))
+                 {
+                     if (interval->recentRefPosition == nullptr)
+                     {
+diff --git a/src/coreclr/jit/optimizer.cpp b/src/coreclr/jit/optimizer.cpp
+index 94113d1..28a28e6 100644
+--- a/src/coreclr/jit/optimizer.cpp
++++ b/src/coreclr/jit/optimizer.cpp
+@@ -5984,7 +5984,8 @@ void Compiler::optRemoveRedundantZeroInits()
+                             // insert a call to CORINFO_HELP_INIT_PINVOKE_FRAME but that is not a gc-safe point.
+                             assert(s_helperCallProperties.IsNoGC(CORINFO_HELP_INIT_PINVOKE_FRAME));
+ 
+-                            if (!lclDsc->HasGCPtr() || (!GetInterruptible() && !hasGCSafePoint))
++                            if (!lclDsc->HasGCPtr() || (JitConfig.JitZkNoGcMustInit() != 0) ||
++                                (!GetInterruptible() && !hasGCSafePoint))
+                             {
+                                 // The local hasn't been used and won't be reported to the gc between
+                                 // the prolog and this explicit initialization. Therefore, it doesn't
