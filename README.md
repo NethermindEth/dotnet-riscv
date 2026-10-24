@@ -25,6 +25,16 @@ branch and run **Build .NET SDK**:
  - Choose **dotnet VMR branch name**=`release/10.0.100`
  - Tick **Publish release**
 
+## Signed releases
+
+The release has two more assets: `bflat-signature.sha256`, the SHA-256 of
+each other asset, and `bflat-signature.sha256.sig`, its signature. The
+release job makes them with `tools/sign_package.py` and the secret
+`BFLAT_SIGNING_KEY`, and stops if the secret is not set. The bflat build
+checks the assets that it downloads against them (`docs/signing.md` in
+bflat-riscv64). `tools/sign_package.py` is a copy of the script in
+bflat-riscv64; keep it the same.
+
 ## License
 
 All third-party patches belong to their corresponding authors. Nethermind's own patches and scripts are licensed under MIT license.

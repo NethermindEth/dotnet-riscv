@@ -390,6 +390,15 @@ jobs:
           tag_name="$tag_name.r${{ github.run_number }}"
         fi
 
+        # The signature that bflat checks (docs/signing.md in bflat-riscv64):
+        # the SHA-256 of each asset and its signature, as two more assets.
+        # The script stops if BFLAT_SIGNING_KEY is not set, so a release
+        # cannot go out unsigned.
+        asset_files=$(printf '%s\n' $artifacts | grep -v '^-a$')
+        python3 "${{ github.workspace }}/tools/sign_package.py" files "${{ github.workspace }}/output/signature" $asset_files
+        artifacts+=" -a ${{ github.workspace }}/output/signature/bflat-signature.sha256"
+        artifacts+=" -a ${{ github.workspace }}/output/signature/bflat-signature.sha256.sig"
+
         echo "tag_name: $tag_name"
         echo "artifacts: $artifacts"
 
@@ -397,6 +406,7 @@ jobs:
         hub release create $artifacts --prerelease -m "$tag_name" "$tag_name"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        BFLAT_SIGNING_KEY: ${{ secrets.BFLAT_SIGNING_KEY }}
 
   # dotnet/runtime has no riscv64 Helix queue, so its CI only builds riscv64.
   # These jobs run the runtime tests the SDK build's fixups would ship, built
