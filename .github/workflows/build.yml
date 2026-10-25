@@ -381,11 +381,86 @@ jobs:
         path: ${{ runner.temp }}/hashes/bflat-signature.sha256
         if-no-files-found: error
 
+  # The linux-x64 target of bflat: the x64 JIT, the NativeAOT runtime and
+  # a glibc sysroot. They are built from dotnet/runtime at the commit that
+  # the VMR pins, with the same fixups and JIT/EE GUID, so they agree with
+  # the ILCompiler of the bflat.compiler package of the run job.
+  runtime-x64:
+    if: ${{ ! inputs.skip_sdk }}
+    name: bflat linux-x64 target
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    steps:
+
+    - name: Maximize build space
+      uses: AdityaGarg8/remove-unwanted-software@v4.1
+      with:
+        remove-dotnet: 'true'
+        remove-android: 'true'
+        remove-haskell: 'true'
+        remove-codeql: 'true'
+        remove-cached-tools: 'true'
+
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Clone and patch dotnet/runtime
+      run: |
+        cd ${{ github.workspace }}
+        ./runtime_tests.sh source "${{ inputs.fork }}" "${{ inputs.branch }}" "${{ inputs.profile }}"
+
+    - name: Build the x64 JIT and NativeAOT runtime
+      run: |
+        cd ${{ github.workspace }}
+        ./10_build_runtime_x64.sh
+
+    - name: Pack the linux-x64 target
+      run: |
+        cd ${{ github.workspace }}
+        ./11_pack_x64.sh
+
+    - name: Upload the linux-x64 target
+      uses: actions/upload-artifact@v4
+      with:
+        name: bflat-linux-glibc-x64
+        path: |
+          ${{ github.workspace }}/output/x64/bflat-compiler-native-x64-linux-glibc-x64.zip
+          ${{ github.workspace }}/output/x64/bflat-libs-linux-glibc-x64.zip
+          ${{ github.workspace }}/output/x64/libs-linux-glibc-x64.zip
+        if-no-files-found: error
+
+    - name: List the release assets
+      if: ${{ inputs.release }}
+      run: |
+        cd ${{ github.workspace }}
+        release="${{ runner.temp }}/release"
+        mkdir -p "$release"
+        cp output/x64/*.zip "$release/"
+        python3 tools/sign_package.py list-files "${{ runner.temp }}/hashes" "$release"/*
+
+    - name: Upload the release assets
+      if: ${{ inputs.release }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-assets-x64
+        path: ${{ runner.temp }}/release/
+        if-no-files-found: error
+
+    - name: Upload the hashes of the release assets
+      if: ${{ inputs.release }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: bflat-hashes-x64
+        path: ${{ runner.temp }}/hashes/bflat-signature.sha256
+        if-no-files-found: error
+
   # One list for the whole release: each job that makes release assets
   # uploads the hashes of its assets as bflat-hashes-<name>.
   list:
     if: ${{ ! inputs.skip_sdk && inputs.release }}
-    needs: run
+    needs: [run, runtime-x64]
     runs-on: ubuntu-24.04
     steps:
     - name: Checkout repository
