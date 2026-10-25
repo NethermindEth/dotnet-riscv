@@ -25,6 +25,25 @@ branch and run **Build .NET SDK**:
  - Choose **dotnet VMR branch name**=`release/10.0.100`
  - Tick **Publish release**
 
+## The linux-x64 target of bflat
+
+bflat also builds ordinary linux-x64 programs. The `runtime-x64` job makes
+the three release assets for that target:
+
+- `bflat-compiler-native-x64-linux-glibc-x64.zip`: the x64 JIT
+  (`libclrjit_unix_x64_x64.so`) that ILCompiler loads;
+- `bflat-libs-linux-glibc-x64.zip`: the NativeAOT runtime, CoreLib and the
+  framework libraries;
+- `libs-linux-glibc-x64.zip`: the glibc and gcc files of the link, from the
+  x64 rootfs of the dotnet/runtime cross-build container.
+
+Microsoft's x64 packages cannot be used: the fixups change the JIT/EE
+interface (`bump_jitee_guid.sh`), so the JIT and CoreLib must be built from
+the same sources as the ILCompiler of `bflat.compiler.10.0.0.nupkg`. The job
+clones dotnet/runtime at the commit that the VMR pins and applies the same
+profile (`runtime_tests.sh source`), then builds and packs the target
+(`10_build_runtime_x64.sh`, `11_pack_x64.sh`).
+
 ## Signed releases
 
 The release has two more assets: `bflat-signature.sha256`, the SHA-256 of
