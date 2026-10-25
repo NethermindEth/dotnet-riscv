@@ -73,7 +73,7 @@ jobs:
     if: ${{ ! inputs.skip_sdk }}
     runs-on: ubuntu-24.04
     permissions:
-      contents: write
+      contents: read
     steps:
 
     - name: Maximize build space
@@ -340,35 +340,133 @@ jobs:
         name: runtime-artifacts-musl-riscv64
         path: ${{ github.workspace }}/dotnet/src/runtime/artifacts
 
-    - name: Make release
+    # The release assets of this job, in one directory, and the list of
+    # their SHA-256 hashes (docs/signing.md in bflat-riscv64). This job has
+    # no key: the sign job signs the list.
+    - name: Collect the release assets
       if: ${{ inputs.release }}
+      run: |
+        cd ${{ github.workspace }}
+        sudo rm -rf dotnet/src/runtime/artifacts
+        # The runner temp directory: the pack scripts ran with sudo, so
+        # output/ belongs to root.
+        release="${{ runner.temp }}/release"
+        mkdir -p "$release"
+        cp "$(find dotnet/artifacts/assets/Release/Sdk -name 'dotnet-sdk-*.tar.gz' | head -n1)" \
+           "$(find dotnet/artifacts/packages/Release/Shipping/runtime -name '*.nupkg' ! -name '*symbols.nupkg' | head -n1)" \
+           output/crossrootfs-linux/crossrootfs-musl-riscv64.tar.xz \
+           output/crossrootfs-linux/crossrootfs-gnu-riscv64.tar.xz \
+           output/libs-linux/libs-linux-musl-riscv64.zip \
+           output/compiler-linux/compiler-linux-glibc-x64.zip \
+           output/bflat-compiler-native-linux/bflat-compiler-native-linux-glibc-x64.zip \
+           output/bflat-refs/bflat-refs.zip \
+           output/bflat-libs-linux/bflat-libs-linux-musl-riscv64.zip \
+           output/bflat-compiler-nupkg/bflat.compiler.10.0.0.nupkg \
+           "$release/"
+        python3 tools/sign_package.py list-files "${{ runner.temp }}/hashes" "$release"/*
+
+    - name: Upload the release assets
+      if: ${{ inputs.release }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-assets-riscv64
+        path: ${{ runner.temp }}/release/
+        if-no-files-found: error
+
+    - name: Upload the hashes of the release assets
+      if: ${{ inputs.release }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: bflat-hashes-riscv64
+        path: ${{ runner.temp }}/hashes/bflat-signature.sha256
+        if-no-files-found: error
+
+  # One list for the whole release: each job that makes release assets
+  # uploads the hashes of its assets as bflat-hashes-<name>.
+  list:
+    if: ${{ ! inputs.skip_sdk && inputs.release }}
+    needs: run
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Download the hashes
+      uses: actions/download-artifact@v4
+      with:
+        pattern: bflat-hashes-*
+        path: hashes
+
+    - name: Merge the hashes
+      run: python3 tools/sign_package.py merge signature hashes/*/bflat-signature.sha256
+
+    - name: Upload the list
+      uses: actions/upload-artifact@v4
+      with:
+        name: bflat-signature-lists
+        path: signature/bflat-signature.sha256
+        if-no-files-found: error
+
+  # The private key is only in the sign job, which runs no build
+  # (docs/signing.md in bflat-riscv64).
+  sign:
+    needs: list
+    uses: NethermindEth/bflat-riscv64/.github/workflows/sign.yml@master
+    with:
+      lists: bflat-signature-lists
+    secrets:
+      BFLAT_SIGNING_KEY: ${{ secrets.BFLAT_SIGNING_KEY }}
+
+  release:
+    needs: sign
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Download the release assets
+      uses: actions/download-artifact@v4
+      with:
+        pattern: release-assets-*
+        path: release
+        merge-multiple: true
+
+    - name: Download the signature
+      uses: actions/download-artifact@v4
+      with:
+        name: bflat-signatures
+        path: signature
+
+    # The assets must agree with the list that was signed, and the
+    # signature must be valid for the public key, before the release.
+    - name: Check the signature
+      env:
+        BFLAT_SIGNING_PUBLIC_KEY: ${{ vars.BFLAT_SIGNING_PUBLIC_KEY }}
+      run: python3 tools/sign_package.py check-files signature release/*
+
+    - name: Make release
       run: |
         sudo apt update -y
         sudo apt install -y hub
 
-        sudo rm -rf "${{ github.workspace }}/dotnet/src/runtime/artifacts"
+        release_dir="${{ github.workspace }}/release"
+        signature_dir="${{ github.workspace }}/signature"
 
         # hub(1) requires release to be created inside a git repo
         git clone https://${{ secrets.CLONE_TOKEN }}:x-oauth-basic@github.com/${{ github.repository }}.git repo
         cd repo
 
-        sdk_path=$(find ${{ github.workspace }}/dotnet/artifacts/assets/Release/Sdk -name 'dotnet-sdk-*.tar.gz' | head -n1)
-        sdk_filename=$(basename "$sdk_path")
+        sdk_filename=$(basename "$(ls "$release_dir"/dotnet-sdk-*.tar.gz | head -n1)")
 
         # Extract version: strip prefix/suffix to get e.g. "10.0.100-preview.5.25277.114"
         sdk_version=$(echo "$sdk_filename" | sed -E 's/dotnet-sdk-([^-]+(-[^-]+)*)-linux-.+\.tar\.gz/\1/')
 
-        artifacts=" -a $sdk_path"
-        artifacts+=" -a $(find ${{ github.workspace }}/dotnet/artifacts/packages/Release/Shipping/runtime -name '*.nupkg' ! -name '*symbols.nupkg' | head -n1)"
-
-        artifacts+=" -a ${{ github.workspace }}/output/crossrootfs-linux/crossrootfs-musl-riscv64.tar.xz"
-        artifacts+=" -a ${{ github.workspace }}/output/crossrootfs-linux/crossrootfs-gnu-riscv64.tar.xz"
-        artifacts+=" -a ${{ github.workspace }}/output/libs-linux/libs-linux-musl-riscv64.zip"
-        artifacts+=" -a ${{ github.workspace }}/output/compiler-linux/compiler-linux-glibc-x64.zip"
-        artifacts+=" -a ${{ github.workspace }}/output/bflat-compiler-native-linux/bflat-compiler-native-linux-glibc-x64.zip"
-        artifacts+=" -a ${{ github.workspace }}/output/bflat-refs/bflat-refs.zip"
-        artifacts+=" -a ${{ github.workspace }}/output/bflat-libs-linux/bflat-libs-linux-musl-riscv64.zip"
-        artifacts+=" -a ${{ github.workspace }}/output/bflat-compiler-nupkg/bflat.compiler.10.0.0.nupkg"
+        artifacts=""
+        for asset in "$release_dir"/* "$signature_dir/bflat-signature.sha256" "$signature_dir/bflat-signature.sha256.sig" ; do
+          artifacts+=" -a $asset"
+        done
 
         tag_name="${{ inputs.tag }}"
         if [ -z "$tag_name" ] ; then
@@ -390,15 +488,6 @@ jobs:
           tag_name="$tag_name.r${{ github.run_number }}"
         fi
 
-        # The signature that bflat checks (docs/signing.md in bflat-riscv64):
-        # the SHA-256 of each asset and its signature, as two more assets.
-        # The script stops if BFLAT_SIGNING_KEY is not set, so a release
-        # cannot go out unsigned.
-        asset_files=$(printf '%s\n' $artifacts | grep -v '^-a$')
-        python3 "${{ github.workspace }}/tools/sign_package.py" files "${{ github.workspace }}/output/signature" $asset_files
-        artifacts+=" -a ${{ github.workspace }}/output/signature/bflat-signature.sha256"
-        artifacts+=" -a ${{ github.workspace }}/output/signature/bflat-signature.sha256.sig"
-
         echo "tag_name: $tag_name"
         echo "artifacts: $artifacts"
 
@@ -406,7 +495,6 @@ jobs:
         hub release create $artifacts --prerelease -m "$tag_name" "$tag_name"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        BFLAT_SIGNING_KEY: ${{ secrets.BFLAT_SIGNING_KEY }}
 
   # dotnet/runtime has no riscv64 Helix queue, so its CI only builds riscv64.
   # These jobs run the runtime tests the SDK build's fixups would ship, built
