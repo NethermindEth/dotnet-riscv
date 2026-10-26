@@ -90,7 +90,14 @@ docker run --platform linux/amd64 --rm \
     "$IMAGE" \
     sh -euc '
         r=/crossrootfs/x64
-        gcc_dir=$(ls -d $r/usr/lib/gcc/x86_64-linux-gnu/* | sort -V | tail -n1)
+        # The newest gcc that has the crt objects: a rootfs can have a
+        # newer gcc directory with only some of its files.
+        gcc_dir=
+        for d in $(ls -d $r/usr/lib/gcc/x86_64-linux-gnu/* | sort -V) ; do
+            [ -e "$d/crtbeginS.o" ] && gcc_dir=$d
+        done
+        [ -n "$gcc_dir" ] || { echo "no gcc with crtbeginS.o in $r" >&2 ; exit 1 ; }
+        echo "gcc files from $gcc_dir"
         for f in \
             $r/usr/lib/x86_64-linux-gnu/Scrt1.o $r/usr/lib/x86_64-linux-gnu/crt1.o \
             $r/usr/lib/x86_64-linux-gnu/crti.o $r/usr/lib/x86_64-linux-gnu/crtn.o \
