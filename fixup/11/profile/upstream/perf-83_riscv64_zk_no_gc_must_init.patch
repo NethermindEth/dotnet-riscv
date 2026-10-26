@@ -117,18 +117,20 @@ diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues
 index 7e48067..b600c21 100644
 --- a/src/coreclr/jit/jitconfigvalues.h
 +++ b/src/coreclr/jit/jitconfigvalues.h
-@@ -564,6 +564,11 @@ RELEASE_CONFIG_INTEGER(JitZkMemsetCsr, "JitZkMemsetCsr", 0)
- // unrolled into load/store pairs is emitted as the DMA memcpy idiom (see JitZkCsrPInvokes),
- // `csrrs x0, 0x813, <source>; add x0, <destination>, <length>`.
- RELEASE_CONFIG_INTEGER(JitZkMemcpyCsr, "JitZkMemcpyCsr", 0)
+@@ -574,6 +574,13 @@ RELEASE_CONFIG_INTEGER(JitZkMemcpyCsr, "JitZkMemcpyCsr", 0)
+ // DMA shape, `csrrs x0, csr, a1; add x0, a0, a2`. Empty (the default) leaves every P/Invoke a call.
+ RELEASE_CONFIG_STRING(JitZkCsrPInvokes, "JitZkCsrPInvokes")
+ #endif
++
 +// zkVM: non-zero zero-initializes a local or spill temp that contains GC references only when a
 +// local without them would be: localsinit, a read before the first write, newobj/initobj/inlinee
 +// zeroing. The other prolog zeroing of GC slots exists so that a GC never scans garbage and is
 +// dropped. Valid only on a runtime that never scans stacks (a non-collecting GC). Default 0.
++// It is for all targets, because the code that reads it (prolog, liveness, LSRA) is common.
 +RELEASE_CONFIG_INTEGER(JitZkNoGcMustInit, "JitZkNoGcMustInit", 0)
- // riscv64 zkVM (ZisK): a precompile runs when a CSR is written with the address of its
- // operand block. libziskos wraps each one in a two-instruction function (csrs; ret) that
- // managed code reaches through a P/Invoke, so one keccak-f costs the call pair, the stub,
+ 
+ RELEASE_CONFIG_INTEGER(EnableEmbeddedBroadcast,     "EnableEmbeddedBroadcast",   1) // Allows embedded broadcasts to be disabled
+ RELEASE_CONFIG_INTEGER(EnableEmbeddedMasking,       "EnableEmbeddedMasking",     1) // Allows embedded masking to be disabled
 diff --git a/src/coreclr/jit/liveness.cpp b/src/coreclr/jit/liveness.cpp
 index 9198ab6..fdbcdab 100644
 --- a/src/coreclr/jit/liveness.cpp
