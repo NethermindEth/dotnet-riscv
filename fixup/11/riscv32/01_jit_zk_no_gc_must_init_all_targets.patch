@@ -1,0 +1,29 @@
+diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
+index b600c211cee..3c28350ea2d 100644
+--- a/src/coreclr/jit/jitconfigvalues.h
++++ b/src/coreclr/jit/jitconfigvalues.h
+@@ -564,11 +564,6 @@ RELEASE_CONFIG_INTEGER(JitZkMemsetCsr, "JitZkMemsetCsr", 0)
+ // unrolled into load/store pairs is emitted as the DMA memcpy idiom (see JitZkCsrPInvokes),
+ // `csrrs x0, 0x813, <source>; add x0, <destination>, <length>`.
+ RELEASE_CONFIG_INTEGER(JitZkMemcpyCsr, "JitZkMemcpyCsr", 0)
+-// zkVM: non-zero zero-initializes a local or spill temp that contains GC references only when a
+-// local without them would be: localsinit, a read before the first write, newobj/initobj/inlinee
+-// zeroing. The other prolog zeroing of GC slots exists so that a GC never scans garbage and is
+-// dropped. Valid only on a runtime that never scans stacks (a non-collecting GC). Default 0.
+-RELEASE_CONFIG_INTEGER(JitZkNoGcMustInit, "JitZkNoGcMustInit", 0)
+ // riscv64 zkVM (ZisK): a precompile runs when a CSR is written with the address of its
+ // operand block. libziskos wraps each one in a two-instruction function (csrs; ret) that
+ // managed code reaches through a P/Invoke, so one keccak-f costs the call pair, the stub,
+@@ -580,6 +575,12 @@ RELEASE_CONFIG_INTEGER(JitZkNoGcMustInit, "JitZkNoGcMustInit", 0)
+ RELEASE_CONFIG_STRING(JitZkCsrPInvokes, "JitZkCsrPInvokes")
+ #endif
+ 
++// zkVM: non-zero zero-initializes a local or spill temp that contains GC references only when a
++// local without them would be: localsinit, a read before the first write, newobj/initobj/inlinee
++// zeroing. The other prolog zeroing of GC slots exists so that a GC never scans garbage and is
++// dropped. Valid only on a runtime that never scans stacks (a non-collecting GC). Default 0.
++RELEASE_CONFIG_INTEGER(JitZkNoGcMustInit, "JitZkNoGcMustInit", 0)
++
+ RELEASE_CONFIG_INTEGER(EnableEmbeddedBroadcast,     "EnableEmbeddedBroadcast",   1) // Allows embedded broadcasts to be disabled
+ RELEASE_CONFIG_INTEGER(EnableEmbeddedMasking,       "EnableEmbeddedMasking",     1) // Allows embedded masking to be disabled
+ RELEASE_CONFIG_INTEGER(EnableApxNDD,                "EnableApxNDD",              0) // Allows APX NDD feature to be disabled
