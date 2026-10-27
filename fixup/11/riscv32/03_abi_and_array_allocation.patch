@@ -1,0 +1,128 @@
+diff --git a/src/coreclr/jit/codegencommon.cpp b/src/coreclr/jit/codegencommon.cpp
+index 81d110aae68..dd31a8439b2 100644
+--- a/src/coreclr/jit/codegencommon.cpp
++++ b/src/coreclr/jit/codegencommon.cpp
+@@ -4698,7 +4698,7 @@ void CodeGen::genHomeStackPartOfSplitParameter(regNumber initReg, bool* initRegS
+     for (; lclNum < m_compiler->info.compArgsCount; lclNum++)
+     {
+         LclVarDsc* var = m_compiler->lvaGetDesc(lclNum);
+-        if (!var->lvOnFrame || !varTypeIsStruct(var))
++        if (!var->lvOnFrame)
+         {
+             continue;
+         }
+diff --git a/src/coreclr/jit/decomposelongs.cpp b/src/coreclr/jit/decomposelongs.cpp
+index 2a542f5d2e1..e8a7ef9f989 100644
+--- a/src/coreclr/jit/decomposelongs.cpp
++++ b/src/coreclr/jit/decomposelongs.cpp
+@@ -2892,6 +2892,16 @@ void DecomposeLongs::TryPromoteLongVar(unsigned lclNum)
+ 
+     assert(varDsc->TypeIs(TYP_LONG));
+ 
++#ifdef TARGET_RISCV32
++    if (varDsc->lvIsParam && !varDsc->lvIsStructField &&
++        m_compiler->lvaGetParameterABIInfo(lclNum).IsSplitAcrossRegistersAndStack())
++    {
++        // Keep one home for the register and stack halves; independent promotion cannot map a split parameter.
++        m_compiler->lvaSetVarDoNotEnregister(lclNum DEBUGARG(DoNotEnregisterReason::IsStructArg));
++        return;
++    }
++#endif
++
+     if (varDsc->lvDoNotEnregister)
+     {
+         return;
+diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
+index ac40fdfd8f0..e025e4e8ae9 100644
+--- a/src/coreclr/jit/lower.cpp
++++ b/src/coreclr/jit/lower.cpp
+@@ -1747,10 +1747,18 @@ void Lowering::SplitArgumentBetweenRegistersAndStack(GenTreeCall* call, CallArg*
+     JITDUMP("Dividing split arg [%06u] with %u registers, %u stack space into two arguments\n",
+             Compiler::dspTreeID(arg), numRegs, stackSeg.Size);
+ 
+-    ClassLayout* registersLayout = callArg->GetSignatureLayout()->SliceLayout(m_compiler, 0, stackSeg.Offset);
++    ClassLayout* signatureLayout = callArg->GetSignatureLayout();
++#ifdef TARGET_RISCV32
++    if (signatureLayout == nullptr)
++    {
++        // Decomposed 2*XLEN scalars have a FIELD_LIST but no struct signature.
++        assert(arg->OperIsFieldList());
++        signatureLayout = m_compiler->typGetBlkLayout(2 * TARGET_POINTER_SIZE);
++    }
++#endif
++    ClassLayout* registersLayout = signatureLayout->SliceLayout(m_compiler, 0, stackSeg.Offset);
+     ClassLayout* stackLayout =
+-        callArg->GetSignatureLayout()->SliceLayout(m_compiler, stackSeg.Offset,
+-                                                   callArg->GetSignatureLayout()->GetSize() - stackSeg.Offset);
++        signatureLayout->SliceLayout(m_compiler, stackSeg.Offset, signatureLayout->GetSize() - stackSeg.Offset);
+ 
+     GenTree* stackNode     = nullptr;
+     GenTree* registersNode = nullptr;
+diff --git a/src/coreclr/jit/targetriscv64.cpp b/src/coreclr/jit/targetriscv64.cpp
+index 06ab296b9e3..b8cf7c7e2bb 100644
+--- a/src/coreclr/jit/targetriscv64.cpp
++++ b/src/coreclr/jit/targetriscv64.cpp
+@@ -144,17 +144,22 @@ ABIPassingInformation RiscV64Classifier::Classify(Compiler*    comp,
+     else
+     {
+         // Integer calling convention
+-        auto passOnStack = [this, type](unsigned offset, unsigned size) -> ABIPassingSegment {
++        unsigned stackAlignment = TARGET_POINTER_SIZE;
++#ifdef TARGET_RISCV32
++        if (!passedByRef)
++        {
++            stackAlignment = varTypeIsStruct(type) ? structLayout->GetAlignmentRequirement(comp) : passedSize;
++            stackAlignment = min<unsigned>(STACK_ALIGN, max<unsigned>(TARGET_POINTER_SIZE, stackAlignment));
++        }
++#endif
++        auto passOnStack = [this, stackAlignment](unsigned offset, unsigned size) -> ABIPassingSegment {
+             assert(size > 0);
+             assert(size <= 2 * TARGET_POINTER_SIZE);
+             assert((m_stackArgSize % TARGET_POINTER_SIZE) == 0);
+-#ifndef TARGET_64BIT
+-            // ilp32: a 2*XLEN scalar passed wholly on the stack is aligned to its size.
+-            if ((offset == 0) && (size == 2 * TARGET_POINTER_SIZE) && !varTypeIsStruct(type))
++            if (offset == 0)
+             {
+-                m_stackArgSize = roundUp(m_stackArgSize, 2 * TARGET_POINTER_SIZE);
++                m_stackArgSize = roundUp(m_stackArgSize, stackAlignment);
+             }
+-#endif
+             ABIPassingSegment seg = ABIPassingSegment::OnStack(m_stackArgSize, offset, size);
+             m_stackArgSize += (size > TARGET_POINTER_SIZE) ? (2 * TARGET_POINTER_SIZE) : TARGET_POINTER_SIZE;
+             return seg;
+@@ -167,13 +172,6 @@ ABIPassingInformation RiscV64Classifier::Classify(Compiler*    comp,
+                 ABIPassingSegment seg = ABIPassingSegment::InRegister(m_intRegs.Dequeue(), 0, passedSize);
+                 return ABIPassingInformation::FromSegment(comp, passedByRef, seg);
+             }
+-            else if (!varTypeIsStruct(type) && (m_intRegs.Count() == 1))
+-            {
+-                // A 2*XLEN scalar is not split between the last register and the stack, as the psABI would:
+-                // the JIT splits only aggregates. It goes wholly on the stack and the last register stays unused.
+-                m_intRegs.Dequeue();
+-                return ABIPassingInformation::FromSegment(comp, passedByRef, passOnStack(0, passedSize));
+-            }
+             else
+             {
+                 assert(varTypeIsStruct(type) || !TargetArchitecture::IsRiscV64);
+diff --git a/src/coreclr/nativeaot/Runtime/GCHelpers.cpp b/src/coreclr/nativeaot/Runtime/GCHelpers.cpp
+index 064123a7b92..086f96f69bf 100644
+--- a/src/coreclr/nativeaot/Runtime/GCHelpers.cpp
++++ b/src/coreclr/nativeaot/Runtime/GCHelpers.cpp
+@@ -511,7 +511,7 @@ static Object* GcAllocInternal(MethodTable* pEEType, uint32_t uFlags, uintptr_t
+         uFlags &= ~GC_ALLOC_ZEROING_OPTIONAL;
+     }
+ 
+-    size_t cbSize = ALIGN_UP(pEEType->GetBaseSize(), OBJECT_SIZE_ALIGNMENT);
++    size_t cbSize = pEEType->GetBaseSize();
+ 
+     if (pEEType->HasComponentSize())
+     {
+@@ -549,6 +549,7 @@ static Object* GcAllocInternal(MethodTable* pEEType, uint32_t uFlags, uintptr_t
+     else
+     {
+         ASSERT(numElements == 0);
++        cbSize = ALIGN_UP(cbSize, OBJECT_SIZE_ALIGNMENT);
+     }
+ 
+     if ((cbSize >= RH_LARGE_OBJECT_SIZE) && (cbSize >= GCHeapUtilities::GetGCHeap()->GetLOHThreshold()))

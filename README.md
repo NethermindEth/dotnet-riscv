@@ -25,6 +25,16 @@ branch and run **Build .NET SDK**:
  - Choose **dotnet VMR branch name**=`release/10.0.100`
  - Tick **Publish release**
 
+## RV32 ABI regression test
+
+`python3 tests/run-riscv32-abi.py` checks scalar and aggregate arguments at the
+register/stack boundary in both directions between native and managed code,
+with and without optimization. It executes the generated image on Airbender.
+Set `BFLAT` to the rebuilt compiler executable, `AIRBENDER_LIB` to the
+libairbender manifest, and `AIRBENDER_CLI` to the CLI executable. Clang must
+support RV32IM/ilp32; `CC` overrides its executable. `BFLAT_LD` and
+`BFLAT_OBJCOPY` can override the compiler's bundled tools.
+
 ## License
 
 All third-party patches belong to their corresponding authors. Nethermind's own patches and scripts are licensed under MIT license.
