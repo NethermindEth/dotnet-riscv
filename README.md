@@ -58,6 +58,23 @@ checks the assets that it downloads against them (`docs/signing.md` in
 bflat-riscv64). `tools/sign_package.py` is a copy of the script in
 bflat-riscv64; keep it the same.
 
+## The riscv32 target
+
+`RISCV32=1 ./patch_runtime.sh upstream-perf` adds the RV32IM ilp32 target
+(`fixup/<major>/riscv32`) on top of the `upstream-perf` profile. CI does not
+build it yet.
+
+The riscv32 runtime builds against a static sysroot, its `CROSS_ROOTFS`, made
+with clang and the LLVM tools:
+
+```bash
+./build_musl_rv32im.sh <sysroot>       # musl 1.2.5 without lr/sc
+./build_libatomic_rv32im.sh <sysroot>  # soft __atomic_* for a single hart
+./build_builtins_rv32im.sh <sysroot>   # compiler-rt builtins at the clang's tag
+```
+
+Each script fails if its output carries a compressed or atomic instruction.
+
 ## License
 
 All third-party patches belong to their corresponding authors. Nethermind's own patches and scripts are licensed under MIT license.
