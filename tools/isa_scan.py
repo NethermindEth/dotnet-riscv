@@ -33,11 +33,17 @@ def members(path):
             yield name, body
 
 def compressed_count(b):
-    e_shoff = struct.unpack_from("<Q", b, 0x28)[0]
-    e_shentsize = struct.unpack_from("<H", b, 0x3a)[0]
-    e_shnum = struct.unpack_from("<H", b, 0x3c)[0]
-    e_shstrndx = struct.unpack_from("<H", b, 0x3e)[0]
-    sh = [struct.unpack_from("<IIQQQQIIQQ", b, e_shoff + i*e_shentsize) for i in range(e_shnum)]
+    # EI_CLASS 1 is ELF32 (riscv32), 2 is ELF64 (riscv64); the section header
+    # fields used below sit at the same indices in both layouts.
+    if b[4] == 1:
+        e_shoff = struct.unpack_from("<I", b, 0x20)[0]
+        e_shentsize, e_shnum, e_shstrndx = struct.unpack_from("<HHH", b, 0x2e)
+        shfmt = "<IIIIIIIIII"
+    else:
+        e_shoff = struct.unpack_from("<Q", b, 0x28)[0]
+        e_shentsize, e_shnum, e_shstrndx = struct.unpack_from("<HHH", b, 0x3a)
+        shfmt = "<IIQQQQIIQQ"
+    sh = [struct.unpack_from(shfmt, b, e_shoff + i*e_shentsize) for i in range(e_shnum)]
     stroff = sh[e_shstrndx][4]
     def nm(o):
         end = b.find(b"\x00", stroff+o); return b[stroff+o:end].decode("latin1")
