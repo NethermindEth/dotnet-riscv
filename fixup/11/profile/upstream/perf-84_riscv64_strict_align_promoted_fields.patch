@@ -1,0 +1,76 @@
+Strict alignment: prove accesses through fields of promoted structs aligned (applies after perf-67).
+
+perf-67 finds an alignment for every local whose values all come from GT_STORE_LCL_VAR, but it skips
+promoted structs and their fields. A span local made from an array is promoted, so its reference is a
+field local, and every access through that reference gets the andi/bnez test, also when the span
+starts at an aligned offset of the array.
+
+A field of an independently promoted struct is now a candidate as well, when the struct is not a
+parameter and its address is not exposed. A store to the struct as a whole (a call that returns it,
+a partial store) or a GT_LCL_ADDR of the struct defines its fields out of sight, so it removes all of
+its fields from the candidates. Then every value of a candidate field comes from a store to the field
+itself, and the fixed point of perf-67 applies to it without change.
+
+Nethermind stateless guest on SP1 (sp1-runner v6.9.0), outputs identical:
+  block 26279462: 82,765,142 -> 82,471,435 cycles (-0.35%), gas -0.14%
+  block 26279465: 527,074,561 -> 526,681,175 cycles (-0.07%), gas -0.06%
+  block 26279480: 319,858,795 -> 319,282,123 cycles (-0.18%), gas -0.10%
+On 26279462 the executed alignment tests go from 1.19M to 1.05M.
+Only builds with JitRiscV64StrictAlign change.
+
+diff --git a/src/coreclr/jit/lowerriscv64.cpp b/src/coreclr/jit/lowerriscv64.cpp
+--- a/src/coreclr/jit/lowerriscv64.cpp
++++ b/src/coreclr/jit/lowerriscv64.cpp
+@@ -1399,9 +1399,12 @@
+ //    to a known boundary) keeps the alignment of its definition at every access through it, and the
+ //    strict-alignment checks of those accesses can be proven away. A local qualifies when every
+ //    definition is a GT_STORE_LCL_VAR: not a parameter (its incoming value is unknown), not
+-//    address-exposed, never the target of a GT_LCL_ADDR or a partial store, and not a promoted struct
+-//    or field. The fixed point starts optimistic and only lowers a local's alignment, so stores of other
+-//    locals and of the local itself are accounted for.
++//    address-exposed, never the target of a GT_LCL_ADDR or a partial store, and not a promoted struct.
++//    A field of an independently promoted struct (a span's reference, say) qualifies as well when the
++//    struct is not a parameter and is never stored, partly stored or addressed as a whole: then every
++//    value of the field comes from a store to the field itself. The fixed point starts optimistic and
++//    only lowers a local's alignment, so stores of other locals and of the local itself are accounted
++//    for.
+ //
+ void Lowering::ComputeAlignedLocals()
+ {
+@@ -1415,9 +1418,14 @@
+     for (unsigned lclNum = 0; lclNum < count; lclNum++)
+     {
+         LclVarDsc* const varDsc    = m_compiler->lvaGetDesc(lclNum);
+-        const bool       candidate = !varDsc->IsAddressExposed() && !varDsc->lvIsParam && !varDsc->lvIsParamRegTarget &&
+-                               !varDsc->lvIsStructField && !varDsc->lvPromoted &&
+-                               varDsc->TypeIs(TYP_BYREF, TYP_I_IMPL, TYP_LONG, TYP_INT);
++        bool             candidate = !varDsc->IsAddressExposed() && !varDsc->lvIsParam && !varDsc->lvIsParamRegTarget &&
++                               !varDsc->lvPromoted && varDsc->TypeIs(TYP_BYREF, TYP_I_IMPL, TYP_LONG, TYP_INT);
++        if (candidate && varDsc->lvIsStructField)
++        {
++            LclVarDsc* const parent = m_compiler->lvaGetDesc(varDsc->lvParentLcl);
++            candidate = (m_compiler->lvaGetPromotionType(parent) == Compiler::PROMOTION_TYPE_INDEPENDENT) &&
++                        !parent->IsAddressExposed() && !parent->lvIsParam && !parent->lvIsParamRegTarget;
++        }
+         align[lclNum] = candidate ? 6 : 0;
+     }
+ 
+@@ -1429,7 +1437,17 @@
+             if (!node->OperIsLocalStore() && !node->OperIs(GT_LCL_ADDR))
+                 continue;
+ 
+-            const unsigned lclNum = node->AsLclVarCommon()->GetLclNum();
++            const unsigned   lclNum = node->AsLclVarCommon()->GetLclNum();
++            LclVarDsc* const varDsc = m_compiler->lvaGetDesc(lclNum);
++            if (varDsc->lvPromoted)
++            {
++                // A store to the struct as a whole, or its address, defines its fields out of our sight.
++                for (unsigned i = 0; i < varDsc->lvFieldCnt; i++)
++                {
++                    align[varDsc->lvFieldLclStart + i] = 0;
++                }
++                continue;
++            }
+             if (align[lclNum] == 0)
+                 continue;
+ 
