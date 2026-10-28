@@ -209,6 +209,29 @@ static unsafe class Program
             Check(EarlyReturns(ref p, 1), early - Expected(at + 28, 4));
             Check(EarlyReturns(ref p, 2), early * Expected(at + 16, 8));
         }
+
+        Check(SpanAtConstant(), Expected(64, 8) + Expected(72, 8) - Expected(80, 4));
+        Check(SpanAtOddConstant(), Expected(67, 8) + Expected(75, 8) - Expected(83, 4));
+        for (int misalignment = 0; misalignment < 8; misalignment++)
+        {
+            int at = 64 + misalignment;
+            Check(SpanAt(at), Expected(at, 8) + Expected(at + 8, 8) - Expected(at + 16, 4));
+            Check(SpanChosen(at, false), Expected(64, 8) ^ Expected(72, 8));
+            Check(SpanChosen(at, true), Expected(at, 8) ^ Expected(at + 8, 8));
+            Check(SpanReturned(at), Expected(at, 8) * 3 + Expected(at + 8, 8));
+            Check(SpanCopied(at), Expected(at, 8) - Expected(64, 8) + Expected(at + 8, 4));
+            for (int count = 0; count <= 3; count++)
+            {
+                ulong sliced = 0;
+                for (int i = 0; i < count; i++)
+                    sliced += Expected(64 + i * misalignment, 8) ^ Expected(64 + i * misalignment + 8, 8);
+                Check(SpanSliced(misalignment, count), sliced);
+                ulong odd = 0;
+                for (int i = 0; i < count; i++)
+                    odd += Expected(64 + i * 3, 8);
+                Check(SpanSlicedOdd(count), odd);
+            }
+        }
         return 0;
     }
 
@@ -537,5 +560,102 @@ static unsafe class Program
         if (exit == 1)
             return sum - Read32(ref p, 28);
         return sum * Read64(ref p, 16);
+    }
+
+    // The span local is promoted: its reference is a field local stored once, at an aligned constant
+    // offset into the array (perf-84 proves its reads aligned), at an odd one, or at a parameter offset.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static ulong SpanAtConstant()
+    {
+        Span<byte> span = Buffer.AsSpan(64, 24);
+        ref byte p = ref MemoryMarshal.GetReference(span);
+        return Read64(ref p, 0) + Read64(ref p, 8) - Read32(ref p, 16);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static ulong SpanAtOddConstant()
+    {
+        Span<byte> span = Buffer.AsSpan(67, 24);
+        ref byte p = ref MemoryMarshal.GetReference(span);
+        return Read64(ref p, 0) + Read64(ref p, 8) - Read32(ref p, 16);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static ulong SpanAt(int at)
+    {
+        Span<byte> span = Buffer.AsSpan(at, 24);
+        ref byte p = ref MemoryMarshal.GetReference(span);
+        return Read64(ref p, 0) + Read64(ref p, 8) - Read32(ref p, 16);
+    }
+
+    // Two stores to the reference, one aligned and one not: the weaker decides.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static ulong SpanChosen(int at, bool other)
+    {
+        Span<byte> span = Buffer.AsSpan(64, 16);
+        if (other)
+            span = Buffer.AsSpan(at, 16);
+        ref byte p = ref MemoryMarshal.GetReference(span);
+        return Read64(ref p, 0) ^ Read64(ref p, 8);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Span<byte> MakeSpan(int at) => Buffer.AsSpan(at, 16);
+
+    // A call returns the span into the struct as a whole, so its fields are not stored one by one.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static ulong SpanReturned(int at)
+    {
+        Span<byte> span = MakeSpan(at);
+        ref byte p = ref MemoryMarshal.GetReference(span);
+        return Read64(ref p, 0) * 3 + Read64(ref p, 8);
+    }
+
+    ref struct SpanPair
+    {
+        public Span<byte> Aligned, Other;
+    }
+
+    // The pair is copied as a whole; the copy's Other holds the parameter offset.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static ulong SpanCopied(int at)
+    {
+        SpanPair pair;
+        pair.Aligned = Buffer.AsSpan(64, 16);
+        pair.Other = Buffer.AsSpan(at, 16);
+        SpanPair copy = pair;
+        ref byte p = ref MemoryMarshal.GetReference(copy.Other);
+        return Read64(ref p, 0) - Read64(ref MemoryMarshal.GetReference(copy.Aligned), 0) + Read32(ref p, 8);
+    }
+
+    // The reference starts aligned and moves by a parameter step in the loop.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static ulong SpanSliced(int step, int count)
+    {
+        Span<byte> span = Buffer.AsSpan(64, 64);
+        ulong sum = 0;
+        for (int i = 0; i < count; i++)
+        {
+            ref byte p = ref MemoryMarshal.GetReference(span);
+            sum += Read64(ref p, 0) ^ Read64(ref p, 8);
+            span = span.Slice(step);
+            _sink = sum;
+        }
+        return sum;
+    }
+
+    // The reference starts aligned and moves by an odd constant: the fixed point must drop its alignment.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static ulong SpanSlicedOdd(int count)
+    {
+        Span<byte> span = Buffer.AsSpan(64, 32);
+        ulong sum = 0;
+        for (int i = 0; i < count; i++)
+        {
+            sum += Read64(ref MemoryMarshal.GetReference(span), 0);
+            span = span.Slice(3);
+            _sink = sum;
+        }
+        return sum;
     }
 }
