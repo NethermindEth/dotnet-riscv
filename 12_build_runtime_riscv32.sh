@@ -53,6 +53,11 @@ echo "== rv32im sysroot"
 rm -rf "${SYSROOT}"
 in_container "$IMAGE" bash -euc '
     clang --version | head -n1
+    missing=
+    for t in clang llvm-ar llvm-ranlib llvm-nm llvm-objdump make curl git tar gzip python3 nproc ; do
+        command -v "$t" > /dev/null || missing="$missing $t"
+    done
+    [ -z "$missing" ] || { echo "the build container has no$missing" >&2 ; exit 1 ; }
     "$0/build_musl_rv32im.sh" "$1"
     "$0/build_libatomic_rv32im.sh" "$1"
     "$0/build_builtins_rv32im.sh" "$1"' "${TOP_DIR}" "${SYSROOT}"

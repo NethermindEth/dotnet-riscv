@@ -32,7 +32,8 @@ actual="$(sha256sum "$work/musl.tar.gz" 2>/dev/null || shasum -a 256 "$work/musl
 tar xzf "$work/musl.tar.gz" -C "$work"
 src="$work/musl-$version"
 
-patch -d "$src" -p1 --silent < "$TOP_DIR/musl/atomic_arch_rv32im.patch"
+# git apply rather than patch(1): the cross-build container has git and no patch.
+git -C "$src" apply -p1 "$TOP_DIR/musl/atomic_arch_rv32im.patch"
 
 pushd "$src" >/dev/null
     # LIBCC="": the sysroot has no compiler runtime yet (build_builtins_rv32im.sh
