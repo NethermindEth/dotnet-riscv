@@ -18,10 +18,15 @@
 # 2. the riscv32 NativeAOT runtime, its CoreLib and libSystem.Native,
 #    cross-built against the sysroot. riscv32 is NativeAOT-only: CoreCLR
 #    and the framework libraries are not built for it;
-# 3. the x64-hosted compiler: ILCompiler with the RiscV32 target, its
-#    jitinterface and the cross JITs, among them clrjit_unix_riscv32_x64
-#    (a community JIT, hence clr.alljitscommunity). It is the longest step,
-#    so it comes last.
+# 3. on x64: the cross JIT clrjit_unix_riscv32_x64 (a community JIT, hence
+#    clr.alljitscommunity), which the ILCompiler of the bflat.compiler
+#    package loads for riscv32, and the managed framework libraries
+#    (libs.sfx; their IL does not depend on the architecture), which
+#    riscv32 cannot build itself. It is the longest step, so it comes last.
+#
+# The ILCompiler is the one of the bflat.compiler package of the SDK build,
+# which applies the riscv32 fixups too: these sources are the same, so the
+# JIT agrees with it, as the JIT of the linux-x64 target does.
 set -euo pipefail
 
 export TOP_DIR="$(cd "$(dirname "$(which "$0")")" ; pwd -P)"
@@ -78,8 +83,10 @@ in_container -e ROOTFS_DIR="${SYSROOT}" \
                -c Release --cross --arch riscv32 --os linux \
                /p:RunAnalyzers=false
 
-echo "== x64-hosted compiler"
+echo "== riscv32 cross JIT and framework libraries"
+# The subsets of the linux-x64 target (10_build_runtime_x64.sh), which build
+# libs.sfx this way, with the community JITs.
 in_container -e ROOTFS_DIR=/crossrootfs/x64 "$IMAGE" \
-    ./build.sh -s clr.alljitscommunity+clr.aot \
+    ./build.sh -s clr.alljitscommunity+clr.aot+libs.native+libs.sfx \
                -c Release --cross --arch x64 --os linux \
                /p:RunAnalyzers=false
