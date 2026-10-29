@@ -17,6 +17,21 @@ index b4496e0bc..72c970d8d 100755
            exit 1
            ;;
        esac
+diff --git a/eng/common/cross/toolchain.cmake b/eng/common/cross/toolchain.cmake
+index bd0837495..7106acb67 100644
+--- a/eng/common/cross/toolchain.cmake
++++ b/eng/common/cross/toolchain.cmake
+@@ -101,6 +101,10 @@ elseif(TARGET_ARCH_NAME STREQUAL "riscv32")
+   set(CMAKE_C_STANDARD_LIBRARIES "${CROSS_ROOTFS}/usr/lib/libc.a ${CROSS_ROOTFS}/usr/lib/libclang_rt.builtins-riscv32.a")
+   set(CMAKE_CXX_STANDARD_LIBRARIES "${CMAKE_C_STANDARD_LIBRARIES}")
+   string(APPEND CMAKE_EXE_LINKER_FLAGS_INIT " -nostdlib -static -Wno-unused-command-line-argument")
++  # The C++ headers are libc++'s, configured for the sysroot (build_libcxx_headers_rv32.sh).
++  # They are named explicitly: clang would otherwise look for libstdc++, or for the libc++
++  # configured for its own host.
++  string(APPEND CMAKE_CXX_FLAGS_INIT " -nostdinc++ -isystem ${CROSS_ROOTFS}/usr/include/c++/v1")
+ elseif(TARGET_ARCH_NAME STREQUAL "riscv64")
+   set(CMAKE_SYSTEM_PROCESSOR riscv64)
+   if(EXISTS ${CROSS_ROOTFS}/usr/lib/gcc/riscv64-alpine-linux-musl)
 diff --git a/src/coreclr/gc/env/gcenv.base.h b/src/coreclr/gc/env/gcenv.base.h
 index 3dec856a5..6d1e64242 100644
 --- a/src/coreclr/gc/env/gcenv.base.h

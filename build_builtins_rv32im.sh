@@ -36,7 +36,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 echo "Fetching compiler-rt builtins ($tag)"
-git -C "$work" clone -q --depth 1 --filter=blob:none --sparse -b "$tag" \
+git -c advice.detachedHead=false -C "$work" clone -q --depth 1 --filter=blob:none --sparse -b "$tag" \
     https://github.com/llvm/llvm-project.git llvm
 git -C "$work/llvm" sparse-checkout set compiler-rt/lib/builtins
 src="$work/llvm/compiler-rt/lib/builtins"

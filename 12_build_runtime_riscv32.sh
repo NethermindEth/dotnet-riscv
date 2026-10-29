@@ -12,8 +12,9 @@
 # and the LLVM tools:
 #
 # 1. the rv32im sysroot: musl, the soft libatomic, the compiler-rt builtins
-#    (build_*_rv32im.sh) and the Linux UAPI headers
-#    (install_linux_headers_rv32.sh), in crossrootfs/riscv32;
+#    (build_*_rv32im.sh), the Linux UAPI headers
+#    (install_linux_headers_rv32.sh) and the libc++ headers
+#    (build_libcxx_headers_rv32.sh), in crossrootfs/riscv32;
 # 2. the riscv32 NativeAOT runtime, its CoreLib and libSystem.Native,
 #    cross-built against the sysroot. riscv32 is NativeAOT-only: CoreCLR
 #    and the framework libraries are not built for it;
@@ -56,14 +57,15 @@ rm -rf "${SYSROOT}"
 in_container "$IMAGE" bash -euc '
     clang --version | head -n1
     missing=
-    for t in clang llvm-ar llvm-ranlib llvm-nm llvm-objdump make curl git tar gzip python3 nproc ; do
+    for t in clang clang++ llvm-ar llvm-ranlib llvm-nm llvm-objdump make cmake ninja curl git tar gzip python3 nproc ; do
         command -v "$t" > /dev/null || missing="$missing $t"
     done
     [ -z "$missing" ] || { echo "the build container has no$missing" >&2 ; exit 1 ; }
     "$0/build_musl_rv32im.sh" "$1"
     "$0/build_libatomic_rv32im.sh" "$1"
     "$0/build_builtins_rv32im.sh" "$1"
-    "$0/install_linux_headers_rv32.sh" "$1"' "${TOP_DIR}" "${SYSROOT}"
+    "$0/install_linux_headers_rv32.sh" "$1"
+    "$0/build_libcxx_headers_rv32.sh" "$1"' "${TOP_DIR}" "${SYSROOT}"
 
 echo "== riscv32 NativeAOT runtime"
 # The ISA and the ABI reach toolchain.cmake through the environment, as they do

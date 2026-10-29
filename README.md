@@ -82,6 +82,7 @@ with clang and the LLVM tools:
 ./build_libatomic_rv32im.sh <sysroot>  # soft __atomic_* for a single hart
 ./build_builtins_rv32im.sh <sysroot>   # compiler-rt builtins at the clang's tag
 ./install_linux_headers_rv32.sh <sysroot>  # the Linux UAPI headers
+./build_libcxx_headers_rv32.sh <sysroot>   # the libc++ headers at the clang's tag
 ```
 
 Each script fails if its output carries a compressed or atomic instruction.
