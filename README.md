@@ -60,12 +60,32 @@ bflat-riscv64; keep it the same.
 
 ## The riscv32 target
 
-`RISCV32=1 ./patch_runtime.sh upstream-perf` adds the RV32IM ilp32 target
-(`fixup/<major>/riscv32`) on top of the `upstream-perf` profile. In
-**Build .NET SDK**, tick **riscv32** with the `upstream-perf` profile: the SDK
-build then applies the riscv32 fixups too, and the `runtime-riscv32` job
-uploads the `bflat-riscv32` artifact (the x64-hosted compiler, the riscv32
-NativeAOT runtime and the sysroot). With **skip SDK** that job runs alone.
+bflat also builds RV32IM ilp32 guests for the ZKsync Airbender zkVM (no C, A,
+F or D extensions, no fences). With the `upstream-perf` profile, **Build .NET
+SDK** applies the riscv32 fixups (`fixup/<major>/riscv32`, `RISCV32=1` of
+`patch_runtime.sh`) to every job, which gives the ILCompiler of
+`bflat.compiler.10.0.0.nupkg` the RiscV32 target, and the `runtime-riscv32`
+job makes the four release assets of the target:
+
+- `bflat-compiler-native-riscv32-linux-glibc-x64.zip`: the riscv32 cross JIT
+  (`libclrjit_unix_riscv32_x64.so`) that ILCompiler loads;
+- `bflat-libs-linux-musl-riscv32.zip`: the NativeAOT runtime, CoreLib, the
+  static native libraries (`libSystem.Native.a`, compression, ...) and the
+  framework libraries;
+- `libs-linux-musl-riscv32.zip`: the files of the sysroot that the link
+  needs: musl's crt objects and libraries, the soft `libatomic.a` and the
+  compiler-rt builtins;
+- `crossrootfs-musl-riscv32.tar.xz`: the whole rv32im sysroot, headers
+  included, for the C code that bflat builds.
+
+The **riscv32** box (on by default) turns this off; other profiles have no
+riscv32. With **skip SDK** the job runs alone, without a release. As for the
+linux-x64 target, the job clones dotnet/runtime at the commit that the VMR
+pins, with the same fixups and JIT/EE GUID, so the JIT and CoreLib agree with
+the ILCompiler of the package; the riscv32 fixups change the JIT/EE contract,
+so they have a GUID of their own (`bump_jitee_guid.sh`). riscv32 builds only
+the NativeAOT runtime; the framework libraries are the x64 build of the same
+sources, as their IL does not depend on the architecture outside CoreLib.
 Locally:
 
 ```bash
@@ -75,10 +95,11 @@ RISCV32=1 ./runtime_tests.sh source dotnet <vmr branch> upstream-perf
 ```
 
 The riscv32 runtime builds against a static sysroot, its `CROSS_ROOTFS`, made
-with clang and the LLVM tools:
+with clang and the LLVM tools, without linker relaxation (`ld -r` would keep
+padding that can leave code on a 2-byte boundary):
 
 ```bash
-./build_musl_rv32im.sh <sysroot>       # musl 1.2.5 without lr/sc
+./build_musl_rv32im.sh <sysroot>       # musl 1.2.5 without lr/sc and fences
 ./build_libatomic_rv32im.sh <sysroot>  # soft __atomic_* for a single hart
 ./build_builtins_rv32im.sh <sysroot>   # compiler-rt builtins at the clang's tag
 ./install_linux_headers_rv32.sh <sysroot>  # the Linux UAPI headers
@@ -86,6 +107,10 @@ with clang and the LLVM tools:
 ```
 
 Each script fails if its output carries a compressed or atomic instruction.
+`13_pack_riscv32.sh` fails on an asset object that is not ilp32 or claims the
+C extension (`check_ilp32.sh`, the counterpart of `check_lp64.sh`), or that
+carries a compressed, atomic or fence instruction (`tools/isa_scan.py`). The
+run job checks that the ILCompiler of the package has the RiscV32 target.
 
 ## License
 
