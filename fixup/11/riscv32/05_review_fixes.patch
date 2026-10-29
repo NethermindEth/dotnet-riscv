@@ -318,6 +318,22 @@ index 863cad6c6..99609477a 100644
                          return 4;
                      default:
                          return 1;
+diff --git a/src/native/libs/CMakeLists.txt b/src/native/libs/CMakeLists.txt
+index be620230d..50b199823 100644
+--- a/src/native/libs/CMakeLists.txt
++++ b/src/native/libs/CMakeLists.txt
+@@ -149,7 +149,10 @@ if (CLR_CMAKE_TARGET_UNIX OR CLR_CMAKE_TARGET_BROWSER OR CLR_CMAKE_TARGET_WASI)
+     endif ()
+ 
+     add_subdirectory(System.Native)
+-    add_subdirectory(System.Globalization.Native)
++    # riscv32 guests run with invariant globalization: there is no ICU to build against.
++    if (NOT CLR_CMAKE_TARGET_ARCH_RISCV32)
++        add_subdirectory(System.Globalization.Native)
++    endif ()
+ 
+     if (CLR_CMAKE_TARGET_BROWSER OR CLR_CMAKE_TARGET_WASI OR CLR_CMAKE_TARGET_ARCH_RISCV32)
+         # skip for now; riscv32 is a NativeAOT-only zkVM target without networking or crypto
 diff --git a/src/native/minipal/time.c b/src/native/minipal/time.c
 index c8f69bc8c..f3466ab81 100644
 --- a/src/native/minipal/time.c
