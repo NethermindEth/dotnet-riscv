@@ -1,0 +1,306 @@
+diff --git a/eng/build.sh b/eng/build.sh
+index b4496e0bc..72c970d8d 100755
+--- a/eng/build.sh
++++ b/eng/build.sh
+@@ -222,12 +222,12 @@ while [[ $# -gt 0 ]]; do
+       fi
+       passedArch="$(echo "$2" | tr "[:upper:]" "[:lower:]")"
+       case "$passedArch" in
+-        x64|x86|arm|armv6|armel|arm64|loongarch64|riscv64|s390x|ppc64le|wasm)
++        x64|x86|arm|armv6|armel|arm64|loongarch64|riscv32|riscv64|s390x|ppc64le|wasm)
+           arch=$passedArch
+           ;;
+         *)
+           echo "Unsupported target architecture '$2'."
+-          echo "The allowed values are x86, x64, arm, armv6, armel, arm64, loongarch64, riscv64, s390x, ppc64le and wasm."
++          echo "The allowed values are x86, x64, arm, armv6, armel, arm64, loongarch64, riscv32, riscv64, s390x, ppc64le and wasm."
+           exit 1
+           ;;
+       esac
+diff --git a/src/coreclr/gc/env/gcenv.base.h b/src/coreclr/gc/env/gcenv.base.h
+index 3dec856a5..6d1e64242 100644
+--- a/src/coreclr/gc/env/gcenv.base.h
++++ b/src/coreclr/gc/env/gcenv.base.h
+@@ -186,7 +186,11 @@ typedef DWORD (WINAPI *PTHREAD_START_ROUTINE)(void* lpThreadParameter);
+  #define MemoryBarrier __sync_synchronize
+ #endif // __loongarch64
+ 
+-#ifdef __riscv
++#if defined(__riscv) && __riscv_xlen == 32
++ // riscv32 is single-hart (no A extension): no pause hint and no fence.
++ #define YieldProcessor() asm volatile("" : : : "memory")
++ #define MemoryBarrier() __atomic_signal_fence(__ATOMIC_SEQ_CST)
++#elif defined(__riscv)
+  #define YieldProcessor() asm volatile( ".word 0x0100000f");
+  #define MemoryBarrier __sync_synchronize
+ #endif // __riscv
+diff --git a/src/coreclr/gc/env/gcenv.interlocked.inl b/src/coreclr/gc/env/gcenv.interlocked.inl
+index 4c00335d3..89222c90a 100644
+--- a/src/coreclr/gc/env/gcenv.interlocked.inl
++++ b/src/coreclr/gc/env/gcenv.interlocked.inl
+@@ -13,7 +13,7 @@
+ #ifndef _MSC_VER
+ FORCEINLINE void Interlocked::InterlockedOperationBarrier()
+ {
+-#if defined(HOST_ARM64) || defined(HOST_LOONGARCH64) || defined(HOST_RISCV64) || defined(HOST_RISCV32)
++#if defined(HOST_ARM64) || defined(HOST_LOONGARCH64) || defined(HOST_RISCV64)
+     // See PAL_InterlockedOperationBarrier() in the PAL
+     __sync_synchronize();
+ #endif
+diff --git a/src/coreclr/gc/env/volatile.h b/src/coreclr/gc/env/volatile.h
+index b3bad5b5d..ee1c09d4b 100644
+--- a/src/coreclr/gc/env/volatile.h
++++ b/src/coreclr/gc/env/volatile.h
+@@ -76,8 +76,11 @@
+ #define VOLATILE_MEMORY_BARRIER() asm volatile ("dmb ish" : : : "memory")
+ #elif defined(HOST_LOONGARCH64)
+ #define VOLATILE_MEMORY_BARRIER() asm volatile ("dbar 0 " : : : "memory")
+-#elif defined(HOST_RISCV64) || defined(HOST_RISCV32)
++#elif defined(HOST_RISCV64)
+ #define VOLATILE_MEMORY_BARRIER() asm volatile ("fence rw,rw" : : : "memory")
++#elif defined(HOST_RISCV32)
++// riscv32 is single-hart (no A extension): only the compiler can reorder.
++#define VOLATILE_MEMORY_BARRIER() __atomic_signal_fence(__ATOMIC_SEQ_CST)
+ #else
+ //
+ // For GCC, we prevent reordering by the compiler by inserting the following after a volatile
+diff --git a/src/coreclr/gc/gcload.cpp b/src/coreclr/gc/gcload.cpp
+index 74505d7cc..3cd0bd031 100644
+--- a/src/coreclr/gc/gcload.cpp
++++ b/src/coreclr/gc/gcload.cpp
+@@ -70,6 +70,16 @@ GC_Initialize(
+ {
+     IGCHeapInternal* heap;
+ 
++#ifdef HOST_RISCV32
++    // The riscv32 runtime rounds every object up to 8 bytes (OBJECT_SIZE_ALIGNMENT), and this GC
++    // walks the heap in steps of 4: it would read padding as a MethodTable. riscv32 links a
++    // non-collecting GC (uGC) in place of this one.
++    UNREFERENCED_PARAMETER(clrToGC);
++    UNREFERENCED_PARAMETER(gcHeap);
++    UNREFERENCED_PARAMETER(gcHandleManager);
++    UNREFERENCED_PARAMETER(gcDacVars);
++    return E_FAIL;
++#else
+     assert(gcDacVars != nullptr);
+     assert(gcHeap != nullptr);
+     assert(gcHandleManager != nullptr);
+@@ -141,4 +151,5 @@ GC_Initialize(
+     *gcHandleManager = handleManager;
+     *gcHeap = heap;
+     return S_OK;
++#endif // HOST_RISCV32
+ }
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+index 317a5a28c..dd5ddeeaa 100644
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -7406,6 +7406,11 @@ void CodeGen::instGen_MemoryBarrier(BarrierKind barrierKind)
+         return;
+     }
+ 
++#ifdef TARGET_RISCV32
++    // riscv32 is single-hart (no A extension), as the runtime and ILC assume: no barrier is needed.
++    return;
++#endif
++
+     insBarrier barrier;
+     switch (barrierKind)
+     {
+diff --git a/src/coreclr/jit/compiler.cpp b/src/coreclr/jit/compiler.cpp
+index a1bd7e78f..ca083de58 100644
+--- a/src/coreclr/jit/compiler.cpp
++++ b/src/coreclr/jit/compiler.cpp
+@@ -1997,6 +1997,13 @@ void Compiler::compSetProcessor()
+         instructionSetFlags.RemoveInstructionSet(InstructionSet_C);
+     }
+ 
++#ifdef TARGET_RISCV32
++    // The Zba/Zbb code paths emit RV64-only forms (add.uw, sh*add.uw, clzw, rolw, ...), which do not
++    // exist on RV32.
++    instructionSetFlags.RemoveInstructionSet(InstructionSet_Zba);
++    instructionSetFlags.RemoveInstructionSet(InstructionSet_Zbb);
++#endif
++
+     instructionSetFlags = EnsureInstructionSetFlagsAreValid(instructionSetFlags);
+ #endif // TARGET_ARM64
+ 
+diff --git a/src/coreclr/jit/decomposelongs.h b/src/coreclr/jit/decomposelongs.h
+index cad2bf192..819fdc39b 100644
+--- a/src/coreclr/jit/decomposelongs.h
++++ b/src/coreclr/jit/decomposelongs.h
+@@ -84,7 +84,6 @@ private:
+     GenTree* DecomposeSelectNoFlags(LIR::Use& use);
+     GenTree* DecomposeLongCompareNoFlags(GenTree* cmp);
+     GenTree* RepresentOpAsReusable(GenTree* user, GenTree** edge);
+-    GenTree* NewIntTempRead(GenTree* value, unsigned* lclNum);
+     void     ThrowIfOverflowBitSet(GenTree* overflowBit, GenTree* insertAfter);
+ #endif // TARGET_RISCV32
+ 
+diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
+index 6bd44f030..718161e88 100644
+--- a/src/coreclr/jit/emitriscv64.cpp
++++ b/src/coreclr/jit/emitriscv64.cpp
+@@ -2842,7 +2842,7 @@ static constexpr unsigned kInstructionFunct2Mask = 0x06000000;
+         case INS_slli:
+         case INS_srli:
+         case INS_srai:
+-            assert(immediate < 64);
++            assert(immediate < (unsigned)(REGSIZE_BYTES * 8));
+             assert(isGeneralRegisterOrR0(rd));
+             assert(isGeneralRegisterOrR0(rs1));
+             break;
+diff --git a/src/coreclr/jit/ifconversion.cpp b/src/coreclr/jit/ifconversion.cpp
+index e381a3646..e56be2fa6 100644
+--- a/src/coreclr/jit/ifconversion.cpp
++++ b/src/coreclr/jit/ifconversion.cpp
+@@ -761,14 +761,14 @@ GenTree* OptIfConversionDsc::TryOptimizeSelect(GenTreeConditional* select)
+         return opt;
+     }
+ 
+-#ifndef TARGET_64BIT
++#ifdef TARGET_RISCV32
+     // The rewrites below combine the int condition with the selected values directly, which a long
+-    // select on a 32-bit target cannot do: the long operations are later decomposed into halves.
++    // select on riscv32 cannot do: the long operations are later decomposed into halves.
+     if (select->TypeIs(TYP_LONG))
+     {
+         return nullptr;
+     }
+-#endif // !TARGET_64BIT
++#endif // TARGET_RISCV32
+ 
+     opt = TrySelectToCnsOpCond(select);
+     if (opt != nullptr)
+diff --git a/src/coreclr/nativeaot/Runtime/unix/PalInline.h b/src/coreclr/nativeaot/Runtime/unix/PalInline.h
+index 449ce7feb..f0db7fa1d 100644
+--- a/src/coreclr/nativeaot/Runtime/unix/PalInline.h
++++ b/src/coreclr/nativeaot/Runtime/unix/PalInline.h
+@@ -7,7 +7,7 @@
+ 
+ FORCEINLINE void PalInterlockedOperationBarrier()
+ {
+-#if (defined(HOST_ARM64) && !defined(LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT) && !defined(__clang__)) || defined(HOST_LOONGARCH64) || defined(HOST_RISCV64) || defined(HOST_RISCV32)
++#if (defined(HOST_ARM64) && !defined(LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT) && !defined(__clang__)) || defined(HOST_LOONGARCH64) || defined(HOST_RISCV64)
+     // On arm64, most of the __sync* functions generate a code sequence like:
+     //   loop:
+     //     ldaxr (load acquire exclusive)
+diff --git a/src/coreclr/nativeaot/Runtime/unix/unixasmmacrosriscv32.inc b/src/coreclr/nativeaot/Runtime/unix/unixasmmacrosriscv32.inc
+index 6bc6ecb9d..207ad8573 100644
+--- a/src/coreclr/nativeaot/Runtime/unix/unixasmmacrosriscv32.inc
++++ b/src/coreclr/nativeaot/Runtime/unix/unixasmmacrosriscv32.inc
+@@ -168,8 +168,8 @@ C_FUNC(\Name):
+     call C_FUNC(__tls_get_addr)
+ .endm
+ 
++// riscv32 is single-hart (no A extension): an interlocked operation needs no barrier.
+ .macro InterlockedOperationBarrier
+-    fence rw, rw
+ .endm
+ 
+ .macro INLINE_THREAD_UNHIJACK threadReg, trashReg1, trashReg2
+diff --git a/src/coreclr/runtime/riscv32/InlineTls.inc b/src/coreclr/runtime/riscv32/InlineTls.inc
+index 68387ccc7..90ee55b57 100644
+--- a/src/coreclr/runtime/riscv32/InlineTls.inc
++++ b/src/coreclr/runtime/riscv32/InlineTls.inc
+@@ -8,7 +8,9 @@
+         .error "target cannot be a0"
+     .endif
+ 
++    // t2 is saved too: RhpPInvoke and RhCommonStub keep a0 in it across this macro.
+     addi sp, sp, -48
++    sw t2,  36(sp)
+     sw ra,  32(sp)
+     sw t1,  28(sp)
+     sw a1,  24(sp)
+@@ -23,6 +25,7 @@
+     la.tls.gd a0, \var
+     call C_FUNC(__tls_get_addr)
+ 
++    lw t2,  36(sp)
+     lw ra,  32(sp)
+     lw t1,  28(sp)
+     lw a1,  24(sp)
+diff --git a/src/coreclr/runtime/riscv32/WriteBarriers.S b/src/coreclr/runtime/riscv32/WriteBarriers.S
+index 3359b685c..3efad1ea8 100644
+--- a/src/coreclr/runtime/riscv32/WriteBarriers.S
++++ b/src/coreclr/runtime/riscv32/WriteBarriers.S
+@@ -53,9 +53,8 @@
+         // Update the shadow heap.
+         sw   \refReg, 0(\destReg)
+ 
+-        // The following read must be strongly ordered with respect to the write we have just performed in order to
+-        // prevent race conditions.
+-        fence rw, rw
++        // No fence before the read below: riscv32 is single-hart, so the write we have just performed is
++        // already ordered with it.
+ 
+         // Now check that the real heap location still contains the value we just wrote into the shadow heap.
+         mv   t3, t4
+@@ -206,7 +205,7 @@ LEAF_END RhpCheckedAssignRef, _TEXT
+ //  t2, t6 : trashed
+ //  t3 : preserved (the destination address is not modified)
+ LEAF_ENTRY RhpAssignRefRiscV32, _TEXT
+-        fence rw, rw
++        // No release fence before the store: riscv32 is single-hart.
+ 
+     ALTERNATE_ENTRY RhpAssignRefAVLocation
+         sw    t4, 0(t3)
+@@ -260,9 +259,8 @@ LOCAL_LABEL(CmpXchgRetry):
+         sw      a1, (a0)
+ #endif
+ 
+-        // See comment at the top of PalInterlockedOperationBarrier method for explanation why this memory
+-        // barrier is necessary.
+-        fence   rw, rw
++        // No barrier after the interlocked operation (see PalInterlockedOperationBarrier): riscv32 is
++        // single-hart.
+ 
+         // We have successfully updated the value of the objectref so now we need a GC write barrier.
+         // The following barrier code takes the destination in a0 and the value in a1 so the arguments are
+@@ -302,9 +300,8 @@ LEAF_ENTRY RhpCheckedXchg
+         sw      a1, (a0)
+ #endif
+ 
+-        // See comment at the top of PalInterlockedOperationBarrier method for explanation why this memory
+-        // barrier is necessary.
+-        fence rw, rw
++        // No barrier after the interlocked operation (see PalInterlockedOperationBarrier): riscv32 is
++        // single-hart.
+ 
+         // We have successfully updated the value of the objectref so now we need a GC write barrier.
+         // The following barrier code takes the destination in a0 and the value in a1 so the arguments are
+diff --git a/src/coreclr/tools/Common/TypeSystem/Common/TargetDetails.cs b/src/coreclr/tools/Common/TypeSystem/Common/TargetDetails.cs
+index 863cad6c6..99609477a 100644
+--- a/src/coreclr/tools/Common/TypeSystem/Common/TargetDetails.cs
++++ b/src/coreclr/tools/Common/TypeSystem/Common/TargetDetails.cs
+@@ -189,10 +189,10 @@ public int MinimumCodeAlignment
+                 {
+                     case TargetArchitecture.ARM:
+                     case TargetArchitecture.RiscV64:
+-                    case TargetArchitecture.RiscV32:
+                         return 2;
+                     case TargetArchitecture.ARM64:
+                     case TargetArchitecture.LoongArch64:
++                    case TargetArchitecture.RiscV32:
+                         return 4;
+                     default:
+                         return 1;
+diff --git a/src/native/minipal/time.c b/src/native/minipal/time.c
+index c8f69bc8c..f3466ab81 100644
+--- a/src/native/minipal/time.c
++++ b/src/native/minipal/time.c
+@@ -76,9 +76,12 @@ inline static void YieldProcessor(void)
+         );
+ #elif defined(HOST_LOONGARCH64)
+     __asm__ volatile( "dbar 0;  \n");
+-#elif defined(HOST_RISCV64) || defined(HOST_RISCV32)
++#elif defined(HOST_RISCV64)
+     // TODO-RISCV64-CQ: When Zihintpause is supported, replace with `pause` instruction.
+     __asm__ __volatile__(".word 0x0100000f");
++#elif defined(HOST_RISCV32)
++    // riscv32 is single-hart: there is no other hart to yield to, and the pause hint is a fence.
++    return;
+ #else
+     return;
+ #endif
