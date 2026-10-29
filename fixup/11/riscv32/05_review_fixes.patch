@@ -172,6 +172,38 @@ index e381a3646..e56be2fa6 100644
  
      opt = TrySelectToCnsOpCond(select);
      if (opt != nullptr)
+diff --git a/src/coreclr/nativeaot/Runtime.Base/src/System/Runtime/CompilerServices/Unsafe.cs b/src/coreclr/nativeaot/Runtime.Base/src/System/Runtime/CompilerServices/Unsafe.cs
+index 8b941d4fe..1607d607c 100644
+--- a/src/coreclr/nativeaot/Runtime.Base/src/System/Runtime/CompilerServices/Unsafe.cs
++++ b/src/coreclr/nativeaot/Runtime.Base/src/System/Runtime/CompilerServices/Unsafe.cs
+@@ -145,6 +145,27 @@ public static T ReadUnaligned<T>(ref readonly byte source)
+             throw new PlatformNotSupportedException();
+         }
+ 
++        /// <summary>
++        /// Writes a value of type <typeparamref name="T"/> to the given location.
++        /// </summary>
++        [Intrinsic]
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        public static void WriteUnaligned<T>(void* destination, T value)
++        {
++            throw new PlatformNotSupportedException();
++        }
++
++        /// <summary>
++        /// Copies bytes from the source address to the destination address
++        /// without assuming architecture dependent alignment of the addresses.
++        /// </summary>
++        [Intrinsic]
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        public static void CopyBlockUnaligned(void* destination, void* source, uint byteCount)
++        {
++            throw new PlatformNotSupportedException();
++        }
++
+         /// <summary>
+         /// Copies bytes from the source address to the destination address.
+         /// </summary>
 diff --git a/src/coreclr/nativeaot/Runtime/unix/PalInline.h b/src/coreclr/nativeaot/Runtime/unix/PalInline.h
 index 449ce7feb..f0db7fa1d 100644
 --- a/src/coreclr/nativeaot/Runtime/unix/PalInline.h
