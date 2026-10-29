@@ -81,6 +81,7 @@ with clang and the LLVM tools:
 ./build_musl_rv32im.sh <sysroot>       # musl 1.2.5 without lr/sc
 ./build_libatomic_rv32im.sh <sysroot>  # soft __atomic_* for a single hart
 ./build_builtins_rv32im.sh <sysroot>   # compiler-rt builtins at the clang's tag
+./install_linux_headers_rv32.sh <sysroot>  # the Linux UAPI headers
 ```
 
 Each script fails if its output carries a compressed or atomic instruction.

@@ -11,14 +11,16 @@
 # image of its pipelines, as 10_build_runtime_x64.sh uses), which has clang
 # and the LLVM tools:
 #
-# 1. the rv32im sysroot: musl, the soft libatomic and the compiler-rt
-#    builtins (build_*_rv32im.sh), in crossrootfs/riscv32;
-# 2. the x64-hosted compiler: ILCompiler with the RiscV32 target, its
-#    jitinterface and the cross JITs, among them clrjit_unix_riscv32_x64
-#    (a community JIT, hence clr.alljitscommunity);
-# 3. the riscv32 NativeAOT runtime, its CoreLib and libSystem.Native,
+# 1. the rv32im sysroot: musl, the soft libatomic, the compiler-rt builtins
+#    (build_*_rv32im.sh) and the Linux UAPI headers
+#    (install_linux_headers_rv32.sh), in crossrootfs/riscv32;
+# 2. the riscv32 NativeAOT runtime, its CoreLib and libSystem.Native,
 #    cross-built against the sysroot. riscv32 is NativeAOT-only: CoreCLR
-#    and the framework libraries are not built for it.
+#    and the framework libraries are not built for it;
+# 3. the x64-hosted compiler: ILCompiler with the RiscV32 target, its
+#    jitinterface and the cross JITs, among them clrjit_unix_riscv32_x64
+#    (a community JIT, hence clr.alljitscommunity). It is the longest step,
+#    so it comes last.
 set -euo pipefail
 
 export TOP_DIR="$(cd "$(dirname "$(which "$0")")" ; pwd -P)"
@@ -60,13 +62,8 @@ in_container "$IMAGE" bash -euc '
     [ -z "$missing" ] || { echo "the build container has no$missing" >&2 ; exit 1 ; }
     "$0/build_musl_rv32im.sh" "$1"
     "$0/build_libatomic_rv32im.sh" "$1"
-    "$0/build_builtins_rv32im.sh" "$1"' "${TOP_DIR}" "${SYSROOT}"
-
-echo "== x64-hosted compiler"
-in_container -e ROOTFS_DIR=/crossrootfs/x64 "$IMAGE" \
-    ./build.sh -s clr.alljitscommunity+clr.aot \
-               -c Release --cross --arch x64 --os linux \
-               /p:RunAnalyzers=false
+    "$0/build_builtins_rv32im.sh" "$1"
+    "$0/install_linux_headers_rv32.sh" "$1"' "${TOP_DIR}" "${SYSROOT}"
 
 echo "== riscv32 NativeAOT runtime"
 # The ISA and the ABI reach toolchain.cmake through the environment, as they do
@@ -77,4 +74,10 @@ in_container -e ROOTFS_DIR="${SYSROOT}" \
              "$IMAGE" \
     ./build.sh -s clr.nativeaotruntime+clr.nativeaotlibs+libs.native \
                -c Release --cross --arch riscv32 --os linux \
+               /p:RunAnalyzers=false
+
+echo "== x64-hosted compiler"
+in_container -e ROOTFS_DIR=/crossrootfs/x64 "$IMAGE" \
+    ./build.sh -s clr.alljitscommunity+clr.aot \
+               -c Release --cross --arch x64 --os linux \
                /p:RunAnalyzers=false
