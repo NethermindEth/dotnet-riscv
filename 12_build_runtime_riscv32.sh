@@ -69,7 +69,12 @@ in_container -e ROOTFS_DIR=/crossrootfs/x64 "$IMAGE" \
                /p:RunAnalyzers=false
 
 echo "== riscv32 NativeAOT runtime"
-in_container -e ROOTFS_DIR="${SYSROOT}" "$IMAGE" \
+# The ISA and the ABI reach toolchain.cmake through the environment, as they do
+# for the soft-float riscv64 build: cmake's own probes would otherwise be built
+# for clang's default rv32 ABI (ilp32d) and fail to link against the sysroot.
+in_container -e ROOTFS_DIR="${SYSROOT}" \
+             -e CLR_CMAKE_RISCV64_MARCH=rv32im -e CLR_CMAKE_RISCV64_MABI=ilp32 \
+             "$IMAGE" \
     ./build.sh -s clr.nativeaotruntime+clr.nativeaotlibs+libs.native \
                -c Release --cross --arch riscv32 --os linux \
                /p:RunAnalyzers=false
