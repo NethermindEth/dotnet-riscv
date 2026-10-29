@@ -61,8 +61,18 @@ bflat-riscv64; keep it the same.
 ## The riscv32 target
 
 `RISCV32=1 ./patch_runtime.sh upstream-perf` adds the RV32IM ilp32 target
-(`fixup/<major>/riscv32`) on top of the `upstream-perf` profile. CI does not
-build it yet.
+(`fixup/<major>/riscv32`) on top of the `upstream-perf` profile. In
+**Build .NET SDK**, tick **riscv32** with the `upstream-perf` profile: the SDK
+build then applies the riscv32 fixups too, and the `runtime-riscv32` job
+uploads the `bflat-riscv32` artifact (the x64-hosted compiler, the riscv32
+NativeAOT runtime and the sysroot). With **skip SDK** that job runs alone.
+Locally:
+
+```bash
+RISCV32=1 ./runtime_tests.sh source dotnet <vmr branch> upstream-perf
+./12_build_runtime_riscv32.sh
+./13_pack_riscv32.sh
+```
 
 The riscv32 runtime builds against a static sysroot, its `CROSS_ROOTFS`, made
 with clang and the LLVM tools:

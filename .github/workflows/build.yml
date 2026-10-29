@@ -26,6 +26,10 @@ on:
         description: 'build the native runtime for the lp64/rv64im soft-float target (needs the custom Alpine rootfs)'
         type: boolean
         default: true
+      riscv32:
+        description: 'also apply the riscv32 (RV32IM ilp32) fixups and build the riscv32 target in its own job; needs the upstream-perf profile'
+        type: boolean
+        default: false
       runtime_tests:
         description: 'also build the dotnet/runtime tests (Checked) and run them under qemu-user, in separate jobs; soft_float_abi runs the NativeAOT ones only'
         type: boolean
@@ -103,7 +107,9 @@ jobs:
         if [ "${{ inputs.soft_float_abi }}" = "true" ] ; then
           ./patch_alpine.sh
         fi
-        ./patch_runtime.sh ${{ inputs.profile }}
+        # RISCV32=1 also gives the ILCompiler of the bflat.compiler package the
+        # RiscV32 target; patch_runtime.sh refuses it with another profile.
+        RISCV32=${{ inputs.riscv32 && '1' || '0' }} ./patch_runtime.sh ${{ inputs.profile }}
         # The toolchain hunk has to reach every copy of eng/common in the VMR,
         # not just the one under src/runtime - see patch_vmr_toolchain.sh.
         if [ "${{ inputs.soft_float_abi }}" = "true" ] ; then
@@ -454,6 +460,57 @@ jobs:
       with:
         name: bflat-hashes-x64
         path: ${{ runner.temp }}/hashes/bflat-signature.sha256
+        if-no-files-found: error
+
+  # The riscv32 target of bflat (the ZKsync Airbender guest): the x64-hosted
+  # compiler with the RiscV32 target, the riscv32 NativeAOT runtime and the
+  # rv32im musl sysroot, built from dotnet/runtime at the commit that the VMR
+  # pins. It does not wait for the SDK build and is not in the release yet,
+  # so skip_sdk runs it alone.
+  runtime-riscv32:
+    if: ${{ inputs.riscv32 }}
+    name: bflat riscv32 target
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    steps:
+
+    - name: Maximize build space
+      uses: AdityaGarg8/remove-unwanted-software@v4.1
+      with:
+        remove-dotnet: 'true'
+        remove-android: 'true'
+        remove-haskell: 'true'
+        remove-codeql: 'true'
+        remove-cached-tools: 'true'
+
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Clone and patch dotnet/runtime
+      run: |
+        cd ${{ github.workspace }}
+        RISCV32=1 ./runtime_tests.sh source "${{ inputs.fork }}" "${{ inputs.branch }}" "${{ inputs.profile }}"
+
+    - name: Build the sysroot, the compiler and the riscv32 runtime
+      run: |
+        cd ${{ github.workspace }}
+        ./12_build_runtime_riscv32.sh
+
+    - name: Pack the riscv32 target
+      run: |
+        cd ${{ github.workspace }}
+        ./13_pack_riscv32.sh
+
+    - name: Upload the riscv32 target
+      uses: actions/upload-artifact@v4
+      with:
+        name: bflat-riscv32
+        path: |
+          ${{ github.workspace }}/output/riscv32/bflat-compiler-riscv32-linux-glibc-x64.zip
+          ${{ github.workspace }}/output/riscv32/bflat-libs-linux-musl-riscv32.zip
+          ${{ github.workspace }}/output/riscv32/crossrootfs-musl-riscv32.tar.xz
         if-no-files-found: error
 
   # One list for the whole release: each job that makes release assets
