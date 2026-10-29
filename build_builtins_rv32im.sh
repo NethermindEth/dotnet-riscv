@@ -51,6 +51,10 @@ for c in "$src"/*.c; do
         # crt objects, not builtins.
         crtbegin|crtend)
             continue ;;
+        # The C11 atomic flag and fence functions: clang inlines them, and the fence they
+        # carry has no place on the single-hart guest.
+        atomic_flag_*|atomic_thread_fence|atomic_signal_fence)
+            continue ;;
         # x87 80-bit long double (xf) helpers: rv32 has no such type.
         *xf*|divxc3|mulxc3)
             continue ;;
@@ -68,7 +72,7 @@ for sym in __divdi3 __udivdi3 __moddi3 __umoddi3 __ashldi3 __lshrdi3 __ashrdi3 \
     grep -qx -- "$sym" <<<"$defined" || { echo "builtins archive has no $sym" >&2; exit 1; }
 done
 
-OBJDUMP="${OBJDUMP:-llvm-objdump}" python3 "$TOP_DIR/tools/isa_scan.py" \
+ISA_SCAN_FENCE=1 OBJDUMP="${OBJDUMP:-llvm-objdump}" python3 "$TOP_DIR/tools/isa_scan.py" \
     "$work/libclang_rt.builtins-riscv32.a"
 
 mkdir -p "$sysroot/usr/lib"

@@ -1,7 +1,13 @@
 --- a/arch/riscv32/atomic_arch.h
 +++ b/arch/riscv32/atomic_arch.h
-@@ -4,18 +4,12 @@
- 	__asm__ __volatile__ ("fence rw,rw" : : : "memory");
+@@ -1,21 +1,17 @@
++// Single-hart zkVM target (rv32im, no A extension): no second hart to order
++// against, so a compiler barrier is enough.
+ #define a_barrier a_barrier
+ static inline void a_barrier()
+ {
+-	__asm__ __volatile__ ("fence rw,rw" : : : "memory");
++	__asm__ __volatile__ ("" : : : "memory");
  }
  
 +// Single-hart zkVM target (rv32im, no A extension): no second hart means no

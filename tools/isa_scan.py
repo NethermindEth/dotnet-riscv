@@ -3,7 +3,10 @@
 instruction. objdump is unreliable here: when the ELF header does not advertise
 C/A it renders them as <unknown>, so decode .text raw — a 16-bit parcel is any
 halfword whose low two bits are not 0b11 — and grep an objdump disassembly for
-the AMO/LR/SC mnemonics separately."""
+the AMO/LR/SC mnemonics separately.
+
+ISA_SCAN_FENCE=1 also fails on fence instructions: the riscv32 guest is
+single-hart, and Airbender rejects them."""
 import sys, struct, subprocess, re, glob, os
 
 def members(path):
@@ -66,20 +69,27 @@ def atomic_count(path, objdump):
     out = subprocess.run([objdump, "-d", path], capture_output=True, text=True).stdout
     return len(re.findall(r"\b(amo[a-z0-9.]+|lr\.[wd][a-z.]*|sc\.[wd][a-z.]*)\b", out))
 
+def fence_count(path, objdump):
+    out = subprocess.run([objdump, "-d", path], capture_output=True, text=True).stdout
+    return len(re.findall(r"\bfence(\.i|\.tso)?\b", out))
+
 def main():
     objdump = os.environ.get("OBJDUMP", "riscv64-linux-gnu-objdump")
+    check_fence = os.environ.get("ISA_SCAN_FENCE", "0") == "1"
+    kinds = "compressed/atomic/fence" if check_fence else "compressed/atomic"
     bad = 0
     for path in sys.argv[1:]:
         comp = sum(compressed_count(body) for _, body in members(path))
         atom = atomic_count(path, objdump)
-        status = "OK" if (comp == 0 and atom == 0) else "FAIL"
-        print(f"[{status}] {path}: compressed={comp} atomic={atom}")
-        if comp or atom:
+        fence = fence_count(path, objdump) if check_fence else 0
+        status = "OK" if (comp == 0 and atom == 0 and fence == 0) else "FAIL"
+        print(f"[{status}] {path}: compressed={comp} atomic={atom}" + (f" fence={fence}" if check_fence else ""))
+        if comp or atom or fence:
             bad += 1
     if bad:
-        print(f"ISA scan FAILED: {bad} file(s) carry compressed/atomic instructions", file=sys.stderr)
+        print(f"ISA scan FAILED: {bad} file(s) carry {kinds} instructions", file=sys.stderr)
         sys.exit(1)
-    print("ISA scan OK: no compressed/atomic instructions")
+    print(f"ISA scan OK: no {kinds} instructions")
 
 if __name__ == "__main__":
     main()

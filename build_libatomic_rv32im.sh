@@ -23,7 +23,7 @@ trap 'rm -rf "$work"' EXIT
 "$cc" $cflags -c "$TOP_DIR/libatomic/libatomic_soft32.c" -o "$work/libatomic_soft.o"
 "$ar" rcs "$work/libatomic.a" "$work/libatomic_soft.o"
 
-OBJDUMP="${OBJDUMP:-llvm-objdump}" python3 "$TOP_DIR/tools/isa_scan.py" "$work/libatomic.a"
+ISA_SCAN_FENCE=1 OBJDUMP="${OBJDUMP:-llvm-objdump}" python3 "$TOP_DIR/tools/isa_scan.py" "$work/libatomic.a"
 
 mkdir -p "$sysroot/usr/lib"
 cp "$work/libatomic.a" "$sysroot/usr/lib/"

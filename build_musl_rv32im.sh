@@ -27,7 +27,8 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 curl -fsSL "https://musl.libc.org/releases/musl-$version.tar.gz" -o "$work/musl.tar.gz"
-echo "$sha256  $work/musl.tar.gz" | shasum -a 256 -c - >/dev/null
+actual="$(sha256sum "$work/musl.tar.gz" 2>/dev/null || shasum -a 256 "$work/musl.tar.gz")"
+[ "${actual%% *}" = "$sha256" ] || { echo "musl-$version.tar.gz: sha256 ${actual%% *}, expected $sha256" >&2; exit 1; }
 tar xzf "$work/musl.tar.gz" -C "$work"
 src="$work/musl-$version"
 
@@ -42,7 +43,7 @@ pushd "$src" >/dev/null
     make AR="$ar" RANLIB="$ranlib" install >/dev/null
 popd >/dev/null
 
-OBJDUMP="${OBJDUMP:-llvm-objdump}" python3 "$TOP_DIR/tools/isa_scan.py" \
+ISA_SCAN_FENCE=1 OBJDUMP="${OBJDUMP:-llvm-objdump}" python3 "$TOP_DIR/tools/isa_scan.py" \
     "$work/out/lib/libc.a" "$work/out/lib/crt1.o" \
     "$work/out/lib/crti.o" "$work/out/lib/crtn.o"
 
