@@ -12,7 +12,7 @@
 # override the LLVM tools (default: clang, llvm-ar, llvm-ranlib, llvm-objdump).
 set -euo pipefail
 
-export TOP_DIR="$(cd "$(dirname "$(which "$0")")" ; pwd -P)"
+export TOP_DIR="$(cd "$(dirname "$0")" ; pwd -P)"
 
 sysroot="${1:?usage: build_musl_rv32im.sh <sysroot-dir>}"
 
