@@ -334,10 +334,22 @@ index 863cad6c6..99609477a 100644
                      default:
                          return 1;
 diff --git a/src/native/libs/CMakeLists.txt b/src/native/libs/CMakeLists.txt
-index be620230d..50b199823 100644
+index be620230d..c045408fb 100644
 --- a/src/native/libs/CMakeLists.txt
 +++ b/src/native/libs/CMakeLists.txt
-@@ -149,7 +149,10 @@ if (CLR_CMAKE_TARGET_UNIX OR CLR_CMAKE_TARGET_BROWSER OR CLR_CMAKE_TARGET_WASI)
+@@ -16,6 +16,11 @@ include_directories(${CLR_SRC_NATIVE_DIR})
+ 
+ set(CMAKE_INCLUDE_CURRENT_DIR ON)
+ 
++# riscv32 guests are static images (no loader): the native shims are static libraries only.
++if (CLR_CMAKE_TARGET_ARCH_RISCV32)
++    set(STATIC_LIBS_ONLY 1)
++endif ()
++
+ if (CLR_CMAKE_TARGET_BROWSER OR CLR_CMAKE_TARGET_WASI)
+     set(STATIC_LIBS_ONLY 1)
+     set(GEN_SHARED_LIB 0)
+@@ -149,7 +154,10 @@ if (CLR_CMAKE_TARGET_UNIX OR CLR_CMAKE_TARGET_BROWSER OR CLR_CMAKE_TARGET_WASI)
      endif ()
  
      add_subdirectory(System.Native)
