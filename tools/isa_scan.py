@@ -35,7 +35,7 @@ def members(path):
         if body[:4] == b"\x7fELF":
             yield name, body
 
-def compressed_count(b):
+def compressed_count(b, where=None):
     # EI_CLASS 1 is ELF32 (riscv32), 2 is ELF64 (riscv64); the section header
     # fields used below sit at the same indices in both layouts.
     if b[4] == 1:
@@ -60,7 +60,10 @@ def compressed_count(b):
         while i + 2 <= len(code):
             half = code[i] | (code[i+1] << 8)
             if (half & 3) != 3:
-                comp += 1; i += 2
+                comp += 1
+                if where is not None and comp <= 8:
+                    where.append(f"{name}+0x{i:x}: 0x{half:04x}")
+                i += 2
             else:
                 i += 4
     return comp
@@ -79,11 +82,19 @@ def main():
     kinds = "compressed/atomic/fence" if check_fence else "compressed/atomic"
     bad = 0
     for path in sys.argv[1:]:
-        comp = sum(compressed_count(body) for _, body in members(path))
+        comp, found = 0, []
+        for member, body in members(path):
+            where = []
+            n = compressed_count(body, where)
+            comp += n
+            if n:
+                found.append(f"    {member}: {n} at " + ", ".join(where))
         atom = atomic_count(path, objdump)
         fence = fence_count(path, objdump) if check_fence else 0
         status = "OK" if (comp == 0 and atom == 0 and fence == 0) else "FAIL"
         print(f"[{status}] {path}: compressed={comp} atomic={atom}" + (f" fence={fence}" if check_fence else ""))
+        for line in found:
+            print(line)
         if comp or atom or fence:
             bad += 1
     if bad:

@@ -503,6 +503,15 @@ jobs:
         cd ${{ github.workspace }}
         ./13_pack_riscv32.sh
 
+    - name: Upload the riscv32 libraries on failure
+      # To look at what the ISA scan of 13_pack_riscv32.sh refused without a rebuild.
+      if: ${{ failure() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: bflat-riscv32-libs-failed
+        path: ${{ github.workspace }}/output/riscv32/libs
+        if-no-files-found: ignore
+
     - name: Upload the riscv32 target
       uses: actions/upload-artifact@v4
       with:
