@@ -1,0 +1,628 @@
+diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
+index 6d64b975fd7..803aaf169ca 100644
+--- a/src/coreclr/jit/compiler.h
++++ b/src/coreclr/jit/compiler.h
+@@ -5900,6 +5900,7 @@ private:
+ #endif // DEBUG
+ 
+     bool impIsInvariant(const GenTree* tree);
++    bool impIsCheapLocalExpr(GenTree* tree, unsigned* locals, unsigned* budget);
+     bool impIsAddressInLocal(const GenTree* tree, GenTree** lclVarTreeOut = nullptr);
+ 
+     void impMakeDiscretionaryInlineObservations(InlineInfo* pInlineInfo, InlineResult* inlineResult);
+@@ -7676,6 +7677,9 @@ private:
+     bool fgForwardSubBlock(BasicBlock* block);
+     bool fgForwardSubStatement(Statement* statement);
+     bool fgForwardSubMultiUse(Statement* nextStmt, unsigned lclNum, GenTree* fwdSubNode);
++#ifdef TARGET_RISCV
++    bool fgForwardSubCheapToBlockUses(BasicBlock* block, Statement* stmt);
++#endif
+     bool fgForwardSubHasStoreInterference(Statement* defStmt, Statement* nextStmt, GenTree* nextStmtUse);
+     void fgForwardSubUpdateLiveness(GenTree* newSubListFirst, GenTree* newSubListLast);
+ 
+diff --git a/src/coreclr/jit/fginline.cpp b/src/coreclr/jit/fginline.cpp
+index ace0e2ccda9..d2a68aa07e1 100644
+--- a/src/coreclr/jit/fginline.cpp
++++ b/src/coreclr/jit/fginline.cpp
+@@ -2232,7 +2232,8 @@ void Compiler::fgInsertInlineeArgument(
+     else
+     {
+         // The argument is either not used or a const or lcl var
+-        noway_assert(!argInfo.argIsUsed || argInfo.argIsInvariant || argInfo.argIsLclVar);
++        noway_assert(!argInfo.argIsUsed || argInfo.argIsInvariant || argInfo.argIsLclVar ||
++                     argInfo.argIsCheapLocalExpr);
+         noway_assert((argInfo.argIsLclVar == 0) == (!argNode->OperIs(GT_LCL_VAR) || (argNode->gtFlags & GTF_GLOB_REF)));
+ 
+         // If the argument has side effects, append it
+diff --git a/src/coreclr/jit/forwardsub.cpp b/src/coreclr/jit/forwardsub.cpp
+index 5c4e72e0a66..be970385761 100644
+--- a/src/coreclr/jit/forwardsub.cpp
++++ b/src/coreclr/jit/forwardsub.cpp
+@@ -156,6 +156,210 @@ static bool fgIsCheapReorderableAddressTree(Compiler* compiler, GenTree* tree)
+ //    clones (they may have been marked dead in the original def position
+ //    but cannot be considered dead once duplicated across several uses).
+ //
++#ifdef TARGET_RISCV
++//------------------------------------------------------------------------
++// fgForwardSubCheapToBlockUses: JitZkForwardSubCheap - clone the value `stmt` stores to a local into
++//   every use of that local, when the value is cheap (see impIsCheapLocalExpr) and every use follows
++//   in `block`.
++//
++// Arguments:
++//    block - the block of the statement
++//    stmt  - the statement, a store to a local
++//
++// Return Value:
++//    true if the uses were substituted; the caller removes the statement.
++//
++// Notes:
++//    The local must not be live out of the block or stored again in it, and no statement between the
++//    store and the last use may store to a local of the value. The locals of the value may now be used
++//    past a node early liveness marked as their last use, so those marks are cleared over the range.
++//
++bool Compiler::fgForwardSubCheapToBlockUses(BasicBlock* block, Statement* stmt)
++{
++    GenTree* const defNode = stmt->GetRootNode();
++    if (!defNode->OperIs(GT_STORE_LCL_VAR))
++    {
++        return false;
++    }
++
++    unsigned const   lclNum = defNode->AsLclVarCommon()->GetLclNum();
++    LclVarDsc* const varDsc = lvaGetDesc(lclNum);
++    if (varDsc->lvPinned || varDsc->IsAddressExposed() || varDsc->lvPromoted || varDsc->lvIsStructField ||
++        varTypeIsStruct(varDsc) || varTypeIsSmall(varDsc) || !varDsc->lvTracked || lvaIsImplicitByRefLocal(lclNum) ||
++        VarSetOps::IsMember(this, block->bbLiveOut, varDsc->lvVarIndex))
++    {
++        return false;
++    }
++
++    GenTree* const value  = defNode->AsLclVarCommon()->Data();
++    unsigned       locals = 0;
++    unsigned       budget = 10;
++    if ((genActualType(defNode->TypeGet()) != genActualType(value->TypeGet())) ||
++        !impIsCheapLocalExpr(value, &locals, &budget) || (locals == 0))
++    {
++        return false;
++    }
++
++    unsigned valueLcls[2];
++    unsigned valueLclCount = 0;
++    for (GenTreeLclVarCommon* lcl : stmt->LocalsTreeList())
++    {
++        if (lcl == defNode)
++        {
++            continue;
++        }
++        LclVarDsc* const lclDsc = lvaGetDesc(lcl);
++        if ((lcl->GetLclNum() == lclNum) || lclDsc->lvIsStructField || lclDsc->lvPromoted || (valueLclCount == 2))
++        {
++            return false;
++        }
++        valueLcls[valueLclCount++] = lcl->GetLclNum();
++    }
++
++    auto isValueLcl = [&](unsigned num) {
++        return ((valueLclCount > 0) && (valueLcls[0] == num)) || ((valueLclCount > 1) && (valueLcls[1] == num));
++    };
++
++    const unsigned maxUses     = 8;
++    unsigned       uses        = 0;
++    bool           invalidated = false;
++    Statement*     lastUseStmt = nullptr;
++    for (Statement* next = stmt->GetNextStmt(); next != nullptr; next = next->GetNextStmt())
++    {
++        bool usesLcl     = false;
++        bool storesValue = false;
++        for (GenTreeLclVarCommon* lcl : next->LocalsTreeList())
++        {
++            if (lcl->GetLclNum() == lclNum)
++            {
++                if (!lcl->OperIs(GT_LCL_VAR))
++                {
++                    return false;
++                }
++                usesLcl = true;
++                uses++;
++            }
++            else if (isValueLcl(lcl->GetLclNum()) && lcl->OperIsLocalStore())
++            {
++                storesValue = true;
++            }
++        }
++        if (usesLcl)
++        {
++            if (invalidated || storesValue || (uses > maxUses))
++            {
++                return false;
++            }
++            lastUseStmt = next;
++        }
++        invalidated |= storesValue;
++    }
++
++    if (lastUseStmt == nullptr)
++    {
++        return false;
++    }
++
++    struct UseVisitor : public GenTreeVisitor<UseVisitor>
++    {
++        enum
++        {
++            DoPreOrder = true,
++        };
++
++        unsigned m_lclNum;
++        bool     m_bail = false;
++
++        UseVisitor(Compiler* comp, unsigned lclNum)
++            : GenTreeVisitor<UseVisitor>(comp)
++            , m_lclNum(lclNum)
++        {
++        }
++
++        fgWalkResult PreOrderVisit(GenTree** use, GenTree* user)
++        {
++            GenTree* const node = *use;
++            if (node->OperIs(GT_LCL_VAR) && (node->AsLclVarCommon()->GetLclNum() == m_lclNum) && (user != nullptr) &&
++                user->IsCall() && (user->AsCall()->gtCallType == CT_INDIRECT) &&
++                (user->AsCall()->gtControlExpr == node))
++            {
++                m_bail = true;
++                return fgWalkResult::WALK_ABORT;
++            }
++            return fgWalkResult::WALK_CONTINUE;
++        }
++    };
++
++    struct ReplaceVisitor : public GenTreeVisitor<ReplaceVisitor>
++    {
++        enum
++        {
++            DoPreOrder = true,
++        };
++
++        unsigned m_lclNum;
++        GenTree* m_value;
++
++        ReplaceVisitor(Compiler* comp, unsigned lclNum, GenTree* value)
++            : GenTreeVisitor<ReplaceVisitor>(comp)
++            , m_lclNum(lclNum)
++            , m_value(value)
++        {
++        }
++
++        fgWalkResult PreOrderVisit(GenTree** use, GenTree* user)
++        {
++            GenTree* const node = *use;
++            if (node->OperIs(GT_LCL_VAR) && (node->AsLclVarCommon()->GetLclNum() == m_lclNum))
++            {
++                *use = m_compiler->gtCloneExpr(m_value);
++                return fgWalkResult::WALK_SKIP_SUBTREES;
++            }
++            return fgWalkResult::WALK_CONTINUE;
++        }
++    };
++
++    for (Statement* next = stmt->GetNextStmt();; next = next->GetNextStmt())
++    {
++        UseVisitor check(this, lclNum);
++        check.WalkTree(next->GetRootNodePointer(), nullptr);
++        if (check.m_bail)
++        {
++            return false;
++        }
++        if (next == lastUseStmt)
++        {
++            break;
++        }
++    }
++
++    JITDUMP(" [%06u] (V%02u) cloned into %u uses through " FMT_STMT " (JitZkForwardSubCheap)\n",
++            dspTreeID(defNode), lclNum, uses, lastUseStmt->GetID());
++
++    for (Statement* next = stmt->GetNextStmt();; next = next->GetNextStmt())
++    {
++        ReplaceVisitor replace(this, lclNum, value);
++        replace.WalkTree(next->GetRootNodePointer(), nullptr);
++        fgSequenceLocals(next);
++        for (GenTreeLclVarCommon* lcl : next->LocalsTreeList())
++        {
++            if (isValueLcl(lcl->GetLclNum()))
++            {
++                lcl->gtFlags &= ~GTF_VAR_DEATH;
++            }
++        }
++        gtUpdateStmtSideEffects(next);
++        DISPSTMT(next);
++        if (next == lastUseStmt)
++        {
++            break;
++        }
++    }
++
++    return true;
++}
++#endif
++
+ bool Compiler::fgForwardSubMultiUse(Statement* nextStmt, unsigned lclNum, GenTree* fwdSubNode)
+ {
+     assert(fgIsCheapReorderableAddressTree(this, fwdSubNode));
+@@ -299,7 +503,13 @@ bool Compiler::fgForwardSubBlock(BasicBlock* block)
+     {
+         Statement* const prevStmt    = stmt->GetPrevStmt();
+         Statement* const nextStmt    = stmt->GetNextStmt();
+-        bool const       substituted = fgForwardSubStatement(stmt);
++        bool             substituted = fgForwardSubStatement(stmt);
++#ifdef TARGET_RISCV
++        if (!substituted && (JitConfig.JitZkForwardSubCheap() != 0))
++        {
++            substituted = fgForwardSubCheapToBlockUses(block, stmt);
++        }
++#endif
+ 
+         if (substituted)
+         {
+diff --git a/src/coreclr/jit/importer.cpp b/src/coreclr/jit/importer.cpp
+index e7ba7634d02..8e48a093b2a 100644
+--- a/src/coreclr/jit/importer.cpp
++++ b/src/coreclr/jit/importer.cpp
+@@ -14009,6 +14009,21 @@ void Compiler::impInlineRecordArgInfo(InlineInfo*   pInlineInfo,
+         argInfo->argHasCallerLocalRef = true;
+     }
+ 
++    // The effect flags are not checked: those of a tree an inlined call was substituted into can be stale, and the
++    // shape alone has none.
++    if ((JitConfig.JitZkInlineCloneCheapArgs() != 0) && !argInfo->argIsInvariant && !argInfo->argIsLclVar &&
++        !argInfo->argHasCallerLocalRef)
++    {
++        unsigned locals = 0;
++        unsigned budget = 10;
++        if (impIsCheapLocalExpr(curArgVal, &locals, &budget) && (locals != 0))
++        {
++            argInfo->argIsCheapLocalExpr = true;
++            argInfo->argHasSideEff       = false;
++            argInfo->argHasGlobRef       = false;
++        }
++    }
++
+ #ifdef DEBUG
+     if (verbose)
+     {
+@@ -14596,6 +14611,14 @@ GenTree* Compiler::impInlineFetchArg(InlArgInfo& argInfo, const InlLclVarInfo& l
+             }
+         }
+     }
++    else if (argInfo.argIsCheapLocalExpr && !argCanBeModified &&
++             (genActualType(argNode->TypeGet()) == genActualType(lclTyp)))
++    {
++        // JitZkInlineCloneCheapArgs: like an unaliased local, the value cannot change in the inlinee, so each
++        // use recomputes it.
++        op1               = gtCloneExpr(argNode);
++        argInfo.argTmpNum = BAD_VAR_NUM;
++    }
+     else if (argInfo.argIsByRefToStructLocal && !argInfo.argHasStargOp)
+     {
+         /* Argument is a by-ref address to a struct, a normed struct, or its field.
+@@ -14720,6 +14743,66 @@ GenTree* Compiler::impInlineFetchArg(InlArgInfo& argInfo, const InlLclVarInfo& l
+     return op1;
+ }
+ 
++//------------------------------------------------------------------------
++// impIsCheapLocalExpr: is `tree` at most two unaliased, non-struct locals combined with constants by adds,
++//    subtractions, products with a constant and integral casts, within `budget` nodes? See
++//    JitZkInlineCloneCheapArgs. None of these nodes has a side effect of its own.
++//
++// Arguments:
++//    tree   - the tree
++//    locals - the number of locals found so far; increased by those of the tree
++//    budget - the number of nodes left; reduced by the nodes of the tree
++//
++bool Compiler::impIsCheapLocalExpr(GenTree* tree, unsigned* locals, unsigned* budget)
++{
++    if (*budget == 0)
++    {
++        return false;
++    }
++    (*budget)--;
++
++    switch (tree->OperGet())
++    {
++        case GT_LCL_VAR:
++        {
++            const LclVarDsc* varDsc = lvaGetDesc(tree->AsLclVar());
++            if ((*locals == 2) || varTypeIsStruct(varDsc) || varTypeIsFloating(varDsc) || varDsc->lvHasLdAddrOp ||
++                varDsc->IsAddressExposed())
++            {
++                return false;
++            }
++            (*locals)++;
++            return true;
++        }
++
++        case GT_CNS_INT:
++            return !tree->IsIconHandle();
++
++        case GT_ADD:
++        case GT_SUB:
++        case GT_MUL:
++            if (tree->gtOverflow() || varTypeIsFloating(tree) ||
++                (tree->OperIs(GT_MUL) && !tree->gtGetOp1()->IsCnsIntOrI() && !tree->gtGetOp2()->IsCnsIntOrI()))
++            {
++                return false;
++            }
++            return impIsCheapLocalExpr(tree->gtGetOp1(), locals, budget) &&
++                   impIsCheapLocalExpr(tree->gtGetOp2(), locals, budget);
++
++        case GT_CAST:
++            if (tree->gtOverflow() || !varTypeIsIntegralOrI(tree) ||
++                !(varTypeIsIntegralOrI(tree->AsCast()->CastOp()) || tree->AsCast()->CastOp()->TypeIs(TYP_BYREF)) ||
++                (genTypeSize(tree) != genTypeSize(genActualType(tree->AsCast()->CastOp()))))
++            {
++                return false;
++            }
++            return impIsCheapLocalExpr(tree->AsCast()->CastOp(), locals, budget);
++
++        default:
++            return false;
++    }
++}
++
+ /******************************************************************************
+  Is this the original "this" argument to the call being inlined?
+ 
+diff --git a/src/coreclr/jit/inline.h b/src/coreclr/jit/inline.h
+index 7e307f49d50..ba0166fd68e 100644
+--- a/src/coreclr/jit/inline.h
++++ b/src/coreclr/jit/inline.h
+@@ -663,6 +663,7 @@ struct InlArgInfo
+     unsigned argIsByRefToStructLocal : 1; // Is this arg an address of a struct local or a normed struct local or a
+                                           // field in them?
+     unsigned argIsExact : 1;              // Is this arg of an exact class?
++    unsigned argIsCheapLocalExpr : 1;     // JitZkInlineCloneCheapArgs: cloned at each use rather than kept in a temp
+ };
+ 
+ // InlLclVarInfo describes inline candidate argument and local variable properties.
+diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
+index 3d329b317fc..2ed46e358dd 100644
+--- a/src/coreclr/jit/jitconfigvalues.h
++++ b/src/coreclr/jit/jitconfigvalues.h
+@@ -595,6 +595,33 @@ RELEASE_CONFIG_INTEGER(JitZkHandlerConv, "JitZkHandlerConv", 0)
+ // dropped. Valid only on a runtime that never scans stacks (a non-collecting GC). Default 0.
+ RELEASE_CONFIG_INTEGER(JitZkNoGcMustInit, "JitZkNoGcMustInit", 0)
+ 
++// zkVM: an inline argument that is an unaliased local plus or minus constants, with no side effects, is
++// cloned at each use in the inlinee rather than kept in a temp. Each use then costs one add at most - none
++// when it folds into an address - in place of a register live across the inlinee, which the guest's
++// delegations and calls, killing the argument registers, turn into a move per use. Default 0.
++RELEASE_CONFIG_INTEGER(JitZkInlineCloneCheapArgs, "JitZkInlineCloneCheapArgs", 0)
++
++// zkVM: a local plus or minus a constant that fits an add immediate is not CSEd unless it occurs in a loop.
++// Recomputing it costs one add, as moving a CSE temp into a fixed register would, and holds no register.
++// Default 0.
++RELEASE_CONFIG_INTEGER(JitZkNoCheapAddCSE, "JitZkNoCheapAddCSE", 0)
++
++// zkVM: a cast of a byref to a native int of its size retypes the node that computes the byref rather
++// than going through a temp, which keeps the GC tracking of the register exact for a GC that scans
++// stacks. Valid only with JitZkNoGcMustInit's runtime, which never does. Default 0.
++RELEASE_CONFIG_INTEGER(JitZkNoCastAwayGcTemp, "JitZkNoCastAwayGcTemp", 0)
++
++// zkVM: forward substitution also clones a value shaped as JitZkInlineCloneCheapArgs takes into every use
++// of the local it defines when all of them follow in the block. The importer spills such values (an
++// expression holding a call that is inlined later), and the temp then holds a register across the
++// delegations that take its uses as operands. Default 0.
++RELEASE_CONFIG_INTEGER(JitZkForwardSubCheap, "JitZkForwardSubCheap", 0)
++
++// zkVM: an explicit null check emits nothing. Its probe load relies on a fault at address zero, which a
++// zkVM that maps memory there (Airbender places its ROM at 0) never raises, so it costs a load and
++// checks nothing. Default 0.
++RELEASE_CONFIG_INTEGER(JitZkNoNullChecks, "JitZkNoNullChecks", 0)
++
+ RELEASE_CONFIG_INTEGER(EnableEmbeddedBroadcast,     "EnableEmbeddedBroadcast",   1) // Allows embedded broadcasts to be disabled
+ RELEASE_CONFIG_INTEGER(EnableEmbeddedMasking,       "EnableEmbeddedMasking",     1) // Allows embedded masking to be disabled
+ RELEASE_CONFIG_INTEGER(EnableApxNDD,                "EnableApxNDD",              0) // Allows APX NDD feature to be disabled
+diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
+index 5974aa14e12..c2439542668 100644
+--- a/src/coreclr/jit/lower.cpp
++++ b/src/coreclr/jit/lower.cpp
+@@ -365,6 +365,24 @@ GenTree* Lowering::LowerNode(GenTree* node)
+     switch (node->gtOper)
+     {
+         case GT_NULLCHECK:
++#ifdef TARGET_RISCV
++            if (JitConfig.JitZkNoNullChecks() != 0)
++            {
++                GenTree* const next = node->gtNext;
++                GenTree* const addr = node->AsIndir()->Addr();
++                BlockRange().Remove(node);
++                if (addr->OperIs(GT_LCL_VAR))
++                {
++                    BlockRange().Remove(addr);
++                }
++                else
++                {
++                    addr->SetUnusedValue();
++                }
++                return next;
++            }
++#endif
++            FALLTHROUGH;
+         case GT_IND:
+         {
+             return LowerIndir(node->AsIndir());
+@@ -1747,10 +1765,18 @@ void Lowering::SplitArgumentBetweenRegistersAndStack(GenTreeCall* call, CallArg*
+     JITDUMP("Dividing split arg [%06u] with %u registers, %u stack space into two arguments\n",
+             Compiler::dspTreeID(arg), numRegs, stackSeg.Size);
+ 
+-    ClassLayout* registersLayout = callArg->GetSignatureLayout()->SliceLayout(m_compiler, 0, stackSeg.Offset);
++    ClassLayout* signatureLayout = callArg->GetSignatureLayout();
++#ifdef TARGET_RISCV32
++    if (signatureLayout == nullptr)
++    {
++        // Decomposed 2*XLEN scalars have a FIELD_LIST but no struct signature.
++        assert(arg->OperIsFieldList());
++        signatureLayout = m_compiler->typGetBlkLayout(2 * TARGET_POINTER_SIZE);
++    }
++#endif
++    ClassLayout* registersLayout = signatureLayout->SliceLayout(m_compiler, 0, stackSeg.Offset);
+     ClassLayout* stackLayout =
+-        callArg->GetSignatureLayout()->SliceLayout(m_compiler, stackSeg.Offset,
+-                                                   callArg->GetSignatureLayout()->GetSize() - stackSeg.Offset);
++        signatureLayout->SliceLayout(m_compiler, stackSeg.Offset, signatureLayout->GetSize() - stackSeg.Offset);
+ 
+     GenTree* stackNode     = nullptr;
+     GenTree* registersNode = nullptr;
+diff --git a/src/coreclr/jit/lowerriscv64.cpp b/src/coreclr/jit/lowerriscv64.cpp
+index 6435bc6bfbc..6f035ea747b 100644
+--- a/src/coreclr/jit/lowerriscv64.cpp
++++ b/src/coreclr/jit/lowerriscv64.cpp
+@@ -1462,7 +1462,8 @@ static bool RiscV64TrustedAlign()
+ //
+ void Lowering::ComputeAlignedLocals()
+ {
+-    if (!RiscV64StrictAlign() || m_compiler->opts.OptimizationDisabled() || m_compiler->opts.IsOSR())
++    if ((!RiscV64StrictAlign() && !RiscV64TrustedAlign()) || m_compiler->opts.OptimizationDisabled() ||
++        m_compiler->opts.IsOSR())
+     {
+         return;
+     }
+@@ -1682,12 +1683,21 @@ static bool CloneAlignmentVersionedRange(Compiler* compiler, GenTree* first, Gen
+ //
+ bool Lowering::IsAlignmentTestedAccess(GenTreeIndir* indir, unsigned* lclNum, unsigned* size) const
+ {
+-    const unsigned accessSize = genTypeSize(indir->TypeGet());
++    unsigned accessSize = genTypeSize(indir->TypeGet());
++#ifndef TARGET_64BIT
++    // A long is decomposed into register-sized halves, each tested for that size only.
++    accessSize = min(accessSize, (unsigned)REGSIZE_BYTES);
++#endif
+     GenTree*       addr       = indir->Addr();
+     if (indir->TypeIs(TYP_STRUCT) || (accessSize <= 1) || IsAddrKnownAligned(addr, accessSize))
+     {
+         return false;
+     }
++    // Without strict alignment only the accesses the front end flagged unaligned are tested.
++    if (RiscV64TrustedAlign() && !indir->IsUnaligned())
++    {
++        return false;
++    }
+     ssize_t offset = 0;
+     if (addr->OperIs(GT_ADD) && !addr->gtOverflow())
+     {
+@@ -3206,6 +3216,12 @@ void Lowering::ContainCheckIndir(GenTreeIndir* indirNode)
+     {
+         indirNode->gtFlags |= GTF_IND_UNALIGNED;
+     }
++    else if (RiscV64TrustedAlign() && indirNode->OperIs(GT_IND, GT_STOREIND) && indirNode->IsUnaligned() &&
++             IsAddrKnownAligned(indirNode->Addr(), genTypeSize(indirNode->TypeGet())))
++    {
++        // An access the front end flagged unaligned whose address is proven aligned needs no check.
++        indirNode->gtFlags &= ~GTF_IND_UNALIGNED;
++    }
+ 
+     // No-unaligned mode: an unaligned scalar access is expanded byte-wise off a base
+     // register (see genCodeForIndir/genCodeForStoreInd), so its address must be left
+diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
+index 8a3d9ebb46a..b9eef666fd1 100644
+--- a/src/coreclr/jit/morph.cpp
++++ b/src/coreclr/jit/morph.cpp
+@@ -901,6 +901,16 @@ GenTree* Compiler::fgMorphExpandCast(GenTreeCast* tree)
+     }
+ #endif // TARGET_AMD64
+ 
++#ifdef TARGET_RISCV
++    // JitZkNoCastAwayGcTemp: the byref's own node becomes the native int (see below for the temp).
++    else if ((JitConfig.JitZkNoCastAwayGcTemp() != 0) && (JitConfig.JitZkNoGcMustInit() != 0) &&
++             (srcType == TYP_BYREF) && !varTypeIsGC(dstType) && (genActualType(dstType) == TYP_I_IMPL) &&
++             !tree->gtOverflow() && oper->OperIs(GT_LCL_VAR, GT_ADD, GT_SUB, GT_LEA))
++    {
++        oper->gtType = TYP_I_IMPL;
++        return fgMorphTree(oper);
++    }
++#endif
+     else if (varTypeIsGC(srcType) != varTypeIsGC(dstType))
+     {
+         // We are casting away GC information.  we would like to just
+diff --git a/src/coreclr/jit/optcse.cpp b/src/coreclr/jit/optcse.cpp
+index 3dffbec5fcf..90ec27f8fba 100644
+--- a/src/coreclr/jit/optcse.cpp
++++ b/src/coreclr/jit/optcse.cpp
+@@ -1758,6 +1758,38 @@ CSE_HeuristicCommon::CSE_HeuristicCommon(Compiler* pCompiler)
+     JITDUMP("CONST CSE is %s\n", enableConstCSE ? "enabled" : "disabled");
+ }
+ 
++#ifdef TARGET_RISCV
++//------------------------------------------------------------------------
++// IsCheapLocalAdd: is `tree` an unaliased local plus or minus a constant that fits an add immediate,
++//    possibly through a cast that keeps its size? See JitZkNoCheapAddCSE.
++//
++bool CSE_HeuristicCommon::IsCheapLocalAdd(GenTree* tree)
++{
++    if (tree->OperIs(GT_CAST))
++    {
++        GenTree* op = tree->AsCast()->CastOp();
++        if (tree->gtOverflow() || (genTypeSize(tree) != genTypeSize(genActualType(op))))
++        {
++            return false;
++        }
++        tree = op;
++    }
++    if (!tree->OperIs(GT_ADD, GT_SUB) || tree->gtOverflow() ||
++        (!varTypeIsIntegralOrI(genActualType(tree)) && !tree->TypeIs(TYP_BYREF)))
++    {
++        return false;
++    }
++    GenTree* lcl = tree->gtGetOp1();
++    GenTree* cns = tree->gtGetOp2();
++    if (lcl->IsCnsIntOrI() && tree->OperIs(GT_ADD))
++    {
++        std::swap(lcl, cns);
++    }
++    return lcl->OperIs(GT_LCL_VAR) && !m_compiler->lvaGetDesc(lcl->AsLclVar())->IsAddressExposed() &&
++           cns->IsCnsIntOrI() && !cns->IsIconHandle() && emitter::isValidSimm12(cns->AsIntCon()->IconValue());
++}
++#endif
++
+ //------------------------------------------------------------------------
+ // CanConsiderTree: check if this tree can be a CSE candidate
+ //
+@@ -4352,6 +4384,24 @@ bool CSE_Heuristic::PromotionCheck(CSE_Candidate* candidate)
+ {
+     bool result = false;
+ 
++#ifdef TARGET_RISCV
++    // JitZkNoCheapAddCSE: recomputed at each use unless an occurrence is in a loop, where the temp keeps the
++    // sum out of the iterations.
++    if ((JitConfig.JitZkNoCheapAddCSE() != 0) && IsCheapLocalAdd(candidate->Expr()))
++    {
++        bool inLoop = false;
++        for (treeStmtLst* list = &candidate->CseDsc()->csdTreeList; list != nullptr; list = list->tslNext)
++        {
++            inLoop |= list->tslBlock->HasFlag(BBF_BACKWARD_JUMP);
++        }
++        if (!inLoop)
++        {
++            JITDUMP("Rejected: a cheap local add, recomputed at each use (JitZkNoCheapAddCSE)\n");
++            return false;
++        }
++    }
++#endif
++
+ #ifdef DEBUG
+     if (m_compiler->optConfigDisableCSE2())
+     {
+diff --git a/src/coreclr/jit/optcse.h b/src/coreclr/jit/optcse.h
+index 4dd088afb78..0ffb2e78914 100644
+--- a/src/coreclr/jit/optcse.h
++++ b/src/coreclr/jit/optcse.h
+@@ -78,6 +78,9 @@ public:
+     // the derived classes handle the profitability.
+     //
+     bool CanConsiderTree(GenTree* tree, bool isReturn);
++#ifdef TARGET_RISCV
++    bool IsCheapLocalAdd(GenTree* tree);
++#endif
+ 
+     virtual bool ConsiderTree(GenTree* tree, bool isReturn)
+     {

@@ -1,0 +1,1107 @@
+diff --git b/src/coreclr/jit/abi.h a/src/coreclr/jit/abi.h
+index 28e4fd54d04..184521c7eee 100644
+--- b/src/coreclr/jit/abi.h
++++ a/src/coreclr/jit/abi.h
+@@ -177,6 +177,9 @@ struct ClassifierInfo
+     bool                     IsVarArgs  = false;
+     bool                     HasThis    = false;
+     bool                     HasRetBuff = false;
++#if defined(TARGET_RISCV)
++    bool ZkHandler = false; // JitZkHandlerConv: integer arguments in s1-s8
++#endif
+ };
+ 
+ class X86Classifier
+diff --git b/src/coreclr/jit/codegencommon.cpp a/src/coreclr/jit/codegencommon.cpp
+index dd31a8439b2..81d110aae68 100644
+--- b/src/coreclr/jit/codegencommon.cpp
++++ a/src/coreclr/jit/codegencommon.cpp
+@@ -4698,7 +4698,7 @@ void CodeGen::genHomeStackPartOfSplitParameter(regNumber initReg, bool* initRegS
+     for (; lclNum < m_compiler->info.compArgsCount; lclNum++)
+     {
+         LclVarDsc* var = m_compiler->lvaGetDesc(lclNum);
+-        if (!var->lvOnFrame)
++        if (!var->lvOnFrame || !varTypeIsStruct(var))
+         {
+             continue;
+         }
+diff --git b/src/coreclr/jit/codegenriscv64.cpp a/src/coreclr/jit/codegenriscv64.cpp
+index 317a5a28cd4..0644f4c28e8 100644
+--- b/src/coreclr/jit/codegenriscv64.cpp
++++ a/src/coreclr/jit/codegenriscv64.cpp
+@@ -6168,7 +6168,12 @@ void CodeGen::genCall(GenTreeCall* call)
+         else if (call->IsUnmanaged() && (m_compiler->zkCsrForPInvoke(call) >= 0))
+         {
+             // A precompile CSR write (JitZkCsrPInvokes) changes no register (see LSRA's kill set).
+-            callKillMask = RBM_NONE;
++            callKillMask = m_compiler->zkIsDelegationPInvoke(call) ? (RBM_A0 | RBM_A1 | RBM_A2) : RBM_NONE;
++        }
++        if ((call->gtCallMoreFlags & GTF_CALL_M_ZK_HANDLER) != 0)
++        {
++            // JitZkHandlerConv: the handlers hand s1-s8 on changed (see LSRA's kill set).
++            callKillMask |= RBM_S1 | RBM_S2 | RBM_S3 | RBM_S4 | RBM_S5 | RBM_S6 | RBM_S7 | RBM_S8;
+         }
+         if ((regSet.GetMaskVars() & callKillMask).IsNonEmpty())
+         {
+@@ -6224,7 +6229,8 @@ void CodeGen::genCall(GenTreeCall* call)
+     }
+     else if (call->IsUnmanaged() && (m_compiler->zkCsrForPInvoke(call) >= 0))
+     {
+-        killMask = RBM_NONE; // zkVM precompile CSR write: no registers are killed
++        // zkVM precompile CSR write: no registers are killed; an Airbender delegation changes a0 and a2.
++        killMask = m_compiler->zkIsDelegationPInvoke(call) ? (RBM_A0 | RBM_A1 | RBM_A2) : RBM_NONE;
+     }
+ 
+     assert((gcInfo.gcRegGCrefSetCur & killMask) == 0);
+@@ -6298,6 +6304,17 @@ void CodeGen::genCallInstruction(GenTreeCall* call)
+     const int zkCsr = m_compiler->zkCsrForPInvoke(call);
+     if (zkCsr >= 0)
+     {
++        if (m_compiler->zkIsDelegationPInvoke(call))
++        {
++            // Airbender delegation: the operands are in x10-x12 by the calling convention, and the
++            // circuit writes its flag back to x12.
++            GetEmitter()->emitIns_R_R_I(INS_csrrw, EA_4BYTE, REG_ZERO, REG_ZERO, zkCsr);
++            if (!call->IsUnusedValue())
++            {
++                GetEmitter()->emitIns_Mov(INS_mov, EA_PTRSIZE, REG_A0, REG_A2, /* canSkip */ false);
++            }
++            return;
++        }
+         if (call->gtArgs.CountArgs() == 3)
+         {
+             // ZisK DMA copy, as libziskos' memmove/memcpy wrappers spell it: the CSR takes the source
+diff --git b/src/coreclr/jit/compiler.cpp a/src/coreclr/jit/compiler.cpp
+index a1bd7e78f6c..a151f9e605e 100644
+--- b/src/coreclr/jit/compiler.cpp
++++ a/src/coreclr/jit/compiler.cpp
+@@ -6878,6 +6878,15 @@ int Compiler::compCompileHelper(CORINFO_MODULE_HANDLE classPtr,
+         info.compArgOrder = Target::g_tgtArgOrder;
+     }
+ 
++#if defined(TARGET_RISCV)
++    // JitZkHandlerConv: an EVM guest handler takes its arguments in s1-s8 and saves none of them.
++    if (!compIsForInlining() && zkIsHandlerSig(&methodInfo->args))
++    {
++        compZkHandlerConv = true;
++        codeGen->regSet.rsZkExcludeCalleeSaved(RBM_S1 | RBM_S2 | RBM_S3 | RBM_S4 | RBM_S5 | RBM_S6 | RBM_S7 | RBM_S8);
++    }
++#endif
++
+     switch (methodInfo->args.getCallConv())
+     {
+         case CORINFO_CALLCONV_NATIVEVARARG:
+@@ -10451,6 +10460,14 @@ bool Compiler::killGCRefs(GenTree* tree)
+         GenTreeCall* call = tree->AsCall();
+         if (call->IsUnmanaged())
+         {
++#ifdef TARGET_RISCV
++            // zkVM: a precompile CSR write or an Airbender delegation (JitZkCsrPInvokes, JitZkDelegationPInvokes)
++            // is one instruction in place of the call, with no transition, so no GC can happen there.
++            if (zkCsrForPInvoke(call) >= 0)
++            {
++                return false;
++            }
++#endif
+             return true;
+         }
+ 
+diff --git b/src/coreclr/jit/compiler.h a/src/coreclr/jit/compiler.h
+index b73255e7a30..6d64b975fd7 100644
+--- b/src/coreclr/jit/compiler.h
++++ a/src/coreclr/jit/compiler.h
+@@ -7410,6 +7410,10 @@ private:
+ #if defined(TARGET_RISCV)
+     GenTree* fgRiscV64TryInlineNewArr(GenTreeCall* call);
+     int      zkCsrForPInvoke(GenTreeCall* call);
++    bool     zkIsHandlerSig(CORINFO_SIG_INFO* sig);
++    bool     compZkHandlerConv = false; // JitZkHandlerConv: this method takes its arguments in s1-s8
++    bool     zkIsCsrPInvokeTarget(GenTreeCall* call);
++    bool     zkIsDelegationPInvoke(GenTreeCall* call);
+     bool     zkInitBlkUsesMemsetCsr(GenTreeBlk* blk, bool* needsAddrReg);
+     bool     zkCpBlkUsesMemcpyCsr(GenTreeBlk* blk, bool* needsDstReg, bool* needsSrcReg);
+ #endif
+diff --git b/src/coreclr/jit/decomposelongs.cpp a/src/coreclr/jit/decomposelongs.cpp
+index e8a7ef9f989..9711858cae7 100644
+--- b/src/coreclr/jit/decomposelongs.cpp
++++ a/src/coreclr/jit/decomposelongs.cpp
+@@ -822,7 +822,12 @@ GenTree* DecomposeLongs::DecomposeCast(LIR::Use& use)
+         }
+         else
+         {
++#ifdef TARGET_RISCV32
++            // A full 64-bit GT_MUL reads both halves of its operands.
++            if (!use.IsDummyUse() && use.User()->OperIs(GT_MUL) && use.User()->Is64RsltMul())
++#else
+             if (!use.IsDummyUse() && use.User()->OperIs(GT_MUL))
++#endif
+             {
+                 //
+                 // This int->long cast is used by a GT_MUL that will be transformed by DecomposeMul into a
+@@ -966,6 +971,63 @@ GenTree* DecomposeLongs::DecomposeCall(LIR::Use& use)
+ // Return Value:
+ //    The next node to process.
+ //
++#ifdef TARGET_RISCV32
++//------------------------------------------------------------------------
++// SplitAddressForHalves: For an address `base + constant`, makes the base a local and returns the
++// constant, so the low half keeps the address and the high half can take the base at constant + 4:
++// both offsets then fold into the loads or stores rather than the address being computed into a
++// register first.
++//
++// Arguments:
++//    indir - the GT_IND or GT_STOREIND whose address is split
++//    offset - receives the constant
++//
++// Return Value:
++//    The base local node, or nullptr when the address is not of that shape.
++//
++GenTree* DecomposeLongs::SplitAddressForHalves(GenTree* indir, int* offset)
++{
++    GenTree*  addr = indir->AsIndir()->Addr();
++    GenTree** baseEdge;
++    ssize_t   constant;
++    if (addr->OperIs(GT_LCL_VAR))
++    {
++        // Already a local: the halves read it at offsets 0 and 4, with no copy.
++        *offset = 0;
++        return addr;
++    }
++    if (addr->OperIs(GT_ADD) && addr->gtGetOp2()->IsCnsIntOrI() &&
++        !addr->gtGetOp2()->AsIntCon()->ImmedValNeedsReloc(m_compiler))
++    {
++        baseEdge = &addr->AsOp()->gtOp1;
++        constant = addr->gtGetOp2()->AsIntCon()->IconValue();
++    }
++    else if (addr->OperIs(GT_LEA) && !addr->AsAddrMode()->HasIndex() && addr->AsAddrMode()->HasBase())
++    {
++        baseEdge = &addr->AsAddrMode()->Base();
++        constant = addr->AsAddrMode()->Offset();
++    }
++    else
++    {
++        return nullptr;
++    }
++
++    if (!emitter::isValidSimm12(constant) || !emitter::isValidSimm12(constant + genTypeSize(TYP_INT)) ||
++        (varTypeIsGC(*baseEdge) != varTypeIsGC(addr)))
++    {
++        return nullptr;
++    }
++
++    if (!(*baseEdge)->OperIs(GT_LCL_VAR))
++    {
++        LIR::Use baseUse(Range(), baseEdge, addr);
++        baseUse.ReplaceWithLclVar(m_compiler);
++    }
++    *offset = (int)constant;
++    return *baseEdge;
++}
++#endif // TARGET_RISCV32
++
+ GenTree* DecomposeLongs::DecomposeStoreInd(LIR::Use& use)
+ {
+     assert(use.IsInitialized());
+@@ -988,11 +1050,25 @@ GenTree* DecomposeLongs::DecomposeStoreInd(LIR::Use& use)
+ 
+     GenTree* gtLong = tree->AsOp()->gtOp2;
+ 
+-    // Save address to a temp. It is used in storeIndLow and storeIndHigh trees.
+-    LIR::Use address(Range(), &tree->AsOp()->gtOp1, tree);
+-    address.ReplaceWithLclVar(m_compiler);
+-    JITDUMP("[DecomposeStoreInd]: Saving address tree to a temp var:\n");
+-    DISPTREERANGE(Range(), address.Def());
++    int      highOffset = genTypeSize(TYP_INT);
++    GenTree* addrBase   = nullptr;
++#ifdef TARGET_RISCV32
++    int baseOffset;
++    addrBase = SplitAddressForHalves(tree, &baseOffset);
++    if (addrBase != nullptr)
++    {
++        highOffset += baseOffset;
++    }
++#endif
++    if (addrBase == nullptr)
++    {
++        // Save address to a temp. It is used in storeIndLow and storeIndHigh trees.
++        LIR::Use address(Range(), &tree->AsOp()->gtOp1, tree);
++        address.ReplaceWithLclVar(m_compiler);
++        JITDUMP("[DecomposeStoreInd]: Saving address tree to a temp var:\n");
++        DISPTREERANGE(Range(), address.Def());
++        addrBase = tree->AsOp()->gtOp1;
++    }
+ 
+     if (!gtLong->AsOp()->gtOp1->OperIsLeaf())
+     {
+@@ -1010,7 +1086,6 @@ GenTree* DecomposeLongs::DecomposeStoreInd(LIR::Use& use)
+         DISPTREERANGE(Range(), op2.Def());
+     }
+ 
+-    GenTree* addrBase    = tree->AsOp()->gtOp1;
+     GenTree* dataHigh    = gtLong->AsOp()->gtOp2;
+     GenTree* dataLow     = gtLong->AsOp()->gtOp1;
+     GenTree* storeIndLow = tree;
+@@ -1023,7 +1098,7 @@ GenTree* DecomposeLongs::DecomposeStoreInd(LIR::Use& use)
+     GenTree* addrBaseHigh = new (m_compiler, GT_LCL_VAR)
+         GenTreeLclVar(GT_LCL_VAR, addrBase->TypeGet(), addrBase->AsLclVarCommon()->GetLclNum());
+     GenTree* addrHigh =
+-        new (m_compiler, GT_LEA) GenTreeAddrMode(TYP_REF, addrBaseHigh, nullptr, 0, genTypeSize(TYP_INT));
++        new (m_compiler, GT_LEA) GenTreeAddrMode(TYP_REF, addrBaseHigh, nullptr, 0, highOffset);
+     GenTree* storeIndHigh = new (m_compiler, GT_STOREIND) GenTreeStoreInd(TYP_INT, addrHigh, dataHigh);
+     storeIndHigh->gtFlags = (storeIndLow->gtFlags & (GTF_ALL_EFFECT | GTF_LIVENESS_MASK | GTF_IND_FLAGS));
+ 
+@@ -1062,20 +1137,33 @@ GenTree* DecomposeLongs::DecomposeInd(LIR::Use& use)
+ {
+     GenTree* indLow = use.Def();
+ 
+-    LIR::Use address(Range(), &indLow->AsOp()->gtOp1, indLow);
+-    address.ReplaceWithLclVar(m_compiler);
+-    JITDUMP("[DecomposeInd]: Saving addr tree to a temp var:\n");
+-    DISPTREERANGE(Range(), address.Def());
++    int      highOffset = genTypeSize(TYP_INT);
++    GenTree* addrBase   = nullptr;
++#ifdef TARGET_RISCV32
++    int baseOffset;
++    addrBase = SplitAddressForHalves(indLow, &baseOffset);
++    if (addrBase != nullptr)
++    {
++        highOffset += baseOffset;
++    }
++#endif
++    if (addrBase == nullptr)
++    {
++        LIR::Use address(Range(), &indLow->AsOp()->gtOp1, indLow);
++        address.ReplaceWithLclVar(m_compiler);
++        JITDUMP("[DecomposeInd]: Saving addr tree to a temp var:\n");
++        DISPTREERANGE(Range(), address.Def());
++        addrBase = indLow->gtGetOp1();
++    }
+ 
+     // Change the type of lower ind.
+     indLow->gtType = TYP_INT;
+ 
+     // Create tree of ind(addr+4)
+-    GenTree* addrBase     = indLow->gtGetOp1();
+     GenTree* addrBaseHigh = new (m_compiler, GT_LCL_VAR)
+         GenTreeLclVar(GT_LCL_VAR, addrBase->TypeGet(), addrBase->AsLclVarCommon()->GetLclNum());
+     GenTree* addrHigh =
+-        new (m_compiler, GT_LEA) GenTreeAddrMode(TYP_REF, addrBaseHigh, nullptr, 0, genTypeSize(TYP_INT));
++        new (m_compiler, GT_LEA) GenTreeAddrMode(TYP_REF, addrBaseHigh, nullptr, 0, highOffset);
+     GenTree* indHigh = new (m_compiler, GT_IND) GenTreeIndir(GT_IND, TYP_INT, addrHigh, nullptr);
+     indHigh->gtFlags |= (indLow->gtFlags & (GTF_GLOB_REF | GTF_EXCEPT | GTF_IND_FLAGS));
+ 
+@@ -1552,6 +1640,99 @@ GenTree* DecomposeLongs::DecomposeShift(LIR::Use& use)
+ 
+         return FinalizeDecomposition(use, loResult, hiResult, insertAfter);
+     }
++#ifdef TARGET_RISCV32
++    else
++    {
++        // Branch-free rather than a helper call: a call anywhere in a method makes its prologue save
++        // every callee-saved register it uses, on the paths without the shift too. The 32-bit shifts
++        // use the count's low five bits, as the instructions do, and bit five picks the halves:
++        //
++        //   outer = the half the bits leave, shifted alone:   lo << c, or hi >> c
++        //   inner = the half they enter, with those bits:     hi << c | lo >> (32 - c), or lo >> c | hi << (32 - c)
++        //   left:  c & 32 ? (lo, hi) = (0, outer)     : (outer, inner)
++        //   right: c & 32 ? (lo, hi) = (outer, fill)  : (inner, outer)
++        //
++        // x >> (32 - c) is computed as (x >> 1) >> ~c, which stays zero when c is a multiple of 32.
++        shiftByOp = RepresentOpAsLocalVar(shiftByOp, shift, &shift->AsOp()->gtOp2);
++        loOp1     = RepresentOpAsLocalVar(loOp1, gtLong, &gtLong->AsOp()->gtOp1);
++        hiOp1     = RepresentOpAsLocalVar(hiOp1, gtLong, &gtLong->AsOp()->gtOp2);
++
++        unsigned countLclNum = shiftByOp->AsLclVarCommon()->GetLclNum();
++        unsigned loLclNum    = loOp1->AsLclVarCommon()->GetLclNum();
++        unsigned hiLclNum    = hiOp1->AsLclVarCommon()->GetLclNum();
++
++        Range().Remove(shiftByOp);
++        Range().Remove(gtLong);
++        Range().Remove(loOp1);
++        Range().Remove(hiOp1);
++
++        auto insert = [&](GenTree* node) {
++            Range().InsertBefore(shift, node);
++            return node;
++        };
++        auto local = [&](unsigned lclNum) {
++            return insert(m_compiler->gtNewLclvNode(lclNum, TYP_INT));
++        };
++        auto constant = [&](int value) {
++            return insert(m_compiler->gtNewIconNode(value, TYP_INT));
++        };
++        auto binary = [&](genTreeOps op, GenTree* left, GenTree* right) {
++            return insert(m_compiler->gtNewOperNode(op, TYP_INT, left, right));
++        };
++        auto unary = [&](genTreeOps op, GenTree* operand) {
++            return insert(m_compiler->gtNewOperNode(op, TYP_INT, operand));
++        };
++        auto spill = [&](GenTree* value) {
++            unsigned lclNum = m_compiler->lvaGrabTemp(true DEBUGARG("riscv32 long shift temp"));
++            insert(m_compiler->gtNewTempStore(lclNum, value));
++            return lclNum;
++        };
++
++        bool       left       = oper == GT_LSH;
++        unsigned   leavingNum = left ? loLclNum : hiLclNum;
++        unsigned   enteringNum = left ? hiLclNum : loLclNum;
++        genTreeOps across     = left ? GT_RSZ : GT_LSH;
++
++        // mask = c & 32 ? -1 : 0
++        GenTree* countBit5  = binary(GT_AND, binary(GT_RSZ, local(countLclNum), constant(5)), constant(1));
++        unsigned maskLclNum = spill(unary(GT_NEG, countBit5));
++
++        unsigned outerLclNum = spill(binary(oper, local(leavingNum), local(countLclNum)));
++
++        GenTree* entering    = binary(left ? GT_LSH : GT_RSZ, local(enteringNum), local(countLclNum));
++        GenTree* crossing    = binary(across, local(leavingNum), constant(1));
++        crossing             = binary(across, crossing, unary(GT_NOT, local(countLclNum)));
++        unsigned innerLclNum = spill(binary(GT_OR, entering, crossing));
++
++        // mask ? whenSet : whenClear, as whenClear ^ ((whenClear ^ whenSet) & mask)
++        auto select = [&](unsigned whenClearLclNum, GenTree* whenSet) {
++            GenTree* diff = binary(GT_XOR, local(whenClearLclNum), whenSet);
++            diff          = binary(GT_AND, diff, local(maskLclNum));
++            return binary(GT_XOR, local(whenClearLclNum), diff);
++        };
++        // mask ? 0 : value
++        auto clearIfSet = [&](unsigned valueLclNum) {
++            return binary(GT_AND, local(valueLclNum), unary(GT_NOT, local(maskLclNum)));
++        };
++
++        GenTree* loResult;
++        GenTree* hiResult;
++        if (left)
++        {
++            loResult = clearIfSet(outerLclNum);
++            hiResult = select(innerLclNum, local(outerLclNum));
++        }
++        else
++        {
++            loResult = select(innerLclNum, local(outerLclNum));
++            hiResult = oper == GT_RSZ ? clearIfSet(outerLclNum)
++                                      : select(outerLclNum, binary(GT_RSH, local(hiLclNum), constant(31)));
++        }
++
++        Range().Remove(shift);
++        return FinalizeDecomposition(use, loResult, hiResult, hiResult);
++    }
++#else
+     else
+     {
+         // Because calls must be created as HIR and lowered to LIR, we need to dump
+@@ -1601,6 +1782,7 @@ GenTree* DecomposeLongs::DecomposeShift(LIR::Use& use)
+         use.ReplaceWith(call);
+         return call;
+     }
++#endif // TARGET_RISCV32
+ }
+ 
+ //------------------------------------------------------------------------
+@@ -1818,6 +2000,48 @@ GenTree* DecomposeLongs::DecomposeMul(LIR::Use& use)
+     GenTree* tree = use.Def();
+ 
+     assert(tree->OperIs(GT_MUL));
++
++#ifdef TARGET_RISCV32
++    if (!tree->Is64RsltMul())
++    {
++        // (aHi:aLo) * (bHi:bLo) mod 2^64 = mulhu(aLo, bLo) + aLo * bHi + aHi * bLo : aLo * bLo
++        assert(!tree->gtOverflow());
++        GenTree* longOp1 = tree->gtGetOp1();
++        GenTree* longOp2 = tree->gtGetOp2();
++        assert(longOp1->OperIs(GT_LONG) && longOp2->OperIs(GT_LONG));
++
++        GenTree* aLo = RepresentOpAsReusable(longOp1, &longOp1->AsOp()->gtOp1);
++        GenTree* aHi = longOp1->gtGetOp2();
++        GenTree* bLo = RepresentOpAsReusable(longOp2, &longOp2->AsOp()->gtOp1);
++        GenTree* bHi = longOp2->gtGetOp2();
++        Range().Remove(longOp1);
++        Range().Remove(longOp2);
++
++        GenTree* loResult       = tree;
++        loResult->gtType        = TYP_INT;
++        loResult->gtFlags      &= ~GTF_UNSIGNED;
++        loResult->AsOp()->gtOp1 = aLo;
++        loResult->AsOp()->gtOp2 = bLo;
++
++        GenTree* aLoCopy = m_compiler->gtClone(aLo);
++        GenTree* bLoCopy = m_compiler->gtClone(bLo);
++        GenTree* carry   = m_compiler->gtNewOperNode(GT_MULHI, TYP_INT, aLoCopy, bLoCopy);
++        carry->SetUnsigned();
++
++        GenTree* aLoCopy2 = m_compiler->gtClone(aLo);
++        GenTree* bLoCopy2 = m_compiler->gtClone(bLo);
++        GenTree* cross1   = m_compiler->gtNewOperNode(GT_MUL, TYP_INT, aLoCopy2, bHi);
++        GenTree* cross2   = m_compiler->gtNewOperNode(GT_MUL, TYP_INT, aHi, bLoCopy2);
++        GenTree* sum      = m_compiler->gtNewOperNode(GT_ADD, TYP_INT, carry, cross1);
++        GenTree* hiResult = m_compiler->gtNewOperNode(GT_ADD, TYP_INT, sum, cross2);
++
++        Range().InsertAfter(loResult, aLoCopy, bLoCopy, carry);
++        Range().InsertAfter(carry, aLoCopy2, cross1, bLoCopy2, cross2);
++        Range().InsertAfter(cross2, sum, hiResult);
++        return FinalizeDecomposition(use, loResult, hiResult, hiResult);
++    }
++#endif // TARGET_RISCV32
++
+     assert(tree->Is64RsltMul());
+ 
+     GenTree* op1 = tree->gtGetOp1();
+@@ -2612,7 +2836,9 @@ GenTree* DecomposeLongs::DecomposeAddSubNoFlags(LIR::Use& use)
+         return lclNum;
+     };
+ 
+-    const unsigned loLcl = storeToTemp(loResult);
++    // A subtraction's borrow reads its operands, not its result, so the low result needs no temp.
++    const bool     keepLoResult = (oper == GT_SUB) && !isChecked;
++    const unsigned loLcl        = keepLoResult ? BAD_VAR_NUM : storeToTemp(loResult);
+ 
+     GenTree* carryA = (oper == GT_ADD) ? read(loLcl) : copy(loOp1);
+     GenTree* carryB = copy(loOp2);
+@@ -2622,8 +2848,28 @@ GenTree* DecomposeLongs::DecomposeAddSubNoFlags(LIR::Use& use)
+     GenTree* hiResult;
+     if (!isChecked)
+     {
+-        GenTree* hiPart = op(oper, hiOp1, hiOp2);
+-        hiResult        = op(oper, hiPart, carry);
++        if (hiOp2->IsIntegralConst(0))
++        {
++            // A constant below 2^32: the high half only takes the carry.
++            Range().Remove(hiOp2);
++            hiResult = op(oper, hiOp1, carry);
++        }
++        else
++        {
++            GenTree* hiPart = op(oper, hiOp1, hiOp2);
++            hiResult        = op(oper, hiPart, carry);
++        }
++
++        // x - c as x + (-c), which takes an immediate; the borrow above already has its own copy of c.
++        if (keepLoResult && loOp2->IsCnsIntOrI() && !loOp2->AsIntCon()->ImmedValNeedsReloc(m_compiler))
++        {
++            ssize_t constant = loOp2->AsIntCon()->IconValue();
++            if ((constant != INT32_MIN) && emitter::isValidSimm12(-constant))
++            {
++                loOp2->AsIntCon()->SetIconValue(-constant);
++                loResult->SetOper(GT_ADD);
++            }
++        }
+     }
+     else
+     {
+@@ -2672,6 +2918,11 @@ GenTree* DecomposeLongs::DecomposeAddSubNoFlags(LIR::Use& use)
+         Range().Remove(hiOp2);
+     }
+ 
++    if (keepLoResult)
++    {
++        return FinalizeDecomposition(use, loResult, hiResult, last);
++    }
++
+     GenTree* loValue = read(loLcl);
+     return FinalizeDecomposition(use, loValue, hiResult, loValue);
+ }
+@@ -2801,6 +3052,26 @@ GenTree* DecomposeLongs::DecomposeLongCompareNoFlags(GenTree* cmp)
+         }
+         assert((condition == GT_LT) || (condition == GT_GE));
+ 
++        // A signed test against zero is the sign of the high half alone: x < 0, x >= 0.
++        if (!isUnsigned && src2->gtGetOp1()->IsIntegralConst(0) && src2->gtGetOp2()->IsIntegralConst(0))
++        {
++            GenTree* lo1 = src1->gtGetOp1();
++            GenTree* hi1 = src1->gtGetOp2();
++            Range().Remove(src2->gtGetOp1());
++            Range().Remove(src2->gtGetOp2());
++            Range().Remove(src2);
++            Range().Remove(src1);
++            lo1->SetUnusedValue();
++
++            GenTree* zero = m_compiler->gtNewZeroConNode(TYP_INT);
++            Range().InsertBefore(cmp, zero);
++            cmp->SetOper(condition);
++            cmp->gtFlags &= ~GTF_UNSIGNED;
++            cmp->AsOp()->gtOp1 = hi1;
++            cmp->AsOp()->gtOp2 = zero;
++            return cmp->gtNext;
++        }
++
+         // The high halves are compared twice.
+         auto reusable = [&](GenTree* user, GenTree** edge) {
+             if (!(*edge)->IsCnsIntOrI())
+@@ -2817,19 +3088,44 @@ GenTree* DecomposeLongs::DecomposeLongCompareNoFlags(GenTree* cmp)
+         Range().Remove(src1);
+         Range().Remove(src2);
+ 
++        if (isUnsigned && hi2->IsIntegralConst(0))
++        {
++            // Nothing is below a zero high half: x <u (0:c) is hi == 0 && lo <u c.
++            GenTree* hiEq = m_compiler->gtNewOperNode(GT_EQ, TYP_INT, hi1, hi2);
++            GenTree* loLt = m_compiler->gtNewOperNode(GT_LT, TYP_INT, lo1, lo2);
++            loLt->SetUnsigned();
++            value = m_compiler->gtNewOperNode(GT_AND, TYP_INT, hiEq, loLt);
++            Range().InsertBefore(cmp, hiEq, loLt, value);
++
++            GenTree* zero = m_compiler->gtNewZeroConNode(TYP_INT);
++            Range().InsertBefore(cmp, zero);
++            cmp->SetOper((condition == GT_LT) ? GT_NE : GT_EQ);
++            cmp->gtFlags &= ~GTF_UNSIGNED;
++            cmp->AsOp()->gtOp1 = value;
++            cmp->AsOp()->gtOp2 = zero;
++            return cmp->gtNext;
++        }
++
+         GenTree* hiLt = m_compiler->gtNewOperNode(GT_LT, TYP_INT, hi1, hi2);
+         if (isUnsigned)
+         {
+             hiLt->SetUnsigned();
+         }
++        // a < b = hi1 < hi2 | (hi1 == hi2 & lo1 <u lo2), where with both bits 0 or 1 the tie term is
++        // !(hi2 < hi1) & (lo1 <u lo2) = (hi2 < hi1) <u (lo1 <u lo2): one instruction fewer than the equality.
+         GenTree* hi1Copy = m_compiler->gtClone(hi1);
+         GenTree* hi2Copy = m_compiler->gtClone(hi2);
+-        GenTree* hiEq    = m_compiler->gtNewOperNode(GT_EQ, TYP_INT, hi1Copy, hi2Copy);
+-        GenTree* loLt    = m_compiler->gtNewOperNode(GT_LT, TYP_INT, lo1, lo2);
++        GenTree* hiGt    = m_compiler->gtNewOperNode(GT_LT, TYP_INT, hi2Copy, hi1Copy);
++        if (isUnsigned)
++        {
++            hiGt->SetUnsigned();
++        }
++        GenTree* loLt = m_compiler->gtNewOperNode(GT_LT, TYP_INT, lo1, lo2);
+         loLt->SetUnsigned();
+-        GenTree* tie = m_compiler->gtNewOperNode(GT_AND, TYP_INT, hiEq, loLt);
+-        value        = m_compiler->gtNewOperNode(GT_OR, TYP_INT, hiLt, tie);
+-        Range().InsertBefore(cmp, hiLt, hi1Copy, hi2Copy, hiEq);
++        GenTree* tie = m_compiler->gtNewOperNode(GT_LT, TYP_INT, hiGt, loLt);
++        tie->SetUnsigned();
++        value = m_compiler->gtNewOperNode(GT_OR, TYP_INT, hiLt, tie);
++        Range().InsertBefore(cmp, hiLt, hi2Copy, hi1Copy, hiGt);
+         Range().InsertBefore(cmp, loLt, tie, value);
+ 
+         condition = (condition == GT_LT) ? GT_NE : GT_EQ;
+@@ -2892,16 +3188,6 @@ void DecomposeLongs::TryPromoteLongVar(unsigned lclNum)
+ 
+     assert(varDsc->TypeIs(TYP_LONG));
+ 
+-#ifdef TARGET_RISCV32
+-    if (varDsc->lvIsParam && !varDsc->lvIsStructField &&
+-        m_compiler->lvaGetParameterABIInfo(lclNum).IsSplitAcrossRegistersAndStack())
+-    {
+-        // Keep one home for the register and stack halves; independent promotion cannot map a split parameter.
+-        m_compiler->lvaSetVarDoNotEnregister(lclNum DEBUGARG(DoNotEnregisterReason::IsStructArg));
+-        return;
+-    }
+-#endif
+-
+     if (varDsc->lvDoNotEnregister)
+     {
+         return;
+@@ -2959,7 +3245,14 @@ void DecomposeLongs::TryPromoteLongVar(unsigned lclNum)
+         if (isParam)
+         {
+             fieldVarDsc->lvIsParam = true;
+-            m_compiler->lvaSetVarDoNotEnregister(fieldLclNum DEBUGARG(DoNotEnregisterReason::LongParamField));
++#ifdef TARGET_RISCV32
++            // Both halves come in registers (a split parameter was not promoted above), and
++            // MapParameterRegisterLocals maps each register to its field, as for a promoted struct.
++            if (!m_compiler->lvaGetParameterABIInfo(lclNum).HasAnyRegisterSegment())
++#endif
++            {
++                m_compiler->lvaSetVarDoNotEnregister(fieldLclNum DEBUGARG(DoNotEnregisterReason::LongParamField));
++            }
+ 
+             fieldVarDsc->lvIsRegArg = varDsc->lvIsRegArg;
+         }
+diff --git b/src/coreclr/jit/decomposelongs.h a/src/coreclr/jit/decomposelongs.h
+index cad2bf192b4..4cae5f1e7c2 100644
+--- b/src/coreclr/jit/decomposelongs.h
++++ a/src/coreclr/jit/decomposelongs.h
+@@ -53,6 +53,9 @@ private:
+     GenTree* DecomposeFieldList(GenTreeFieldList* fieldList, GenTreeOp* longNode);
+     GenTree* DecomposeCall(LIR::Use& use);
+     GenTree* DecomposeInd(LIR::Use& use);
++#ifdef TARGET_RISCV32
++    GenTree* SplitAddressForHalves(GenTree* indir, int* offset);
++#endif
+     GenTree* DecomposeStoreInd(LIR::Use& use);
+     GenTree* DecomposeNot(LIR::Use& use);
+     GenTree* DecomposeNeg(LIR::Use& use);
+diff --git b/src/coreclr/jit/emitriscv64.cpp a/src/coreclr/jit/emitriscv64.cpp
+index 6bd44f0300b..d36a3f3769e 100644
+--- b/src/coreclr/jit/emitriscv64.cpp
++++ a/src/coreclr/jit/emitriscv64.cpp
+@@ -729,6 +729,14 @@ void emitter::emitIns_Mov(emitAttr attr, regNumber dstReg, regNumber srcReg, boo
+ void emitter::emitIns_R_R(
+     instruction ins, emitAttr attr, regNumber reg1, regNumber reg2, insOpts opt /* = INS_OPTS_NONE */)
+ {
++#ifdef TARGET_RISCV32
++    // A register is 32 bits wide: sign-extending its low word is the identity.
++    if ((ins == INS_sext_w) && (reg1 == reg2))
++    {
++        return;
++    }
++#endif // TARGET_RISCV32
++
+     code_t code = emitInsCode(ins);
+ 
+     // zkVM/RISC-V64 codegen peephole: drop an in-place `sext.w rd,rd` whose source was
+diff --git b/src/coreclr/jit/gentree.h a/src/coreclr/jit/gentree.h
+index 7b48d156f6d..95cd0b01af6 100644
+--- b/src/coreclr/jit/gentree.h
++++ a/src/coreclr/jit/gentree.h
+@@ -4460,6 +4460,7 @@ enum GenTreeCallFlags : unsigned int
+     GTF_CALL_M_LDVIRTFTN_INTERFACE     = 0x01000000, // ldvirtftn on an interface type
+     GTF_CALL_M_CAST_CAN_BE_EXPANDED    = 0x02000000, // this cast (helper call) can be expanded if it's profitable. To be removed.
+     GTF_CALL_M_CAST_OBJ_NONNULL        = 0x04000000, // if we expand this specific cast we don't need to check the input object for null
++    GTF_CALL_M_ZK_HANDLER              = 0x08000000, // zkVM (JitZkHandlerConv): a call to an EVM guest handler, arguments in s1-s8
+                                                      // NOTE: if needed, this flag can be removed, and we can introduce new _NONNUL cast helpers
+ };
+ 
+diff --git b/src/coreclr/jit/importercalls.cpp a/src/coreclr/jit/importercalls.cpp
+index ccaefcbc982..b5fbfc79bfd 100644
+--- b/src/coreclr/jit/importercalls.cpp
++++ a/src/coreclr/jit/importercalls.cpp
+@@ -1316,6 +1316,14 @@ DONE:
+     *call->AsCall()->callSig = *sig;
+ #endif
+ 
++#if defined(TARGET_RISCV)
++    // zkVM (JitZkHandlerConv): a call to an EVM guest handler passes its arguments in s1-s8.
++    if (call->IsCall() && zkIsHandlerSig(sig))
++    {
++        call->AsCall()->gtCallMoreFlags |= GTF_CALL_M_ZK_HANDLER;
++    }
++#endif
++
+     // Final importer checks for calls flagged as tail calls.
+     //
+     if (tailCallFlags != 0)
+@@ -7771,6 +7779,16 @@ void Compiler::impCheckForPInvokeCall(
+         assert(!call->gtCallCookie);
+     }
+ 
++#if defined(TARGET_RISCV)
++    // zkVM: a precompile CSR write or an Airbender delegation (JitZkCsrPInvokes, JitZkDelegationPInvokes) takes the
++    // call's place as one instruction, with no GC transition; one counted as having it costs the method a P/Invoke
++    // frame variable and so a stack frame.
++    if (zkIsCsrPInvokeTarget(call))
++    {
++        suppressGCTransition = true;
++    }
++#endif
++
+     if (suppressGCTransition)
+     {
+         call->gtCallMoreFlags |= GTF_CALL_M_SUPPRESS_GC_TRANSITION;
+diff --git b/src/coreclr/jit/jitconfigvalues.h a/src/coreclr/jit/jitconfigvalues.h
+index 21b985321fb..3d329b317fc 100644
+--- b/src/coreclr/jit/jitconfigvalues.h
++++ a/src/coreclr/jit/jitconfigvalues.h
+@@ -579,6 +579,14 @@ RELEASE_CONFIG_INTEGER(JitZkMemcpyCsr, "JitZkMemcpyCsr", 0)
+ // changes no general register. A three-argument entry (memmove/memcpy) is emitted in the ZisK
+ // DMA shape, `csrrs x0, csr, a1; add x0, a0, a2`. Empty (the default) leaves every P/Invoke a call.
+ RELEASE_CONFIG_STRING(JitZkCsrPInvokes, "JitZkCsrPInvokes")
++// zkVM (Airbender): a delegation runs when a CSR is accessed with its operands already in x10-x12, and
++// writes its result flag back to x12. Entries "entrypoint:csr" (csr in hex, ','-separated) name the
++// three-argument P/Invokes to emit as `csrrw x0, csr, x0` (then `mv a0, a2` for a used result) instead
++// of a call: the arguments are in a0-a2 by the calling convention, and only a0 and a2 are changed.
++RELEASE_CONFIG_STRING(JitZkDelegationPInvokes, "JitZkDelegationPInvokes")
++// zkVM: methods with the EVM guest's handler signature (eight arguments, the first a ref EvmStack) take their
++// arguments in s1-s8, which they never save: an interpreter's state stays in registers no call or delegation clobbers.
++RELEASE_CONFIG_INTEGER(JitZkHandlerConv, "JitZkHandlerConv", 0)
+ #endif
+ 
+ // zkVM: non-zero zero-initializes a local or spill temp that contains GC references only when a
+diff --git b/src/coreclr/jit/lclvars.cpp a/src/coreclr/jit/lclvars.cpp
+index c413bd99356..9a3d110b6bb 100644
+--- b/src/coreclr/jit/lclvars.cpp
++++ a/src/coreclr/jit/lclvars.cpp
+@@ -1078,6 +1078,9 @@ void Compiler::lvaClassifyParameterABI()
+     cInfo.IsVarArgs  = info.compIsVarArgs;
+     cInfo.HasThis    = info.compThisArg != BAD_VAR_NUM;
+     cInfo.HasRetBuff = info.compRetBuffArg != BAD_VAR_NUM;
++#if defined(TARGET_RISCV)
++    cInfo.ZkHandler = compZkHandlerConv;
++#endif
+ 
+ #ifdef SWIFT_SUPPORT
+     if (info.compCallConv == CorInfoCallConvExtension::Swift)
+diff --git b/src/coreclr/jit/lower.cpp a/src/coreclr/jit/lower.cpp
+index abca4fc47a2..5974aa14e12 100644
+--- b/src/coreclr/jit/lower.cpp
++++ a/src/coreclr/jit/lower.cpp
+@@ -1747,18 +1747,10 @@ void Lowering::SplitArgumentBetweenRegistersAndStack(GenTreeCall* call, CallArg*
+     JITDUMP("Dividing split arg [%06u] with %u registers, %u stack space into two arguments\n",
+             Compiler::dspTreeID(arg), numRegs, stackSeg.Size);
+ 
+-    ClassLayout* signatureLayout = callArg->GetSignatureLayout();
+-#ifdef TARGET_RISCV32
+-    if (signatureLayout == nullptr)
+-    {
+-        // Decomposed 2*XLEN scalars have a FIELD_LIST but no struct signature.
+-        assert(arg->OperIsFieldList());
+-        signatureLayout = m_compiler->typGetBlkLayout(2 * TARGET_POINTER_SIZE);
+-    }
+-#endif
+-    ClassLayout* registersLayout = signatureLayout->SliceLayout(m_compiler, 0, stackSeg.Offset);
++    ClassLayout* registersLayout = callArg->GetSignatureLayout()->SliceLayout(m_compiler, 0, stackSeg.Offset);
+     ClassLayout* stackLayout =
+-        signatureLayout->SliceLayout(m_compiler, stackSeg.Offset, signatureLayout->GetSize() - stackSeg.Offset);
++        callArg->GetSignatureLayout()->SliceLayout(m_compiler, stackSeg.Offset,
++                                                   callArg->GetSignatureLayout()->GetSize() - stackSeg.Offset);
+ 
+     GenTree* stackNode     = nullptr;
+     GenTree* registersNode = nullptr;
+diff --git b/src/coreclr/jit/lowerriscv64.cpp a/src/coreclr/jit/lowerriscv64.cpp
+index d50da650603..6435bc6bfbc 100644
+--- b/src/coreclr/jit/lowerriscv64.cpp
++++ a/src/coreclr/jit/lowerriscv64.cpp
+@@ -269,6 +269,10 @@ GenTree* Lowering::LowerSavedIntegerCompare(GenTree* cmp)
+ void Lowering::SignExtendIfNecessary(GenTree** arg)
+ {
+     assert(varTypeUsesIntReg(*arg));
++#ifdef TARGET_RISCV32
++    // A register is 32 bits wide: there is nothing to extend, and the cast would be a copy.
++    return;
++#endif
+     if (!genActualTypeIsInt(*arg))
+         return;
+ 
+@@ -1086,6 +1090,18 @@ GenTree* Lowering::LowerBinaryArithmetic(GenTreeOp* binOp)
+     bool isOp1Negated = op1->OperIs(GT_NOT);
+     bool isOp2Negated = op2->OperIs(GT_NOT);
+ 
++    // x - c as x + (-c): RISC-V has no subtract-immediate. Morph rewrites the constants it sees, but one that only
++    // value numbering finds reaches lowering as a SUB and would otherwise take a register.
++    if (binOp->OperIs(GT_SUB) && !binOp->gtOverflow() && op2->IsCnsIntOrI() && !op2->IsIconHandle())
++    {
++        const ssize_t value = op2->AsIntCon()->IconValue();
++        if ((value != INT32_MIN) && emitter::isValidSimm12(-value))
++        {
++            binOp->ChangeOper(GT_ADD);
++            op2->AsIntCon()->SetIconValue(-value);
++        }
++    }
++
+     ContainCheckBinary(binOp);
+ 
+     if (!m_compiler->opts.OptimizationEnabled())
+diff --git b/src/coreclr/jit/lsra.cpp a/src/coreclr/jit/lsra.cpp
+index dee9c11e671..1059c938879 100644
+--- b/src/coreclr/jit/lsra.cpp
++++ a/src/coreclr/jit/lsra.cpp
+@@ -13681,6 +13681,13 @@ SingleTypeRegSet LinearScan::RegisterSelection::select(Interval*
+     else
+     {
+         callerCalleePrefs = linearScan->callerSaveRegs(currentInterval->registerType);
++#if defined(TARGET_RISCV)
++        // JitZkHandlerConv: a handler saves none of its argument registers, so they cost no more than these.
++        if (linearScan->m_compiler->compZkHandlerConv && varTypeUsesIntReg(currentInterval->registerType))
++        {
++            callerCalleePrefs |= (RBM_S1 | RBM_S2 | RBM_S3 | RBM_S4 | RBM_S5 | RBM_S6 | RBM_S7 | RBM_S8).GetIntRegSet();
++        }
++#endif
+     }
+ 
+     // If this has a delayed use (due to being used in a rmw position of a
+diff --git b/src/coreclr/jit/lsrabuild.cpp a/src/coreclr/jit/lsrabuild.cpp
+index 92bbf64553b..b80d85d046e 100644
+--- b/src/coreclr/jit/lsrabuild.cpp
++++ a/src/coreclr/jit/lsrabuild.cpp
+@@ -798,14 +798,23 @@ regMaskTP LinearScan::getKillSetForCall(GenTreeCall* call)
+     {
+         return RBM_NONE;
+     }
+-    // zkVM: a precompile P/Invoke emitted as a CSR write (see JitZkCsrPInvokes) changes no register.
++    // zkVM: a precompile P/Invoke emitted as a CSR write (see JitZkCsrPInvokes) changes no register;
++    // an Airbender delegation (JitZkDelegationPInvokes) writes its flag to a2, then the result to a0; a1 is
++    // killed too, so an interval live across it is kept out of every operand register rather than spilled there.
+     if (call->IsUnmanaged() && (m_compiler->zkCsrForPInvoke(call) >= 0))
+     {
+-        return RBM_NONE;
++        return m_compiler->zkIsDelegationPInvoke(call) ? (RBM_A0 | RBM_A1 | RBM_A2) : RBM_NONE;
+     }
+ #endif
+ 
+     regMaskTP killMask = RBM_CALLEE_TRASH;
++#if defined(TARGET_RISCV)
++    // JitZkHandlerConv: the handlers take s1-s8 as arguments and hand them on changed, saving none.
++    if ((call->gtCallMoreFlags & GTF_CALL_M_ZK_HANDLER) != 0)
++    {
++        killMask |= RBM_S1 | RBM_S2 | RBM_S3 | RBM_S4 | RBM_S5 | RBM_S6 | RBM_S7 | RBM_S8;
++    }
++#endif
+ #ifdef TARGET_X86
+     if (m_compiler->compFloatingPointUsed)
+     {
+diff --git b/src/coreclr/jit/morph.cpp a/src/coreclr/jit/morph.cpp
+index ff14bb44016..8a3d9ebb46a 100644
+--- b/src/coreclr/jit/morph.cpp
++++ a/src/coreclr/jit/morph.cpp
+@@ -2227,6 +2227,9 @@ void CallArgs::AddFinalArgsAndDetermineABIInfo(Compiler* comp, GenTreeCall* call
+     info.IsVarArgs  = call->IsVarargs() && !call->IsTailCallViaJitHelper();
+     info.HasThis    = call->gtArgs.HasThisPointer();
+     info.HasRetBuff = call->gtArgs.HasRetBuffer();
++#if defined(TARGET_RISCV)
++    info.ZkHandler = (call->gtCallMoreFlags & GTF_CALL_M_ZK_HANDLER) != 0;
++#endif
+     PlatformClassifier classifier(info);
+ 
+     // Morph the user arguments
+@@ -2323,6 +2326,9 @@ void CallArgs::DetermineABIInfo(Compiler* comp, GenTreeCall* call)
+     info.IsVarArgs  = call->IsVarargs() && !call->IsTailCallViaJitHelper();
+     info.HasThis    = call->gtArgs.HasThisPointer();
+     info.HasRetBuff = call->gtArgs.HasRetBuffer();
++#if defined(TARGET_RISCV)
++    info.ZkHandler = (call->gtCallMoreFlags & GTF_CALL_M_ZK_HANDLER) != 0;
++#endif
+     PlatformClassifier classifier(info);
+ 
+     for (CallArg& arg : Args())
+@@ -4555,6 +4561,15 @@ bool Compiler::fgCanFastTailCall(GenTreeCall* callee, const char** failReason)
+ 
+     callee->gtArgs.AddFinalArgsAndDetermineABIInfo(this, callee);
+ 
++#if defined(TARGET_RISCV)
++    // JitZkHandlerConv: another method's epilog would restore s1-s8 over a handler's arguments.
++    if (((callee->gtCallMoreFlags & GTF_CALL_M_ZK_HANDLER) != 0) && !compZkHandlerConv)
++    {
++        *failReason = "zk handler called from a non-handler";
++        return false;
++    }
++#endif
++
+     unsigned calleeArgStackSize = callee->gtArgs.OutgoingArgsStackSize();
+     unsigned callerArgStackSize = roundUp(lvaParameterStackSize, TARGET_POINTER_SIZE);
+ 
+@@ -6477,22 +6492,9 @@ bool Compiler::zkCpBlkUsesMemcpyCsr(GenTreeBlk* blk, bool* needsDstReg, bool* ne
+     return addrOk(src->AsIndir()->Addr(), needsSrcReg);
+ }
+ 
+-int Compiler::zkCsrForPInvoke(GenTreeCall* call)
++// zkCsrInConfig: the CSR `cfg` ("entrypoint:csr,..." with csr in hex) gives the P/Invoke `call`, or -1.
++static int zkCsrInConfig(Compiler* comp, GenTreeCall* call, const char* cfg)
+ {
+-    if (!call->IsUnmanaged() || (call->gtCallType != CT_USER_FUNC) || (call->gtCallMethHnd == nullptr) ||
+-        call->IsFastTailCall())
+-    {
+-        return -1;
+-    }
+-    // One argument: the operand block address goes into the CSR. Three arguments: the ZisK DMA
+-    // shape (memmove/memcpy), `csrrs x0, csr, src; add x0, dst, len` - see genCallInstruction.
+-    const unsigned argCount = call->gtArgs.CountArgs();
+-    if ((argCount != 1) && (argCount != 3))
+-    {
+-        return -1;
+-    }
+-
+-    const char* cfg = JitConfig.JitZkCsrPInvokes();
+     if ((cfg == nullptr) || (*cfg == '\0'))
+     {
+         return -1;
+@@ -6501,7 +6503,7 @@ int Compiler::zkCsrForPInvoke(GenTreeCall* call)
+     // The P/Invoke the JIT sees is either the DllImport itself or, for a LibraryImport, the
+     // generated local function named "<EntryPoint>g____PInvoke|N_M"; both carry the entry
+     // point name, which is what the config lists.
+-    const char* methodName = info.compCompHnd->getMethodNameFromMetadata(call->gtCallMethHnd, nullptr, nullptr, nullptr, 0);
++    const char* methodName = comp->info.compCompHnd->getMethodNameFromMetadata(call->gtCallMethHnd, nullptr, nullptr, nullptr, 0);
+     if (methodName == nullptr)
+     {
+         return -1;
+@@ -6575,6 +6577,77 @@ int Compiler::zkCsrForPInvoke(GenTreeCall* call)
+     return -1;
+ }
+ 
++int Compiler::zkCsrForPInvoke(GenTreeCall* call)
++{
++    if (!call->IsUnmanaged() || (call->gtCallType != CT_USER_FUNC) || (call->gtCallMethHnd == nullptr) ||
++        call->IsFastTailCall())
++    {
++        return -1;
++    }
++    // One argument: the operand block address goes into the CSR. Three arguments: the ZisK DMA
++    // shape (memmove/memcpy), `csrrs x0, csr, src; add x0, dst, len` - see genCallInstruction.
++    // A delegation (JitZkDelegationPInvokes) takes three, in a0-a2.
++    const unsigned argCount = call->gtArgs.CountArgs();
++    if ((argCount != 1) && (argCount != 3))
++    {
++        return -1;
++    }
++    int csr = zkCsrInConfig(this, call, JitConfig.JitZkCsrPInvokes());
++    if ((csr < 0) && (argCount == 3))
++    {
++        csr = zkCsrInConfig(this, call, JitConfig.JitZkDelegationPInvokes());
++    }
++    return csr;
++}
++
++//------------------------------------------------------------------------
++// zkIsHandlerSig: is `sig` the EVM guest's handler signature, which JitZkHandlerConv passes in s1-s8?
++//   (ref EvmStack, nuint, ref DispatchState, ref byte, nint, nint*, ref byte, ref byte) -> int, matched by shape:
++//   a byref to a ref struct carries no class here, and nothing else in the guest has this shape.
++//
++bool Compiler::zkIsHandlerSig(CORINFO_SIG_INFO* sig)
++{
++    static const CorInfoType shape[] = {CORINFO_TYPE_BYREF,     CORINFO_TYPE_NATIVEUINT, CORINFO_TYPE_BYREF,
++                                        CORINFO_TYPE_BYREF,     CORINFO_TYPE_NATIVEINT,  CORINFO_TYPE_PTR,
++                                        CORINFO_TYPE_BYREF,     CORINFO_TYPE_BYREF};
++    if ((JitConfig.JitZkHandlerConv() == 0) || (sig == nullptr) || (sig->numArgs != ArrLen(shape)) || sig->hasThis() ||
++        sig->isVarArg() || (sig->getCallConv() != CORINFO_CALLCONV_DEFAULT) || (sig->retType != CORINFO_TYPE_INT))
++    {
++        return false;
++    }
++    CORINFO_ARG_LIST_HANDLE arg = sig->args;
++    for (unsigned i = 0; i < ArrLen(shape); i++)
++    {
++        CORINFO_CLASS_HANDLE argClass = NO_CLASS_HANDLE;
++        if (strip(info.compCompHnd->getArgType(sig, arg, &argClass)) != shape[i])
++        {
++            return false;
++        }
++        arg = info.compCompHnd->getArgNext(arg);
++    }
++    return true;
++}
++
++//------------------------------------------------------------------------
++// zkIsCsrPInvokeTarget: does `call` name a P/Invoke listed in JitZkCsrPInvokes or JitZkDelegationPInvokes?
++//   Unlike zkCsrForPInvoke it reads only the target, so the importer can ask before the arguments are in place.
++//
++bool Compiler::zkIsCsrPInvokeTarget(GenTreeCall* call)
++{
++    return (call->gtCallMethHnd != nullptr) && ((zkCsrInConfig(this, call, JitConfig.JitZkCsrPInvokes()) >= 0) ||
++                                                (zkCsrInConfig(this, call, JitConfig.JitZkDelegationPInvokes()) >= 0));
++}
++
++//------------------------------------------------------------------------
++// zkIsDelegationPInvoke: is `call` a P/Invoke listed in JitZkDelegationPInvokes, emitted as an
++//   Airbender delegation (`csrrw x0, csr, x0` on a0-a2, result flag in a2)?
++//
++bool Compiler::zkIsDelegationPInvoke(GenTreeCall* call)
++{
++    return (zkCsrForPInvoke(call) >= 0) && (call->gtArgs.CountArgs() == 3) &&
++           (zkCsrInConfig(this, call, JitConfig.JitZkDelegationPInvokes()) >= 0);
++}
++
+ //------------------------------------------------------------------------
+ // fgRiscV64TryInlineNewArr: zkVM per-site inline allocation of a single-dimensional
+ //    array (CORINFO_HELP_NEWARR_1_VC / _PTR / _DIRECT / _ALIGN8) against the fixed
+@@ -8039,6 +8112,13 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
+                 }
+                 else
+                 {
++#ifdef TARGET_RISCV32
++                    // DecomposeMul expands it into three multiplies and a high multiply.
++                    if (!tree->gtOverflow())
++                    {
++                        break;
++                    }
++#endif // TARGET_RISCV32
+                     if (tree->gtOverflow())
+                         helper = tree->IsUnsigned() ? CORINFO_HELP_ULMUL_OVF : CORINFO_HELP_LMUL_OVF;
+                     else
+diff --git b/src/coreclr/jit/regset.h a/src/coreclr/jit/regset.h
+index 2d35996670d..4e7edb3134f 100644
+--- b/src/coreclr/jit/regset.h
++++ a/src/coreclr/jit/regset.h
+@@ -84,6 +84,15 @@ public:
+         return rsModifiedRegsMask;
+     }
+ 
++#if defined(TARGET_RISCV)
++    // JitZkHandlerConv: a handler's argument registers are not callee-saved for it.
++    void rsZkExcludeCalleeSaved(regMaskTP mask)
++    {
++        rsAllCalleeSavedMask &= ~mask;
++        rsIntCalleeSavedMask &= ~mask;
++    }
++#endif
++
+     regMaskTP rsGetModifiedCalleeSavedRegsMask() const
+     {
+         assert(rsModifiedRegsMaskInitialized);
+diff --git b/src/coreclr/jit/targetriscv64.cpp a/src/coreclr/jit/targetriscv64.cpp
+index b8cf7c7e2bb..207b9569a64 100644
+--- b/src/coreclr/jit/targetriscv64.cpp
++++ a/src/coreclr/jit/targetriscv64.cpp
+@@ -22,6 +22,8 @@ const Target::ArgOrder Target::g_tgtUnmanagedArgOrder = ARG_ORDER_R2L;
+ 
+ // clang-format off
+ const regNumber intArgRegs [] = {REG_A0, REG_A1, REG_A2, REG_A3, REG_A4, REG_A5, REG_A6, REG_A7};
++// zkVM (JitZkHandlerConv): an EVM guest handler's arguments, in registers its own calls and delegations leave alone.
++const regNumber zkHandlerArgRegs [] = {REG_S1, REG_S2, REG_S3, REG_S4, REG_S5, REG_S6, REG_S7, REG_S8};
+ const regMaskTP intArgMasks[] = {RBM_A0, RBM_A1, RBM_A2, RBM_A3, RBM_A4, RBM_A5, RBM_A6, RBM_A7};
+ 
+ const regNumber fltArgRegs [] = {REG_FA0, REG_FA1, REG_FA2, REG_FA3, REG_FA4, REG_FA5, REG_FA6, REG_FA7 };
+@@ -37,7 +39,7 @@ const regMaskTP fltArgMasks[] = {RBM_FA0, RBM_FA1, RBM_FA2, RBM_FA3, RBM_FA4, RB
+ //
+ RiscV64Classifier::RiscV64Classifier(const ClassifierInfo& info)
+     : m_info(info)
+-    , m_intRegs(intArgRegs, ArrLen(intArgRegs))
++    , m_intRegs(info.ZkHandler ? zkHandlerArgRegs : intArgRegs, ArrLen(intArgRegs))
+     , m_floatRegs(fltArgRegs, ArrLen(fltArgRegs))
+ {
+     assert(!m_info.IsVarArgs); // TODO: varargs currently not supported on RISC-V
+@@ -144,22 +146,17 @@ ABIPassingInformation RiscV64Classifier::Classify(Compiler*    comp,
+     else
+     {
+         // Integer calling convention
+-        unsigned stackAlignment = TARGET_POINTER_SIZE;
+-#ifdef TARGET_RISCV32
+-        if (!passedByRef)
+-        {
+-            stackAlignment = varTypeIsStruct(type) ? structLayout->GetAlignmentRequirement(comp) : passedSize;
+-            stackAlignment = min<unsigned>(STACK_ALIGN, max<unsigned>(TARGET_POINTER_SIZE, stackAlignment));
+-        }
+-#endif
+-        auto passOnStack = [this, stackAlignment](unsigned offset, unsigned size) -> ABIPassingSegment {
++        auto passOnStack = [this, type](unsigned offset, unsigned size) -> ABIPassingSegment {
+             assert(size > 0);
+             assert(size <= 2 * TARGET_POINTER_SIZE);
+             assert((m_stackArgSize % TARGET_POINTER_SIZE) == 0);
+-            if (offset == 0)
++#ifndef TARGET_64BIT
++            // ilp32: a 2*XLEN scalar passed wholly on the stack is aligned to its size.
++            if ((offset == 0) && (size == 2 * TARGET_POINTER_SIZE) && !varTypeIsStruct(type))
+             {
+-                m_stackArgSize = roundUp(m_stackArgSize, stackAlignment);
++                m_stackArgSize = roundUp(m_stackArgSize, 2 * TARGET_POINTER_SIZE);
+             }
++#endif
+             ABIPassingSegment seg = ABIPassingSegment::OnStack(m_stackArgSize, offset, size);
+             m_stackArgSize += (size > TARGET_POINTER_SIZE) ? (2 * TARGET_POINTER_SIZE) : TARGET_POINTER_SIZE;
+             return seg;
+@@ -172,6 +169,13 @@ ABIPassingInformation RiscV64Classifier::Classify(Compiler*    comp,
+                 ABIPassingSegment seg = ABIPassingSegment::InRegister(m_intRegs.Dequeue(), 0, passedSize);
+                 return ABIPassingInformation::FromSegment(comp, passedByRef, seg);
+             }
++            else if (!varTypeIsStruct(type) && (m_intRegs.Count() == 1))
++            {
++                // A 2*XLEN scalar is not split between the last register and the stack, as the psABI would:
++                // the JIT splits only aggregates. It goes wholly on the stack and the last register stays unused.
++                m_intRegs.Dequeue();
++                return ABIPassingInformation::FromSegment(comp, passedByRef, passOnStack(0, passedSize));
++            }
+             else
+             {
+                 assert(varTypeIsStruct(type) || !TargetArchitecture::IsRiscV64);
+diff --git b/src/coreclr/nativeaot/Runtime/GCHelpers.cpp a/src/coreclr/nativeaot/Runtime/GCHelpers.cpp
+index 086f96f69bf..064123a7b92 100644
+--- b/src/coreclr/nativeaot/Runtime/GCHelpers.cpp
++++ a/src/coreclr/nativeaot/Runtime/GCHelpers.cpp
+@@ -511,7 +511,7 @@ static Object* GcAllocInternal(MethodTable* pEEType, uint32_t uFlags, uintptr_t
+         uFlags &= ~GC_ALLOC_ZEROING_OPTIONAL;
+     }
+ 
+-    size_t cbSize = pEEType->GetBaseSize();
++    size_t cbSize = ALIGN_UP(pEEType->GetBaseSize(), OBJECT_SIZE_ALIGNMENT);
+ 
+     if (pEEType->HasComponentSize())
+     {
+@@ -549,7 +549,6 @@ static Object* GcAllocInternal(MethodTable* pEEType, uint32_t uFlags, uintptr_t
+     else
+     {
+         ASSERT(numElements == 0);
+-        cbSize = ALIGN_UP(cbSize, OBJECT_SIZE_ALIGNMENT);
+     }
+ 
+     if ((cbSize >= RH_LARGE_OBJECT_SIZE) && (cbSize >= GCHeapUtilities::GetGCHeap()->GetLOHThreshold()))
