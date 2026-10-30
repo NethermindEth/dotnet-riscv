@@ -68,10 +68,19 @@ index a151f9e605e..d5162c12cc3 100644
      /* Allocate the local variable table */
  
 diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
-index 6d64b975fd7..332e2613e0f 100644
+index 6d64b975fd7..655c55e648c 100644
 --- a/src/coreclr/jit/compiler.h
 +++ b/src/coreclr/jit/compiler.h
-@@ -5900,6 +5900,7 @@ private:
+@@ -5762,6 +5762,8 @@ private:
+     BasicBlock* impPushCatchArgOnStack(BasicBlock* hndBlk, CORINFO_CLASS_HANDLE clsHnd, bool isSingleBlockFilter);
+ 
+     bool impBlockIsInALoop(BasicBlock* block);
++    unsigned impNewObjInPlaceLocal(CORINFO_CLASS_HANDLE clsHnd, const BYTE* nextAddr, const BYTE* codeEndp,
++                                   BasicBlock* block);
+     void impImportBlockCode(BasicBlock* block);
+ 
+     void impReimportMarkBlock(BasicBlock* block);
+@@ -5900,6 +5902,7 @@ private:
  #endif // DEBUG
  
      bool impIsInvariant(const GenTree* tree);
@@ -79,7 +88,7 @@ index 6d64b975fd7..332e2613e0f 100644
      bool impIsAddressInLocal(const GenTree* tree, GenTree** lclVarTreeOut = nullptr);
  
      void impMakeDiscretionaryInlineObservations(InlineInfo* pInlineInfo, InlineResult* inlineResult);
-@@ -7676,6 +7677,9 @@ private:
+@@ -7676,6 +7679,9 @@ private:
      bool fgForwardSubBlock(BasicBlock* block);
      bool fgForwardSubStatement(Statement* statement);
      bool fgForwardSubMultiUse(Statement* nextStmt, unsigned lclNum, GenTree* fwdSubNode);
@@ -89,7 +98,7 @@ index 6d64b975fd7..332e2613e0f 100644
      bool fgForwardSubHasStoreInterference(Statement* defStmt, Statement* nextStmt, GenTree* nextStmtUse);
      void fgForwardSubUpdateLiveness(GenTree* newSubListFirst, GenTree* newSubListLast);
  
-@@ -11945,6 +11949,7 @@ public:
+@@ -11945,6 +11951,7 @@ public:
          bool compIsStatic              : 1; // Is the method static (no 'this' pointer)?
          bool compIsVarArgs             : 1; // Does the method have varargs parameters?
          bool compInitMem               : 1; // Is the CORINFO_OPT_INIT_LOCALS bit set in the method info options?
@@ -350,10 +359,152 @@ index 5c4e72e0a66..be970385761 100644
          if (substituted)
          {
 diff --git a/src/coreclr/jit/importer.cpp b/src/coreclr/jit/importer.cpp
-index e7ba7634d02..d43b3fd14d9 100644
+index e7ba7634d02..91e32e0418c 100644
 --- a/src/coreclr/jit/importer.cpp
 +++ b/src/coreclr/jit/importer.cpp
-@@ -10349,10 +10349,11 @@ void Compiler::impImportBlockCode(BasicBlock* block)
+@@ -5821,6 +5821,99 @@ bool Compiler::impBlockIsInALoop(BasicBlock* block)
+            block->HasFlag(BBF_BACKWARD_JUMP);
+ }
+ 
++//------------------------------------------------------------------------
++// impNewObjInPlaceLocal: under JitZkNewObjInPlace, the IL local a struct newobj can be constructed in.
++//
++// Arguments:
++//    clsHnd   - the struct the newobj constructs
++//    nextAddr - IL after the newobj
++//    codeEndp - end of the block's IL
++//    block    - the block being imported
++//
++// Returns:
++//    The local the next instruction stores the struct to, when constructing it there instead of in a temp is
++//    unobservable; else BAD_VAR_NUM.
++//
++// Notes:
++//    The local must already have its address taken somewhere in the method, so it is not promoted either way. The
++//    constructor sees the local through 'this' only: no earlier IL takes its address (and no loop brings later IL
++//    before it), and no value on the stack, the constructor's arguments included, reads it. A method with handlers
++//    is left alone, as a constructor that throws would leave the local half written where a handler can read it.
++//
++unsigned Compiler::impNewObjInPlaceLocal(CORINFO_CLASS_HANDLE clsHnd,
++                                         const BYTE*          nextAddr,
++                                         const BYTE*          codeEndp,
++                                         BasicBlock*          block)
++{
++    if ((JitConfig.JitZkNewObjInPlace() == 0) || compIsForInlining() || opts.compDbgCode ||
++        (info.compXcptnsCount != 0) || impBlockIsInALoop(block) || (nextAddr >= codeEndp))
++    {
++        return BAD_VAR_NUM;
++    }
++
++    unsigned     ilLcl;
++    const OPCODE next = (OPCODE)nextAddr[0];
++    if ((next >= CEE_STLOC_0) && (next <= CEE_STLOC_3))
++    {
++        ilLcl = next - CEE_STLOC_0;
++    }
++    else if ((next == CEE_STLOC_S) && (nextAddr + 1 < codeEndp))
++    {
++        ilLcl = nextAddr[1];
++    }
++    else if ((next == CEE_PREFIX1) && (nextAddr + 3 < codeEndp) && (nextAddr[1] == (CEE_STLOC - 256)))
++    {
++        ilLcl = getU2LittleEndian(nextAddr + 2);
++    }
++    else
++    {
++        return BAD_VAR_NUM;
++    }
++
++    if (ilLcl >= info.compMethodInfo->locals.numArgs)
++    {
++        return BAD_VAR_NUM;
++    }
++
++    const unsigned   lclNum = info.compArgsCount + ilLcl;
++    LclVarDsc* const varDsc = lvaGetDesc(lclNum);
++    if (!varDsc->TypeIs(TYP_STRUCT) || !varDsc->lvHasLdAddrOp || varDsc->lvPinned ||
++        (varDsc->GetLayout()->GetClassHandle() != clsHnd))
++    {
++        return BAD_VAR_NUM;
++    }
++
++    for (unsigned i = 0; i < stackState.esStackDepth; i++)
++    {
++        if (gtHasRef(stackState.esStack[i].val, lclNum))
++        {
++            return BAD_VAR_NUM;
++        }
++    }
++
++    // The newobj opcode and its token precede nextAddr.
++    const BYTE* const newObjAddr = nextAddr - 1 - sizeof(mdToken);
++    for (const BYTE* addr = info.compCode; addr < newObjAddr;)
++    {
++        OPCODE opcode = (OPCODE)*addr++;
++        if (opcode == CEE_PREFIX1)
++        {
++            opcode = (OPCODE)(256 + *addr++);
++        }
++
++        if (((opcode == CEE_LDLOCA_S) && (addr[0] == ilLcl)) ||
++            ((opcode == CEE_LDLOCA) && (getU2LittleEndian(addr) == ilLcl)))
++        {
++            return BAD_VAR_NUM;
++        }
++
++        addr += (opcode == CEE_SWITCH) ? (1 + getU4LittleEndian(addr)) * sizeof(DWORD) : opcodeSizes[opcode];
++    }
++
++    JITDUMP("Constructing newobj in place in V%02u\n", lclNum);
++    return lclNum;
++}
++
+ //------------------------------------------------------------------------
+ // impMatchTaskAwaitPattern:
+ //   Check if a method call starts an a task await pattern that can be
+@@ -9067,8 +9160,14 @@ void Compiler::impImportBlockCode(BasicBlock* block)
+                     // reverse copy prop for struct return values from newobj or
+                     // any function returning structs.
+ 
++                    const unsigned inPlaceLcl =
++                        (clsFlags & CORINFO_FLG_VALUECLASS)
++                            ? impNewObjInPlaceLocal(resolvedToken.hClass, codeAddr + sz, codeEndp, block)
++                            : BAD_VAR_NUM;
++
+                     /* get a temporary for the new object */
+-                    lclNum = lvaGrabTemp(true DEBUGARG("NewObj constructor temp"));
++                    lclNum = (inPlaceLcl != BAD_VAR_NUM) ? inPlaceLcl
++                                                         : lvaGrabTemp(true DEBUGARG("NewObj constructor temp"));
+                     if (compDonotInline())
+                     {
+                         // Fail fast if lvaGrabTemp fails with CALLSITE_TOO_MANY_LOCALS.
+@@ -9110,7 +9209,11 @@ void Compiler::impImportBlockCode(BasicBlock* block)
+ 
+                         CorInfoType jitTyp = info.compCompHnd->asCorInfoType(resolvedToken.hClass);
+ 
+-                        if (impIsPrimitive(jitTyp))
++                        if (inPlaceLcl != BAD_VAR_NUM)
++                        {
++                            // The local keeps its own type, which the check above matched.
++                        }
++                        else if (impIsPrimitive(jitTyp))
+                         {
+                             lvaTable[lclNum].lvType = JITtype2varType(jitTyp);
+                         }
+@@ -9126,7 +9229,11 @@ void Compiler::impImportBlockCode(BasicBlock* block)
+                         bool bbIsReturn = block->KindIs(BBJ_RETURN) &&
+                                           (!compIsForInlining() || (impInlineInfo->iciBlock->KindIs(BBJ_RETURN)));
+                         LclVarDsc* const lclDsc = lvaGetDesc(lclNum);
+-                        if (fgVarNeedsExplicitZeroInit(lclNum, bbInALoop, bbIsReturn))
++                        if (inPlaceLcl != BAD_VAR_NUM)
++                        {
++                            JITDUMP("\nNo zero-init for V%02u -- the constructor writes every field\n", lclNum);
++                        }
++                        else if (fgVarNeedsExplicitZeroInit(lclNum, bbInALoop, bbIsReturn))
+                         {
+                             // Append a tree to zero-out the temp
+                             GenTree* newObjInit =
+@@ -10349,10 +10456,11 @@ void Compiler::impImportBlockCode(BasicBlock* block)
                                  op1                                          = gtNewLclVarAddrNode(stackallocAsLocal);
                                  convertedToLocal                             = true;
  
@@ -367,7 +518,7 @@ index e7ba7634d02..d43b3fd14d9 100644
                                      impStoreToTemp(stackallocAsLocal, gtNewIconNode(0), CHECK_SPILL_ALL);
                                  }
  
-@@ -14009,6 +14010,21 @@ void Compiler::impInlineRecordArgInfo(InlineInfo*   pInlineInfo,
+@@ -14009,6 +14117,21 @@ void Compiler::impInlineRecordArgInfo(InlineInfo*   pInlineInfo,
          argInfo->argHasCallerLocalRef = true;
      }
  
@@ -389,7 +540,7 @@ index e7ba7634d02..d43b3fd14d9 100644
  #ifdef DEBUG
      if (verbose)
      {
-@@ -14596,6 +14612,14 @@ GenTree* Compiler::impInlineFetchArg(InlArgInfo& argInfo, const InlLclVarInfo& l
+@@ -14596,6 +14719,14 @@ GenTree* Compiler::impInlineFetchArg(InlArgInfo& argInfo, const InlLclVarInfo& l
              }
          }
      }
@@ -404,7 +555,7 @@ index e7ba7634d02..d43b3fd14d9 100644
      else if (argInfo.argIsByRefToStructLocal && !argInfo.argHasStargOp)
      {
          /* Argument is a by-ref address to a struct, a normed struct, or its field.
-@@ -14720,6 +14744,66 @@ GenTree* Compiler::impInlineFetchArg(InlArgInfo& argInfo, const InlLclVarInfo& l
+@@ -14720,6 +14851,66 @@ GenTree* Compiler::impInlineFetchArg(InlArgInfo& argInfo, const InlLclVarInfo& l
      return op1;
  }
  
@@ -484,10 +635,10 @@ index 7e307f49d50..ba0166fd68e 100644
  
  // InlLclVarInfo describes inline candidate argument and local variable properties.
 diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
-index 3d329b317fc..5baa1180f7c 100644
+index 3d329b317fc..09c959559c7 100644
 --- a/src/coreclr/jit/jitconfigvalues.h
 +++ b/src/coreclr/jit/jitconfigvalues.h
-@@ -595,6 +595,39 @@ RELEASE_CONFIG_INTEGER(JitZkHandlerConv, "JitZkHandlerConv", 0)
+@@ -595,6 +595,47 @@ RELEASE_CONFIG_INTEGER(JitZkHandlerConv, "JitZkHandlerConv", 0)
  // dropped. Valid only on a runtime that never scans stacks (a non-collecting GC). Default 0.
  RELEASE_CONFIG_INTEGER(JitZkNoGcMustInit, "JitZkNoGcMustInit", 0)
  
@@ -523,6 +674,14 @@ index 3d329b317fc..5baa1180f7c 100644
 +// comes from a compiler that checks definite assignment, as C# does; the zeroing that remains then only gives
 +// struct padding and never-read bytes a value. Default 0.
 +RELEASE_CONFIG_INTEGER(JitZkInitLocallocOnly, "JitZkInitLocallocOnly", 0)
++
++// zkVM: a newobj of a struct stored straight into an IL local whose address the method takes is constructed in
++// that local rather than in a temp copied into it, and is not zeroed first. Only where no handler could see a
++// constructor that throws midway, and no alias of the local can exist yet: outside loops, with no earlier IL
++// taking its address and nothing on the stack reading it. The constructor writes every field of the struct, as
++// C#'s definite assignment of 'this' makes one do; what the zeroing gave beyond that was a value for padding.
++// Default 0.
++RELEASE_CONFIG_INTEGER(JitZkNewObjInPlace, "JitZkNewObjInPlace", 0)
 +
  RELEASE_CONFIG_INTEGER(EnableEmbeddedBroadcast,     "EnableEmbeddedBroadcast",   1) // Allows embedded broadcasts to be disabled
  RELEASE_CONFIG_INTEGER(EnableEmbeddedMasking,       "EnableEmbeddedMasking",     1) // Allows embedded masking to be disabled
