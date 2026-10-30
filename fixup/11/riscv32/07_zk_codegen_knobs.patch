@@ -1,5 +1,74 @@
+diff --git a/src/coreclr/jit/codegencommon.cpp b/src/coreclr/jit/codegencommon.cpp
+index 81d110aae68..d48d05d5b3c 100644
+--- a/src/coreclr/jit/codegencommon.cpp
++++ b/src/coreclr/jit/codegencommon.cpp
+@@ -3987,7 +3987,9 @@ void CodeGen::genCheckUseBlockInit()
+         const bool isStruct    = varTypeIsStruct(varDsc);
+         const bool compInitMem = m_compiler->info.compInitMem;
+ 
+-        if (isTemp && !hasGCPtr)
++        // A temp needs no init of its own: the importer zeroes one whose bytes it must, as for a newobj, and a temp
++        // read before it is written (a struct partly written, its padding then copied) is live in only for the GC.
++        if (isTemp && !gcMustInit)
+         {
+             varDsc->lvMustInit = 0;
+             continue;
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+index 0644f4c28e8..fa26d636cfd 100644
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -1659,7 +1659,7 @@ void CodeGen::genLclHeap(GenTree* tree)
+         // Compute the size of the block to allocate and perform alignment.
+         // If compInitMem=true, we can reuse targetReg as regcnt,
+         // since we don't need any internal registers.
+-        if (m_compiler->info.compInitMem)
++        if (m_compiler->info.compInitLocalloc)
+         {
+             regCnt = targetReg;
+         }
+@@ -1711,7 +1711,7 @@ void CodeGen::genLclHeap(GenTree* tree)
+         static_assert(STACK_ALIGN % REGSIZE_BYTES == 0);
+         assert(amount % STACK_ALIGN == 0);
+         size_t stpCount = amount / STACK_ALIGN;
+-        if (m_compiler->info.compInitMem)
++        if (m_compiler->info.compInitLocalloc)
+         {
+             if (stpCount <= 4)
+             {
+@@ -1764,7 +1764,7 @@ void CodeGen::genLclHeap(GenTree* tree)
+         // If compInitMem=true, we can reuse targetReg as regcnt.
+         // Since size is a constant, regCnt is not yet initialized.
+         assert(regCnt == REG_NA);
+-        if (m_compiler->info.compInitMem)
++        if (m_compiler->info.compInitLocalloc)
+         {
+             regCnt = targetReg;
+         }
+@@ -1775,7 +1775,7 @@ void CodeGen::genLclHeap(GenTree* tree)
+         instGen_Set_Reg_To_Imm(((unsigned int)amount == amount) ? EA_4BYTE : EA_8BYTE, regCnt, amount);
+     }
+ 
+-    if (m_compiler->info.compInitMem)
++    if (m_compiler->info.compInitLocalloc)
+     {
+         // At this point 'regCnt' is set to the total number of bytes to locAlloc.
+         // Since we have to zero out the allocated memory AND ensure that the stack pointer is always valid
+diff --git a/src/coreclr/jit/compiler.cpp b/src/coreclr/jit/compiler.cpp
+index a151f9e605e..d5162c12cc3 100644
+--- a/src/coreclr/jit/compiler.cpp
++++ b/src/coreclr/jit/compiler.cpp
+@@ -6903,7 +6903,8 @@ int Compiler::compCompileHelper(CORINFO_MODULE_HANDLE classPtr,
+         info.compRetType = impNormStructType(methodInfo->args.retTypeClass);
+     }
+ 
+-    info.compInitMem = ((methodInfo->options & CORINFO_OPT_INIT_LOCALS) != 0);
++    info.compInitLocalloc = ((methodInfo->options & CORINFO_OPT_INIT_LOCALS) != 0);
++    info.compInitMem      = info.compInitLocalloc && (JitConfig.JitZkInitLocallocOnly() == 0);
+ 
+     /* Allocate the local variable table */
+ 
 diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
-index 6d64b975fd7..803aaf169ca 100644
+index 6d64b975fd7..332e2613e0f 100644
 --- a/src/coreclr/jit/compiler.h
 +++ b/src/coreclr/jit/compiler.h
 @@ -5900,6 +5900,7 @@ private:
@@ -20,8 +89,16 @@ index 6d64b975fd7..803aaf169ca 100644
      bool fgForwardSubHasStoreInterference(Statement* defStmt, Statement* nextStmt, GenTree* nextStmtUse);
      void fgForwardSubUpdateLiveness(GenTree* newSubListFirst, GenTree* newSubListLast);
  
+@@ -11945,6 +11949,7 @@ public:
+         bool compIsStatic              : 1; // Is the method static (no 'this' pointer)?
+         bool compIsVarArgs             : 1; // Does the method have varargs parameters?
+         bool compInitMem               : 1; // Is the CORINFO_OPT_INIT_LOCALS bit set in the method info options?
++        bool compInitLocalloc          : 1; // Is it, for localloc (see JitZkInitLocallocOnly)?
+         bool compProfilerCallback      : 1; // JIT inserted a profiler Enter callback
+         bool compPublishStubParam      : 1; // Hidden argument captured in prolog will be available through an intrinsic
+         bool compHasNextCallRetAddr    : 1; // The NextCallReturnAddress intrinsic is used.
 diff --git a/src/coreclr/jit/fginline.cpp b/src/coreclr/jit/fginline.cpp
-index ace0e2ccda9..d2a68aa07e1 100644
+index ace0e2ccda9..e815e0ee0f6 100644
 --- a/src/coreclr/jit/fginline.cpp
 +++ b/src/coreclr/jit/fginline.cpp
 @@ -2232,7 +2232,8 @@ void Compiler::fgInsertInlineeArgument(
@@ -34,6 +111,14 @@ index ace0e2ccda9..d2a68aa07e1 100644
          noway_assert((argInfo.argIsLclVar == 0) == (!argNode->OperIs(GT_LCL_VAR) || (argNode->gtFlags & GTF_GLOB_REF)));
  
          // If the argument has side effects, append it
+@@ -2475,6 +2476,7 @@ Statement* Compiler::fgInlinePrependStatements(InlineInfo* inlineInfo)
+     // in a loop or if the caller doesn't have compInitMem set. Otherwise we can rely on the
+     // normal logic in the caller to insert zero-init in the prolog if necessary.
+     if ((lclCnt != 0) && ((InlineeMethodInfo->options & CORINFO_OPT_INIT_LOCALS) != 0) &&
++        (JitConfig.JitZkInitLocallocOnly() == 0) &&
+         ((bbInALoop && !bbIsReturn) || !info.compInitMem))
+     {
+ 
 diff --git a/src/coreclr/jit/forwardsub.cpp b/src/coreclr/jit/forwardsub.cpp
 index 5c4e72e0a66..be970385761 100644
 --- a/src/coreclr/jit/forwardsub.cpp
@@ -265,10 +350,24 @@ index 5c4e72e0a66..be970385761 100644
          if (substituted)
          {
 diff --git a/src/coreclr/jit/importer.cpp b/src/coreclr/jit/importer.cpp
-index e7ba7634d02..8e48a093b2a 100644
+index e7ba7634d02..d43b3fd14d9 100644
 --- a/src/coreclr/jit/importer.cpp
 +++ b/src/coreclr/jit/importer.cpp
-@@ -14009,6 +14009,21 @@ void Compiler::impInlineRecordArgInfo(InlineInfo*   pInlineInfo,
+@@ -10349,10 +10349,11 @@ void Compiler::impImportBlockCode(BasicBlock* block)
+                                 op1                                          = gtNewLclVarAddrNode(stackallocAsLocal);
+                                 convertedToLocal                             = true;
+ 
+-                                if (compIsForInlining() && info.compInitMem && !impInlineRoot()->info.compInitMem)
++                                if (info.compInitLocalloc && !impInlineRoot()->info.compInitMem)
+                                 {
+                                     // Explicitly zero out the local if we're inlining a method with InitLocals into a
+-                                    // method without InitLocals.
++                                    // method without InitLocals, or under JitZkInitLocallocOnly, where the prolog
++                                    // zeroes no local.
+                                     impStoreToTemp(stackallocAsLocal, gtNewIconNode(0), CHECK_SPILL_ALL);
+                                 }
+ 
+@@ -14009,6 +14010,21 @@ void Compiler::impInlineRecordArgInfo(InlineInfo*   pInlineInfo,
          argInfo->argHasCallerLocalRef = true;
      }
  
@@ -290,7 +389,7 @@ index e7ba7634d02..8e48a093b2a 100644
  #ifdef DEBUG
      if (verbose)
      {
-@@ -14596,6 +14611,14 @@ GenTree* Compiler::impInlineFetchArg(InlArgInfo& argInfo, const InlLclVarInfo& l
+@@ -14596,6 +14612,14 @@ GenTree* Compiler::impInlineFetchArg(InlArgInfo& argInfo, const InlLclVarInfo& l
              }
          }
      }
@@ -305,7 +404,7 @@ index e7ba7634d02..8e48a093b2a 100644
      else if (argInfo.argIsByRefToStructLocal && !argInfo.argHasStargOp)
      {
          /* Argument is a by-ref address to a struct, a normed struct, or its field.
-@@ -14720,6 +14743,66 @@ GenTree* Compiler::impInlineFetchArg(InlArgInfo& argInfo, const InlLclVarInfo& l
+@@ -14720,6 +14744,66 @@ GenTree* Compiler::impInlineFetchArg(InlArgInfo& argInfo, const InlLclVarInfo& l
      return op1;
  }
  
@@ -385,10 +484,10 @@ index 7e307f49d50..ba0166fd68e 100644
  
  // InlLclVarInfo describes inline candidate argument and local variable properties.
 diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
-index 3d329b317fc..2ed46e358dd 100644
+index 3d329b317fc..5baa1180f7c 100644
 --- a/src/coreclr/jit/jitconfigvalues.h
 +++ b/src/coreclr/jit/jitconfigvalues.h
-@@ -595,6 +595,33 @@ RELEASE_CONFIG_INTEGER(JitZkHandlerConv, "JitZkHandlerConv", 0)
+@@ -595,6 +595,39 @@ RELEASE_CONFIG_INTEGER(JitZkHandlerConv, "JitZkHandlerConv", 0)
  // dropped. Valid only on a runtime that never scans stacks (a non-collecting GC). Default 0.
  RELEASE_CONFIG_INTEGER(JitZkNoGcMustInit, "JitZkNoGcMustInit", 0)
  
@@ -419,11 +518,17 @@ index 3d329b317fc..2ed46e358dd 100644
 +// checks nothing. Default 0.
 +RELEASE_CONFIG_INTEGER(JitZkNoNullChecks, "JitZkNoNullChecks", 0)
 +
++// zkVM: a method marked to initialize its locals zeroes only what it allocates on the stack (localloc), as one
++// marked SkipLocalsInit would zero nothing. Its other locals are written before they are read wherever the IL
++// comes from a compiler that checks definite assignment, as C# does; the zeroing that remains then only gives
++// struct padding and never-read bytes a value. Default 0.
++RELEASE_CONFIG_INTEGER(JitZkInitLocallocOnly, "JitZkInitLocallocOnly", 0)
++
  RELEASE_CONFIG_INTEGER(EnableEmbeddedBroadcast,     "EnableEmbeddedBroadcast",   1) // Allows embedded broadcasts to be disabled
  RELEASE_CONFIG_INTEGER(EnableEmbeddedMasking,       "EnableEmbeddedMasking",     1) // Allows embedded masking to be disabled
  RELEASE_CONFIG_INTEGER(EnableApxNDD,                "EnableApxNDD",              0) // Allows APX NDD feature to be disabled
 diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
-index 5974aa14e12..c2439542668 100644
+index 5974aa14e12..646a1c46c63 100644
 --- a/src/coreclr/jit/lower.cpp
 +++ b/src/coreclr/jit/lower.cpp
 @@ -365,6 +365,24 @@ GenTree* Lowering::LowerNode(GenTree* node)
@@ -473,6 +578,15 @@ index 5974aa14e12..c2439542668 100644
  
      GenTree* stackNode     = nullptr;
      GenTree* registersNode = nullptr;
+@@ -12854,7 +12880,7 @@ void Lowering::LowerLclHeap(GenTree* node)
+             return;
+         }
+ 
+-        if (m_compiler->info.compInitMem)
++        if (m_compiler->info.compInitLocalloc)
+         {
+             ssize_t alignedSize = ALIGN_UP(size, STACK_ALIGN);
+             if ((size > UINT_MAX) || (alignedSize > UINT_MAX))
 diff --git a/src/coreclr/jit/lowerriscv64.cpp b/src/coreclr/jit/lowerriscv64.cpp
 index 6435bc6bfbc..6f035ea747b 100644
 --- a/src/coreclr/jit/lowerriscv64.cpp
@@ -523,6 +637,28 @@ index 6435bc6bfbc..6f035ea747b 100644
  
      // No-unaligned mode: an unaligned scalar access is expanded byte-wise off a base
      // register (see genCodeForIndir/genCodeForStoreInd), so its address must be left
+diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
+index c5b6c9ad097..01168c8bcdf 100644
+--- a/src/coreclr/jit/lsrariscv64.cpp
++++ b/src/coreclr/jit/lsrariscv64.cpp
+@@ -747,7 +747,7 @@ int LinearScan::BuildNode(GenTree* tree)
+                     {
+                         // Need no internal registers
+                     }
+-                    else if (!m_compiler->info.compInitMem)
++                    else if (!m_compiler->info.compInitLocalloc)
+                     {
+                         // No need to initialize allocated stack space.
+                         if (sizeVal < m_compiler->eeGetPageSize())
+@@ -768,7 +768,7 @@ int LinearScan::BuildNode(GenTree* tree)
+             else
+             {
+                 srcCount = 1;
+-                if (!m_compiler->info.compInitMem)
++                if (!m_compiler->info.compInitLocalloc)
+                 {
+                     buildInternalIntRegisterDefForNode(tree);
+                     buildInternalIntRegisterDefForNode(tree);
 diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
 index 8a3d9ebb46a..b9eef666fd1 100644
 --- a/src/coreclr/jit/morph.cpp
