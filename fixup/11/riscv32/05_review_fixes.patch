@@ -352,6 +352,26 @@ index 863cad6c6..99609477a 100644
                          return 4;
                      default:
                          return 1;
+diff --git a/src/native/external/zlib-ng/functable.c b/src/native/external/zlib-ng/functable.c
+index 3cee95bff..46d7585cb 100644
+--- a/src/native/external/zlib-ng/functable.c
++++ b/src/native/external/zlib-ng/functable.c
+@@ -14,8 +14,14 @@
+ #include "cpu_features.h"
+ #include "arch_functions.h"
+ 
++/* The riscv32 target of the NativeAOT runtime is a single-hart RV32IM guest
++ * that has no fence instruction: a compiler barrier orders the stores. */
++#if defined(__riscv) && __riscv_xlen == 32
++#  define FUNCTABLE_ASSIGN(VAR, FUNC_NAME) \
++    *((void * volatile *)&(functable.FUNC_NAME)) = (void *)(VAR.FUNC_NAME)
++#  define FUNCTABLE_BARRIER() __atomic_signal_fence(__ATOMIC_SEQ_CST)
+ /* Platform has pointer size atomic store */
+-#if defined(__GNUC__) || defined(__clang__)
++#elif defined(__GNUC__) || defined(__clang__)
+ #  define FUNCTABLE_ASSIGN(VAR, FUNC_NAME) \
+     __atomic_store(&(functable.FUNC_NAME), &(VAR.FUNC_NAME), __ATOMIC_SEQ_CST)
+ #  define FUNCTABLE_BARRIER() __atomic_thread_fence(__ATOMIC_SEQ_CST)
 diff --git a/src/native/libs/CMakeLists.txt b/src/native/libs/CMakeLists.txt
 index be620230d..c045408fb 100644
 --- a/src/native/libs/CMakeLists.txt
