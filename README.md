@@ -112,6 +112,13 @@ C extension (`check_ilp32.sh`, the counterpart of `check_lp64.sh`), or that
 carries a compressed, atomic or fence instruction (`tools/isa_scan.py`). The
 run job checks that the ILCompiler of the package has the RiscV32 target.
 
+`python3 tests/run-riscv32-abi.py` checks scalar and aggregate arguments at the
+register/stack boundary in both directions between native and managed code,
+with and without optimization, on the Airbender simulator. Set `BFLAT` to the
+bflat built against this target, `AIRBENDER_LIB` to the libairbender manifest
+and `AIRBENDER_CLI` to the Airbender CLI; clang must support RV32IM/ilp32
+(`CC` overrides it).
+
 ## License
 
 All third-party patches belong to their corresponding authors. Nethermind's own patches and scripts are licensed under MIT license.
