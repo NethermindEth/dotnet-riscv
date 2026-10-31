@@ -18,6 +18,12 @@ guid_file="${runtime_dir}/src/coreclr/inc/jiteeversionguid.h"
 
 # nethermind riscv64 soft-float series
 new="d7f4b1a0-6c92-4e58-9b3d-0a17c5e2f846"
+# The riscv32 fixups (RISCV32=1 of patch_runtime.sh) change the contract again
+# (CORINFO_ARCH_RISCV32, the RISC-V instruction sets), so a JIT and an
+# ILCompiler of which only one has them must refuse each other.
+if [ "${RISCV32:-0}" = "1" ] ; then
+    new="5b2e9c47-0d3a-4f81-a6c5-3e8d19b7f024"
+fi
 IFS='-' read -r p1 p2 p3 p4 p5 <<< "$new"
 b="{0x${p4:0:2}, 0x${p4:2:2}, 0x${p5:0:2}, 0x${p5:2:2}, 0x${p5:4:2}, 0x${p5:6:2}, 0x${p5:8:2}, 0x${p5:10:2}}"
 
