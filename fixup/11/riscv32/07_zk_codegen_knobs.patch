@@ -819,7 +819,7 @@ index c5b6c9ad097..01168c8bcdf 100644
                      buildInternalIntRegisterDefForNode(tree);
                      buildInternalIntRegisterDefForNode(tree);
 diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
-index 8a3d9ebb46a..b9eef666fd1 100644
+index 8a3d9ebb46a..32e64655f2e 100644
 --- a/src/coreclr/jit/morph.cpp
 +++ b/src/coreclr/jit/morph.cpp
 @@ -901,6 +901,16 @@ GenTree* Compiler::fgMorphExpandCast(GenTreeCast* tree)
@@ -839,6 +839,24 @@ index 8a3d9ebb46a..b9eef666fd1 100644
      else if (varTypeIsGC(srcType) != varTypeIsGC(dstType))
      {
          // We are casting away GC information.  we would like to just
+@@ -8233,6 +8243,17 @@ GenTree* Compiler::fgMorphSmpOp(GenTree* tree, bool* optAssertionPropDone)
+ #if !defined(TARGET_64BIT) && !defined(TARGET_WASM)
+             if (typ == TYP_LONG)
+             {
++                // A long shift decomposes inline; the division helper is a call.
++                if (op2->IsIntegralConstUnsignedPow2() && (op2->AsIntConCommon()->UnsignedIntegralValue() > 1))
++                {
++                    unsigned shift = genLog2((uint64_t)op2->AsIntConCommon()->UnsignedIntegralValue());
++                    JITDUMP("\nMorphing long UDIV [%06u] by 2^%u to RSZ\n", dspTreeID(tree), shift);
++                    DEBUG_DESTROY_NODE(op2);
++                    tree->ChangeOper(GT_RSZ);
++                    tree->AsOp()->gtOp2 = gtNewIconNode(shift, TYP_INT);
++                    return fgMorphSmpOp(tree);
++                }
++
+                 helper = CORINFO_HELP_ULDIV;
+                 goto USE_HELPER_FOR_ARITH;
+             }
 diff --git a/src/coreclr/jit/optcse.cpp b/src/coreclr/jit/optcse.cpp
 index 3dffbec5fcf..90ec27f8fba 100644
 --- a/src/coreclr/jit/optcse.cpp
