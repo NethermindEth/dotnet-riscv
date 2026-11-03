@@ -13,6 +13,7 @@
 set -euo pipefail
 
 export TOP_DIR="$(cd "$(dirname "$(which "$0")")" ; pwd -P)"
+. "${TOP_DIR}/fetch_musl.sh"
 
 # Where to install the rebuilt libc.a + crt objects (an Alpine musl rootfs lib
 # dir, e.g. .../riscv64-musl/usr/lib). Required.
@@ -78,8 +79,10 @@ pkgver="$(sed -n 's/^pkgver=//p' "$aport/APKBUILD")"
 echo "Alpine musl pkgver: $pkgver"
 
 # --- 2. fetch the exact upstream tarball the aport pins ----------------------
-curl -sSL "https://musl.libc.org/releases/musl-$pkgver.tar.gz" \
-    -o "$work/musl.tar.gz"
+# The aport's sha512sums holds the hash of the tarball.
+sha512="$(awk -v f="musl-$pkgver.tar.gz" '{ sub(/^sha512sums="/, "", $1); sub(/"$/, "", $2) } $2 == f { print $1 }' "$aport/APKBUILD")"
+[ -n "$sha512" ] || { echo "$aport/APKBUILD has no sha512 of musl-$pkgver.tar.gz" >&2; exit 1; }
+fetch_musl "$pkgver" "$work/musl.tar.gz" 512 "$sha512"
 tar xzf "$work/musl.tar.gz" -C "$work"
 src="$work/musl-$pkgver"
 
