@@ -16,7 +16,15 @@ Nethermind stateless guest on SP1 (sp1-runner v6.9.0), outputs identical:
   block 26279465: 527,074,561 -> 526,681,175 cycles (-0.07%), gas -0.06%
   block 26279480: 319,858,795 -> 319,282,123 cycles (-0.18%), gas -0.10%
 On 26279462 the executed alignment tests go from 1.19M to 1.05M.
-Only builds with JitRiscV64StrictAlign change.
+With riscv32 patch 07, this also affects trusted-alignment builds (JitRiscV64StrictAlign=0
+and JitNoUnalignedAccess=1), including Airbender: proven-aligned accesses flagged unaligned
+no longer need byte-wise expansion. Builds with JitNoUnalignedAccess=0 are unaffected.
+
+Airbender, main 69b95a9 with and without this patch, identical outputs and public digests:
+  block 11957686: 658,571,499 -> 658,227,238 cycles (-0.052%)
+  block 11962427: 401,436,577 -> 401,291,202 cycles (-0.036%)
+  block 25532382: 463,991,664 -> 463,787,476 cycles (-0.044%)
+ROM: 4,175,168 -> 4,062,432 bytes (-2.70%). See the FastPath README for the build setup.
 
 diff --git a/src/coreclr/jit/lowerriscv64.cpp b/src/coreclr/jit/lowerriscv64.cpp
 --- a/src/coreclr/jit/lowerriscv64.cpp

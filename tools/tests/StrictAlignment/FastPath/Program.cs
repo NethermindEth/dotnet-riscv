@@ -220,17 +220,22 @@ static unsafe class Program
             Check(SpanChosen(at, true), Expected(at, 8) ^ Expected(at + 8, 8));
             Check(SpanReturned(at), Expected(at, 8) * 3 + Expected(at + 8, 8));
             Check(SpanCopied(at), Expected(at, 8) - Expected(64, 8) + Expected(at + 8, 4));
+            Check(SpanParameter(Buffer.AsSpan(at, 16)), Expected(at, 8) ^ Expected(at + 8, 8));
+            Check(SpanAddressed(at), Expected(at, 8) ^ Expected(at + 8, 8));
             for (int count = 0; count <= 3; count++)
             {
                 ulong sliced = 0;
                 for (int i = 0; i < count; i++)
                     sliced += Expected(64 + i * misalignment, 8) ^ Expected(64 + i * misalignment + 8, 8);
                 Check(SpanSliced(misalignment, count), sliced);
-                ulong odd = 0;
-                for (int i = 0; i < count; i++)
-                    odd += Expected(64 + i * 3, 8);
-                Check(SpanSlicedOdd(count), odd);
             }
+        }
+        for (int count = 0; count <= 3; count++)
+        {
+            ulong odd = 0;
+            for (int i = 0; i < count; i++)
+                odd += Expected(64 + i * 3, 8);
+            Check(SpanSlicedOdd(count), odd);
         }
         return 0;
     }
@@ -601,6 +606,26 @@ static unsafe class Program
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     static Span<byte> MakeSpan(int at) => Buffer.AsSpan(at, 16);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static ulong SpanParameter(Span<byte> span)
+    {
+        ref byte p = ref MemoryMarshal.GetReference(span);
+        return Read64(ref p, 0) ^ Read64(ref p, 8);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void ReplaceSpan(ref Span<byte> span, int at) => span = Buffer.AsSpan(at, 16);
+
+    // The call replaces an initially aligned reference through the parent's address.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static ulong SpanAddressed(int at)
+    {
+        Span<byte> span = Buffer.AsSpan(64, 16);
+        ReplaceSpan(ref span, at);
+        ref byte p = ref MemoryMarshal.GetReference(span);
+        return Read64(ref p, 0) ^ Read64(ref p, 8);
+    }
 
     // A call returns the span into the struct as a whole, so its fields are not stored one by one.
     [MethodImpl(MethodImplOptions.NoInlining)]
