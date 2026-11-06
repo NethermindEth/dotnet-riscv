@@ -1,0 +1,63 @@
+diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
+index ac40fdfd8f0..5974aa14e12 100644
+--- a/src/coreclr/jit/lower.cpp
++++ b/src/coreclr/jit/lower.cpp
+@@ -13152,7 +13152,11 @@ bool Lowering::TryTransformStoreObjAsStoreInd(GenTreeBlk* blkNode)
+     }
+ 
+     JITDUMP("Replacing STORE_BLK with STOREIND for [%06u]\n", blkNode->gtTreeID);
++    // ChangeOper keeps only the common flags, and an unaligned block store must stay unaligned: a target without
++    // unaligned access (JitNoUnalignedAccess) expands the scalar store as it does the load it copies.
++    const GenTreeFlags unaligned = blkNode->gtFlags & GTF_IND_UNALIGNED;
+     blkNode->ChangeOper(GT_STOREIND);
++    blkNode->gtFlags |= unaligned;
+     blkNode->ChangeType(regType);
+ 
+ #if defined(TARGET_XARCH)
+diff --git a/src/coreclr/nativeaot/System.Private.CoreLib/src/System/Enum.NativeAot.cs b/src/coreclr/nativeaot/System.Private.CoreLib/src/System/Enum.NativeAot.cs
+index 1db97d09db0..03c616a3277 100644
+--- a/src/coreclr/nativeaot/System.Private.CoreLib/src/System/Enum.NativeAot.cs
++++ b/src/coreclr/nativeaot/System.Private.CoreLib/src/System/Enum.NativeAot.cs
+@@ -25,6 +25,8 @@ internal static EnumInfo GetEnumInfo(RuntimeType enumType, bool getNames = true)
+         {
+             Debug.Assert(enumType != null);
+             Debug.Assert(enumType.IsEnum);
++            if (Internal.Reflection.Core.Execution.ReflectionCoreExecution.ExecutionEnvironment is null)
++                return GetNamelessEnumInfo(enumType);
+             var runtimeTypeInfo = enumType.GetRuntimeTypeInfo();
+             if (runtimeTypeInfo.GenericCache is EnumInfo info)
+                 return info;
+@@ -42,6 +44,8 @@ internal static EnumInfo<TStorage> GetEnumInfo<TStorage>(RuntimeType enumType, b
+                 typeof(TStorage) == typeof(uint) ||
+                 typeof(TStorage) == typeof(ulong));
+ 
++            if (Internal.Reflection.Core.Execution.ReflectionCoreExecution.ExecutionEnvironment is null)
++                return (EnumInfo<TStorage>)GetNamelessEnumInfo(enumType);
+             var runtimeTypeInfo = enumType.GetRuntimeTypeInfo();
+             if (runtimeTypeInfo.GenericCache is EnumInfo<TStorage> info)
+                 return info;
+@@ -49,6 +53,24 @@ internal static EnumInfo<TStorage> GetEnumInfo<TStorage>(RuntimeType enumType, b
+         }
+ #pragma warning restore
+ 
++        // A build without the reflection execution domain (bflat --no-reflection) has no enum metadata: describe the
++        // enum by its underlying type alone, so formatting falls back to the numeric value instead of failing fast.
++        private static EnumInfo GetNamelessEnumInfo(RuntimeType enumType) => InternalGetCorElementType(enumType) switch
++        {
++            CorElementType.ELEMENT_TYPE_I1 => new EnumInfo<byte>(typeof(sbyte), [], [], false),
++            CorElementType.ELEMENT_TYPE_U1 => new EnumInfo<byte>(typeof(byte), [], [], false),
++            CorElementType.ELEMENT_TYPE_BOOLEAN => new EnumInfo<byte>(typeof(bool), [], [], false),
++            CorElementType.ELEMENT_TYPE_I2 => new EnumInfo<ushort>(typeof(short), [], [], false),
++            CorElementType.ELEMENT_TYPE_U2 => new EnumInfo<ushort>(typeof(ushort), [], [], false),
++            CorElementType.ELEMENT_TYPE_CHAR => new EnumInfo<ushort>(typeof(char), [], [], false),
++            CorElementType.ELEMENT_TYPE_I4 => new EnumInfo<uint>(typeof(int), [], [], false),
++            CorElementType.ELEMENT_TYPE_U4 => new EnumInfo<uint>(typeof(uint), [], [], false),
++            CorElementType.ELEMENT_TYPE_I8 => new EnumInfo<ulong>(typeof(long), [], [], false),
++            CorElementType.ELEMENT_TYPE_U8 => new EnumInfo<ulong>(typeof(ulong), [], [], false),
++            CorElementType.ELEMENT_TYPE_I => IntPtr.Size == 8 ? new EnumInfo<ulong>(typeof(nint), [], [], false) : new EnumInfo<uint>(typeof(nint), [], [], false),
++            _ => IntPtr.Size == 8 ? new EnumInfo<ulong>(typeof(nuint), [], [], false) : new EnumInfo<uint>(typeof(nuint), [], [], false),
++        };
++
+         internal static unsafe object ToObject(MethodTable* mt, long value)
+             => InternalBoxEnum(new RuntimeTypeHandle(mt), value);
+ 

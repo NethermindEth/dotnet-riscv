@@ -86,6 +86,28 @@ pushd "$runtime_dir"
     done
 popd
 
+# RISCV32=1 adds the RV32IM target (the ZKsync Airbender zkVM): riscv_family_jit.sh
+# makes the JIT's RISC-V code serve both widths, then fixup/<major>/riscv32 adds
+# riscv32 to the JIT, ILC and NativeAOT runtime. Those patches are written against
+# the upstream-perf series with the rename applied.
+if [ "${RISCV32:-0}" = "1" ] ; then
+    if [ "$profile" != "upstream-perf" ] ; then
+        echo "RISCV32=1 needs the upstream-perf profile, which the riscv32 patches are written against" >&2
+        exit 1
+    fi
+    "${TOP_DIR}/riscv_family_jit.sh" "$runtime_dir"
+    pushd "$runtime_dir"
+        for file in $(ls ${TOP_DIR}/fixup/$major/riscv32/*.patch | xargs) ; do
+            echo Applying $file
+            patch -p1 < $file
+            if [ "$?" != "0" ] ; then
+                echo Failed to apply patch $file >&2
+                exit 1
+            fi
+        done
+    popd
+fi
+
 # The patches add JIT helpers and a JIT flag, so the JIT/EE contract differs from
 # what upstream shipped and the GUID has to be rewritten. It is not done in a
 # patch: a patch names the old value, and upstream rolls that value constantly,

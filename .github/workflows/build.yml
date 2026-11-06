@@ -26,6 +26,10 @@ on:
         description: 'build the native runtime for the lp64/rv64im soft-float target (needs the custom Alpine rootfs)'
         type: boolean
         default: true
+      riscv32:
+        description: 'with the upstream-perf profile: also apply the riscv32 (RV32IM ilp32) fixups, so that the ILCompiler has the RiscV32 target, and build and release the riscv32 target; other profiles have no riscv32'
+        type: boolean
+        default: true
       runtime_tests:
         description: 'also build the dotnet/runtime tests (Checked) and run them under qemu-user, in separate jobs; soft_float_abi runs the NativeAOT ones only'
         type: boolean
@@ -103,7 +107,9 @@ jobs:
         if [ "${{ inputs.soft_float_abi }}" = "true" ] ; then
           ./patch_alpine.sh
         fi
-        ./patch_runtime.sh ${{ inputs.profile }}
+        # RISCV32=1 also gives the ILCompiler of the bflat.compiler package the
+        # RiscV32 target; patch_runtime.sh refuses it with another profile.
+        RISCV32=${{ (inputs.riscv32 && inputs.profile == 'upstream-perf') && '1' || '0' }} ./patch_runtime.sh ${{ inputs.profile }}
         # The toolchain hunk has to reach every copy of eng/common in the VMR,
         # not just the one under src/runtime - see patch_vmr_toolchain.sh.
         if [ "${{ inputs.soft_float_abi }}" = "true" ] ; then
@@ -262,6 +268,18 @@ jobs:
         fi
         sudo $abi_env ./08_pack_bflat_compiler_nupkg.sh
 
+    - name: Check the RiscV32 target of the ILCompiler
+      # The riscv32 target of bflat has its JIT and runtime from the
+      # runtime-riscv32 job, and its ILCompiler from this package.
+      if: ${{ ! inputs.whole_source && inputs.riscv32 && inputs.profile == 'upstream-perf' }}
+      run: |
+        cd ${{ github.workspace }}
+        nupkg=output/bflat-compiler-nupkg/bflat.compiler.10.0.0.nupkg
+        dll="$(unzip -Z1 "$nupkg" | grep '/ILCompiler.TypeSystem.dll$' | head -n1)"
+        [ -n "$dll" ] || { echo "$nupkg has no ILCompiler.TypeSystem.dll" >&2 ; exit 1 ; }
+        unzip -p "$nupkg" "$dll" | grep -aq RiscV32 || { echo "the ILCompiler of $nupkg has no RiscV32 target" >&2 ; exit 1 ; }
+        echo "$dll has the RiscV32 target"
+
     - name: Pack bflat-compiler-native-linux
       if: ${{ ! inputs.whole_source }}
       run: |
@@ -409,7 +427,10 @@ jobs:
     - name: Clone and patch dotnet/runtime
       run: |
         cd ${{ github.workspace }}
-        ./runtime_tests.sh source "${{ inputs.fork }}" "${{ inputs.branch }}" "${{ inputs.profile }}"
+        # The fixups of the run job, the riscv32 ones included: the x64 JIT
+        # must agree with the ILCompiler of the bflat.compiler package.
+        RISCV32=${{ (inputs.riscv32 && inputs.profile == 'upstream-perf') && '1' || '0' }} \
+          ./runtime_tests.sh source "${{ inputs.fork }}" "${{ inputs.branch }}" "${{ inputs.profile }}"
 
     - name: Build the x64 JIT and NativeAOT runtime
       run: |
@@ -456,11 +477,101 @@ jobs:
         path: ${{ runner.temp }}/hashes/bflat-signature.sha256
         if-no-files-found: error
 
+  # The riscv32 target of bflat (the ZKsync Airbender guest): the riscv32
+  # cross JIT, the riscv32 NativeAOT runtime with the framework libraries,
+  # and the rv32im musl sysroot. They are built from dotnet/runtime at the
+  # commit that the VMR pins, with the same fixups (riscv32 ones included)
+  # and JIT/EE GUID, so they agree with the ILCompiler of the bflat.compiler
+  # package of the run job, as the linux-x64 target does. skip_sdk runs it
+  # without the SDK build.
+  runtime-riscv32:
+    if: ${{ inputs.riscv32 && inputs.profile == 'upstream-perf' }}
+    name: bflat riscv32 target
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    steps:
+
+    - name: Maximize build space
+      uses: AdityaGarg8/remove-unwanted-software@v4.1
+      with:
+        remove-dotnet: 'true'
+        remove-android: 'true'
+        remove-haskell: 'true'
+        remove-codeql: 'true'
+        remove-cached-tools: 'true'
+
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Clone and patch dotnet/runtime
+      run: |
+        cd ${{ github.workspace }}
+        RISCV32=1 ./runtime_tests.sh source "${{ inputs.fork }}" "${{ inputs.branch }}" "${{ inputs.profile }}"
+
+    - name: Build the sysroot, the compiler and the riscv32 runtime
+      run: |
+        cd ${{ github.workspace }}
+        ./12_build_runtime_riscv32.sh
+
+    - name: Pack the riscv32 target
+      run: |
+        cd ${{ github.workspace }}
+        ./13_pack_riscv32.sh
+
+    - name: Upload the riscv32 libraries on failure
+      # To look at what the ISA scan of 13_pack_riscv32.sh refused without a rebuild.
+      if: ${{ failure() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: bflat-riscv32-libs-failed
+        path: ${{ github.workspace }}/output/riscv32/libs
+        if-no-files-found: ignore
+
+    - name: Upload the riscv32 target
+      uses: actions/upload-artifact@v4
+      with:
+        name: bflat-linux-musl-riscv32
+        path: |
+          ${{ github.workspace }}/output/riscv32/bflat-compiler-native-riscv32-linux-glibc-x64.zip
+          ${{ github.workspace }}/output/riscv32/bflat-libs-linux-musl-riscv32.zip
+          ${{ github.workspace }}/output/riscv32/libs-linux-musl-riscv32.zip
+          ${{ github.workspace }}/output/riscv32/crossrootfs-musl-riscv32.tar.xz
+        if-no-files-found: error
+
+    - name: List the release assets
+      if: ${{ ! inputs.skip_sdk && inputs.release }}
+      run: |
+        cd ${{ github.workspace }}
+        release="${{ runner.temp }}/release"
+        mkdir -p "$release"
+        cp output/riscv32/*.zip output/riscv32/*.tar.xz "$release/"
+        python3 tools/sign_package.py list-files "${{ runner.temp }}/hashes" "$release"/*
+
+    - name: Upload the release assets
+      if: ${{ ! inputs.skip_sdk && inputs.release }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-assets-riscv32
+        path: ${{ runner.temp }}/release/
+        if-no-files-found: error
+
+    - name: Upload the hashes of the release assets
+      if: ${{ ! inputs.skip_sdk && inputs.release }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: bflat-hashes-riscv32
+        path: ${{ runner.temp }}/hashes/bflat-signature.sha256
+        if-no-files-found: error
+
   # One list for the whole release: each job that makes release assets
   # uploads the hashes of its assets as bflat-hashes-<name>.
+  # runtime-riscv32 runs only with the upstream-perf profile: the list takes
+  # its hashes when it ran, and waits for it to succeed then.
   list:
-    if: ${{ ! inputs.skip_sdk && inputs.release }}
-    needs: [run, runtime-x64]
+    if: ${{ !cancelled() && ! inputs.skip_sdk && inputs.release && needs.run.result == 'success' && needs.runtime-x64.result == 'success' && (needs.runtime-riscv32.result == 'success' || needs.runtime-riscv32.result == 'skipped') }}
+    needs: [run, runtime-x64, runtime-riscv32]
     runs-on: ubuntu-24.04
     steps:
     - name: Checkout repository
@@ -604,7 +715,9 @@ jobs:
     - name: Clone and patch dotnet/runtime
       run: |
         cd ${{ github.workspace }}
-        PATCH_MAX="${{ inputs.patch_max }}" ./runtime_tests.sh source "${{ inputs.fork }}" "${{ inputs.branch }}" "${{ inputs.profile }}"
+        # The fixups of the release, the riscv32 ones included.
+        RISCV32=${{ (inputs.riscv32 && inputs.profile == 'upstream-perf') && '1' || '0' }} \
+          PATCH_MAX="${{ inputs.patch_max }}" ./runtime_tests.sh source "${{ inputs.fork }}" "${{ inputs.branch }}" "${{ inputs.profile }}"
 
     - name: Build rootfs
       run: |

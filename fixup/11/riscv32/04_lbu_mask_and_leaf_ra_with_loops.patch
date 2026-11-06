@@ -1,0 +1,34 @@
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+index 98aeb9e2f16..0644f4c28e8 100644
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -7547,7 +7547,7 @@ void CodeGen::genComputeLeafRaElision()
+ 
+     if (m_compiler->compUsesThrowHelper || m_compiler->ehAnyFunclets() || m_compiler->compLocallocUsed ||
+         m_compiler->info.compIsVarArgs || m_compiler->opts.IsOSR() || m_compiler->opts.MinOpts() ||
+-        m_compiler->fgHasLoops || m_compiler->compIsProfilerHookNeeded() ||
++        m_compiler->compIsProfilerHookNeeded() ||
+         // zkVM: this is a soft-float target (FP disabled); float/double arithmetic and
+         // FP casts lower to HELPER CALLS in the backend with no GT_CALL node in the LIR
+         // scan below, so an FP method is not really a leaf - eliding its RA save lets the
+diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
+index a84499baf7b..d36a3f3769e 100644
+--- a/src/coreclr/jit/emitriscv64.cpp
++++ b/src/coreclr/jit/emitriscv64.cpp
+@@ -839,6 +839,16 @@ void emitter::emitIns_R_R(
+ void emitter::emitIns_R_R_I(
+     instruction ins, emitAttr attr, regNumber reg1, regNumber reg2, ssize_t imm, insOpts opt /* = INS_OPTS_NONE */)
+ {
++    // zkVM/RISC-V CQ: drop an in-place `andi rd,rd,0xff` right after `lbu rd`: the load already
++    // zero-extends the byte, so the mask changes nothing. Casts of a byte read that the importer did
++    // not fold reach here as such a pair. Conservative: the load must be the immediately-preceding
++    // instruction in the same group, writing the same register.
++    if ((ins == INS_andi) && (imm == 0xff) && (reg1 == reg2) && (emitLastIns != nullptr) &&
++        (emitLastInsIG == emitCurIG) && (emitLastIns->idIns() == INS_lbu) && (emitLastIns->idReg1() == reg2))
++    {
++        return;
++    }
++
+     // zkVM/RISCV64 CQ: fold a .NET array-element header offset into this load.
+     // genCodeForIndexAddr emits `<rD = base+index*scale>; addi rD,rD,elemOffset`,
+     // and the consuming GT_IND then loads `lX rT,0(rD)`. When the load reuses the
