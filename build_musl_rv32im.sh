@@ -13,6 +13,7 @@
 set -euo pipefail
 
 export TOP_DIR="$(cd "$(dirname "$0")" ; pwd -P)"
+. "${TOP_DIR}/fetch_musl.sh"
 
 sysroot="${1:?usage: build_musl_rv32im.sh <sysroot-dir>}"
 
@@ -26,9 +27,7 @@ cflags="--target=riscv32-unknown-linux-musl -march=rv32im -mabi=ilp32 -mno-relax
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-curl -fsSL "https://musl.libc.org/releases/musl-$version.tar.gz" -o "$work/musl.tar.gz"
-actual="$(sha256sum "$work/musl.tar.gz" 2>/dev/null || shasum -a 256 "$work/musl.tar.gz")"
-[ "${actual%% *}" = "$sha256" ] || { echo "musl-$version.tar.gz: sha256 ${actual%% *}, expected $sha256" >&2; exit 1; }
+fetch_musl "$version" "$work/musl.tar.gz" 256 "$sha256"
 tar xzf "$work/musl.tar.gz" -C "$work"
 src="$work/musl-$version"
 
