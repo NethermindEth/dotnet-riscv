@@ -1,0 +1,158 @@
+NativeAOT: leave the GC info out of the LSDA for a GC that never scans a stack (IlcZkNoGcInfo)
+
+Every managed method's LSDA in .dotnet_eh_table carries the method's GC info after the flags and the
+associated data and EH info pointers. Only a stack scan of the GC reads it (EnumGcRefs, IsSafePoint,
+return address hijacking), and the unwind of a reverse P/Invoke frame. A zkVM guest links a GC that
+never collects (uGC zero), so the tables an exception needs are mostly GC info no one reads: on the
+Nethermind Airbender guest .dotnet_eh_table is 182,220 bytes, 161,000 of them GC info, and the unwind
+tables do not fit in the 4 MiB ROM next to the code.
+
+The backend option IlcZkNoGcInfo=1 (default: unchanged) sets ObjectWritingOptions.OmitGcInfo: the
+main LSDA of a method that is not a reverse P/Invoke ends after its pointers. The LSDA cache compares
+LSDAs by what is emitted, so the many methods that now differ only by their GC info share one blob.
+The compiler reads the option itself; the JIT does not know the name. A guest turns it on with the
+JIT options that rely on the same fact (JitZkNoGcMustInit).
+
+Only valid when no stack is ever scanned: a GC that reads a frame would decode the bytes that follow.
+
+Checked on the Nethermind Airbender guest with the same change made after the link (bflat patch_elf):
+.dotnet_eh_table 182,220 -> 4,877 bytes together with dropping frameless leaf FDEs; blocks 11957686,
+11962410, 25526356 give the same digests; exception tests (caught exception with finally, checked
+conversions, gvm suite) pass.
+
+diff --git a/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWritingOptions.cs b/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWritingOptions.cs
+index 7e9f4e61f..9aa58d121 100644
+--- a/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWritingOptions.cs
++++ b/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWritingOptions.cs
+@@ -17,5 +17,10 @@ public enum ObjectWritingOptions
+         /// RISC-V: the target supports the C (compressed instructions) extension
+         /// </summary>
+         RiscV64Compressed = 0x10,
++        /// <summary>
++        /// Leave the GC info out of the LSDA of a method that is not a reverse P/Invoke: for a GC
++        /// that never scans a stack, which is the only reader of it
++        /// </summary>
++        OmitGcInfo = 0x20,
+     }
+ }
+diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/UnixObjectWriter.Aot.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/UnixObjectWriter.Aot.cs
+index 85ecb3d0b..64f0f610e 100644
+--- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/UnixObjectWriter.Aot.cs
++++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/UnixObjectWriter.Aot.cs
+@@ -107,25 +107,40 @@ private protected void EmitLsda(
+                     lsdaSectionWriter.EmitSymbolReference(RelocType.IMAGE_REL_BASED_RELPTR32, symbolName, 0);
+                 }
+ 
+-                if (nodeWithCodeInfo.GCInfo is not null)
++                byte[] gcInfo = GcInfoToEmit(nodeWithCodeInfo, _options.HasFlag(ObjectWritingOptions.OmitGcInfo));
++                if (gcInfo is not null)
+                 {
+-                    lsdaSectionWriter.Write(nodeWithCodeInfo.GCInfo);
++                    lsdaSectionWriter.Write(gcInfo);
+                 }
+             }
+         }
+ 
++        // The GC info of the main LSDA. With OmitGcInfo, only a reverse P/Invoke method keeps it:
++        // its unwind reads the frame from it (UnixNativeCodeManager::UnwindStackFrame). The rest is
++        // read only to report a frame to the GC (EnumGcRefs) or to find a safe point (IsSafePoint,
++        // return address hijacking), which a GC that never scans a stack does not do. The dispatch
++        // of an exception reads the flags and the pointers before it.
++        private static byte[] GcInfoToEmit(INodeWithCodeInfo nodeWithCodeInfo, bool omitGcInfo)
++        {
++            if (omitGcInfo && (nodeWithCodeInfo.FrameInfos[0].Flags & FrameInfoFlags.ReversePInvoke) == 0)
++                return null;
++            return nodeWithCodeInfo.GCInfo;
++        }
++
+         private sealed class LsdaCache
+         {
+             private sealed class LsdaComparer : IEqualityComparer<INodeWithCodeInfo>
+             {
+-                public static readonly LsdaComparer Instance = new LsdaComparer();
++                private readonly bool _omitGcInfo;
++
++                public LsdaComparer(bool omitGcInfo) => _omitGcInfo = omitGcInfo;
+ 
+                 public bool Equals(INodeWithCodeInfo x, INodeWithCodeInfo y)
+                 {
+                     Debug.Assert(IsCacheable(x));
+                     Debug.Assert(IsCacheable(y));
+-                    ReadOnlySpan<byte> xGc = x.GCInfo;
+-                    ReadOnlySpan<byte> yGc = y.GCInfo;
++                    ReadOnlySpan<byte> xGc = GcInfoToEmit(x, _omitGcInfo);
++                    ReadOnlySpan<byte> yGc = GcInfoToEmit(y, _omitGcInfo);
+                     if (!xGc.SequenceEqual(yGc))
+                         return false;
+ 
+@@ -138,14 +153,17 @@ public int GetHashCode(INodeWithCodeInfo obj)
+                 {
+                     Debug.Assert(IsCacheable(obj));
+                     HashCode hash = default;
+-                    hash.AddBytes(obj.GCInfo);
++                    hash.AddBytes(GcInfoToEmit(obj, _omitGcInfo));
+                     foreach (FrameInfo f in obj.FrameInfos)
+                         hash.Add(f.GetHashCode());
+                     return hash.ToHashCode();
+                 }
+             }
+ 
+-            private Dictionary<INodeWithCodeInfo, Utf8String[]> _lsdas = new Dictionary<INodeWithCodeInfo, Utf8String[]>(LsdaComparer.Instance);
++            private readonly Dictionary<INodeWithCodeInfo, Utf8String[]> _lsdas;
++
++            public LsdaCache(bool omitGcInfo)
++                => _lsdas = new Dictionary<INodeWithCodeInfo, Utf8String[]>(new LsdaComparer(omitGcInfo));
+ 
+             public static bool IsCacheable(INodeWithCodeInfo nodeWithCodeInfo)
+                 => nodeWithCodeInfo.EHInfo == null && !MethodAssociatedDataNode.MethodHasAssociatedData((IMethodNode)nodeWithCodeInfo);
+@@ -163,7 +181,8 @@ public void AddLsdaToCache(INodeWithCodeInfo nodeWithCodeInfo, Utf8String[] symb
+             }
+         }
+ 
+-        private readonly LsdaCache _lsdaCache = new LsdaCache();
++        private LsdaCache _lsdaCacheInstance;
++        private LsdaCache _lsdaCache => _lsdaCacheInstance ??= new LsdaCache(_options.HasFlag(ObjectWritingOptions.OmitGcInfo));
+ 
+         private protected override void EmitUnwindInfo(
+             SectionWriter sectionWriter,
+diff --git a/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs b/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs
+index 543bc1d98..29e2e6012 100644
+--- a/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs
++++ b/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilation.cs
+@@ -140,6 +140,9 @@ protected override void CompileInternal(string outputFile, ObjectDumper dumper)
+                 && InstructionSetSupport.IsInstructionSetSupported(InstructionSet.RiscV64_C))
+                 options |= ObjectWritingOptions.RiscV64Compressed;
+ 
++            if ((_compilationOptions & RyuJitCompilationOptions.OmitGcInfo) != 0)
++                options |= ObjectWritingOptions.OmitGcInfo;
++
+             ObjectWriter.ObjectWriter.EmitObject(outputFile, nodes, NodeFactory, options, dumper, _logger);
+         }
+ 
+@@ -261,5 +264,6 @@ public enum RyuJitCompilationOptions
+         ControlFlowGuardAnnotations = 0x1,
+         UseDwarf5 = 0x2,
+         UseResilience = 0x4,
++        OmitGcInfo = 0x8,
+     }
+ }
+diff --git a/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilationBuilder.cs b/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilationBuilder.cs
+index bbec77997..e156f6ec6 100644
+--- a/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilationBuilder.cs
++++ b/src/coreclr/tools/aot/ILCompiler.RyuJit/Compiler/RyuJitCompilationBuilder.cs
+@@ -136,6 +136,15 @@ public override ICompilation ToCompilation()
+             if (_resilient)
+                 options |= RyuJitCompilationOptions.UseResilience;
+ 
++            // IlcZkNoGcInfo=1: a backend option that the compiler reads itself, so the module that
++            // brings a GC which never scans a stack (a zkVM guest's uGC) turns it on next to the JIT
++            // options that rely on the same fact (JitZkNoGcMustInit). The JIT does not know the name.
++            foreach (KeyValuePair<string, string> option in _ryujitOptions)
++            {
++                if (option.Key == "IlcZkNoGcInfo" && option.Value == "1")
++                    options |= RyuJitCompilationOptions.OmitGcInfo;
++            }
++
+             MethodBodyDeduplicator methodBodyDeduplicator = _methodBodyFolding switch
+             {
+                 MethodBodyFoldingMode.Generic => new MethodBodyDeduplicator(genericsOnly: true),
