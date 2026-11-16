@@ -14,7 +14,7 @@ on:
         type: string
         default: release/10.0.1xx
       release:
-        description: 'publish release'
+        description: 'publish release (the assets are signed either way)'
         type: boolean
         default: true
       profile:
@@ -362,7 +362,6 @@ jobs:
     # their SHA-256 hashes (docs/signing.md in bflat-riscv64). This job has
     # no key: the sign job signs the list.
     - name: Collect the release assets
-      if: ${{ inputs.release }}
       run: |
         cd ${{ github.workspace }}
         sudo rm -rf dotnet/src/runtime/artifacts
@@ -384,7 +383,6 @@ jobs:
         python3 tools/sign_package.py list-files "${{ runner.temp }}/hashes" "$release"/*
 
     - name: Upload the release assets
-      if: ${{ inputs.release }}
       uses: actions/upload-artifact@v4
       with:
         name: release-assets-riscv64
@@ -392,7 +390,6 @@ jobs:
         if-no-files-found: error
 
     - name: Upload the hashes of the release assets
-      if: ${{ inputs.release }}
       uses: actions/upload-artifact@v4
       with:
         name: bflat-hashes-riscv64
@@ -453,7 +450,6 @@ jobs:
         if-no-files-found: error
 
     - name: List the release assets
-      if: ${{ inputs.release }}
       run: |
         cd ${{ github.workspace }}
         release="${{ runner.temp }}/release"
@@ -462,7 +458,6 @@ jobs:
         python3 tools/sign_package.py list-files "${{ runner.temp }}/hashes" "$release"/*
 
     - name: Upload the release assets
-      if: ${{ inputs.release }}
       uses: actions/upload-artifact@v4
       with:
         name: release-assets-x64
@@ -470,7 +465,6 @@ jobs:
         if-no-files-found: error
 
     - name: Upload the hashes of the release assets
-      if: ${{ inputs.release }}
       uses: actions/upload-artifact@v4
       with:
         name: bflat-hashes-x64
@@ -541,7 +535,7 @@ jobs:
         if-no-files-found: error
 
     - name: List the release assets
-      if: ${{ ! inputs.skip_sdk && inputs.release }}
+      if: ${{ ! inputs.skip_sdk }}
       run: |
         cd ${{ github.workspace }}
         release="${{ runner.temp }}/release"
@@ -550,7 +544,7 @@ jobs:
         python3 tools/sign_package.py list-files "${{ runner.temp }}/hashes" "$release"/*
 
     - name: Upload the release assets
-      if: ${{ ! inputs.skip_sdk && inputs.release }}
+      if: ${{ ! inputs.skip_sdk }}
       uses: actions/upload-artifact@v4
       with:
         name: release-assets-riscv32
@@ -558,7 +552,7 @@ jobs:
         if-no-files-found: error
 
     - name: Upload the hashes of the release assets
-      if: ${{ ! inputs.skip_sdk && inputs.release }}
+      if: ${{ ! inputs.skip_sdk }}
       uses: actions/upload-artifact@v4
       with:
         name: bflat-hashes-riscv32
@@ -570,7 +564,7 @@ jobs:
   # runtime-riscv32 runs only with the upstream-perf profile: the list takes
   # its hashes when it ran, and waits for it to succeed then.
   list:
-    if: ${{ !cancelled() && ! inputs.skip_sdk && inputs.release && needs.run.result == 'success' && needs.runtime-x64.result == 'success' && (needs.runtime-riscv32.result == 'success' || needs.runtime-riscv32.result == 'skipped') }}
+    if: ${{ !cancelled() && ! inputs.skip_sdk && needs.run.result == 'success' && needs.runtime-x64.result == 'success' && (needs.runtime-riscv32.result == 'success' || needs.runtime-riscv32.result == 'skipped') }}
     needs: [run, runtime-x64, runtime-riscv32]
     runs-on: ubuntu-24.04
     steps:
@@ -604,7 +598,11 @@ jobs:
     secrets:
       BFLAT_SIGNING_KEY: ${{ secrets.BFLAT_SIGNING_KEY }}
 
+  # Every run is signed, with or without a release: bflat can then take the
+  # assets of a run that makes no release (RuntimeLocalDir) and still check
+  # them. Only this job depends on the release input.
   release:
+    if: ${{ inputs.release }}
     needs: sign
     runs-on: ubuntu-24.04
     permissions:

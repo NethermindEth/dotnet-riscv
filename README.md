@@ -25,6 +25,10 @@ branch and run **Build .NET SDK**:
  - Choose **dotnet VMR branch name**=`release/10.0.100`
  - Tick **Publish release**
 
+A run without **Publish release** still signs its assets: bflat-riscv64 can
+build its image from the artifacts `release-assets-*` and `bflat-signatures`
+of the run and check them as it checks a release.
+
 ## The linux-x64 target of bflat
 
 bflat also builds ordinary linux-x64 programs. The `runtime-x64` job makes
