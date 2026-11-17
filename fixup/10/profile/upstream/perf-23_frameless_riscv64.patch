@@ -235,7 +235,7 @@ index 33aa66492..913ec68d7 100644
 +
 +    if (leftFrameSize != 0)
 +    {
-+        genStackPointerAdjustment(-leftFrameSize, REG_SCRATCH, nullptr, /* reportUnwindData */ false);
++        genStackPointerAdjustment(-leftFrameSize, REG_SCRATCH, nullptr, /* reportUnwindData */ true);
 +    }
 +}
 +
