@@ -737,3 +737,6 @@ Regression test: tools/tests/StrictAlignment/FastPath.
      }
  
      // No-unaligned mode: an unaligned scalar access is expanded byte-wise off a base
+
+Regression test: bflat-ts:alignment/strict_alignment
+Regression test: bflat-ts:alignment/strict_alignment_strict

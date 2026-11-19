@@ -8,6 +8,8 @@ Nethermind stateless guest on ZisK: signextend_b 42,325 -> 300 on block 26055159
 cost -2,364,040 / -4,769,128 on blocks 26055159 / 26112793, steps unchanged.
 Outputs identical on 11 mainnet blocks.
 
+Regression test: bflat-ts:optimizer/null_check_probes
+
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 --- a/src/coreclr/jit/codegenriscv64.cpp
 +++ b/src/coreclr/jit/codegenriscv64.cpp

@@ -8,6 +8,9 @@ the high-half GT_INTRINSIC carries GTF_UNSIGNED for the unsigned overload, codeg
 Math.BigMul(long, long, out long) is [Intrinsic] so the JIT sees it. Replaces the signed
 half of the previous perf-48 of this series.
 
+Regression test: bflat-ts:integers/big_mul
+Regression test: tools/tests/BigMul
+
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 index 8d5bae87d..31b4bd193 100644
 --- a/src/coreclr/jit/codegenriscv64.cpp

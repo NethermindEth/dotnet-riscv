@@ -18,6 +18,8 @@ exercise the compiler-rt helpers.
 Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
 
+Regression test: none - the patch adds a test and changes no product code
+
 diff --git a/src/tests/JIT/Directed/softfloat/SoftFloat.cs b/src/tests/JIT/Directed/softfloat/SoftFloat.cs
 new file mode 100644
 --- /dev/null

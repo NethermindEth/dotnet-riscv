@@ -20,6 +20,9 @@ Measured on nine mainnet blocks with ziskemu against the same build without the 
 -0.43% executed steps (-6.9M), identical outputs; every one of the 25 managed call sites
 became a single csrrs and ValueKeccak.Compute lost its four callee-saved registers.
 
+Regression test: bflat-ts:calls/pinvoke_csr_write
+Regression test: bflat-ts:calls/pinvoke_csr_write_csr
+
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 index 93b9ce074..81c381e1b 100644
 --- a/src/coreclr/jit/codegenriscv64.cpp

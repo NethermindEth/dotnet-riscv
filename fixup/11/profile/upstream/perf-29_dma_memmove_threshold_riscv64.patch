@@ -1,3 +1,5 @@
+Regression test: bflat-ts:memory/memmove_lengths
+
 diff --git a/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.ByteMemOps.cs b/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.ByteMemOps.cs
 --- a/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.ByteMemOps.cs
 +++ b/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.ByteMemOps.cs

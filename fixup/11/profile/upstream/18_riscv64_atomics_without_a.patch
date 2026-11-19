@@ -20,6 +20,9 @@ the arithmetic and bitwise forms one scratch register for the new value.
 Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
 
+Regression test: bflat-ts:pal/interlocked_single_hart
+Regression test: bflat-ts:pal/interlocked_single_hart_barriers
+
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 --- a/src/coreclr/jit/codegenriscv64.cpp
 +++ b/src/coreclr/jit/codegenriscv64.cpp

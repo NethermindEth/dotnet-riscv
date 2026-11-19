@@ -1,0 +1,34 @@
+RISC-V: an unrolled copy from a field of a local at an unaligned offset is copied byte-wise.
+
+Without unaligned access (JitNoUnalignedAccess) an unrolled block copy is marked unaligned when one
+of its addresses is not known to be aligned for the pieces of the copy, and is then copied byte by
+byte. A source that is a local was taken as aligned: a frame slot is. A field of the local is at any
+offset that its own alignment allows - a struct of bytes inside a packed struct, the value of a
+Nullable<T> of one - and the copy read it in pieces of up to a register. The offset of the source
+within the local is now compared with the piece size, as the offset of an address is.
+
+Regression test: bflat-ts:memory/inline_object_alloc
+
+diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
+--- a/src/coreclr/jit/lower.cpp
++++ b/src/coreclr/jit/lower.cpp
+@@ -10826,6 +10826,19 @@ void Lowering::LowerCopyBlockStore(GenTreeBlk* blkNode)
+         {
+             ContainBlockStoreAddress(blkNode, size, src->AsIndir()->Addr(), src->AsIndir());
+         }
++#ifdef TARGET_RISCV64
++        else if ((JitConfig.JitNoUnalignedAccess() != 0) && src->OperIsLocalRead())
++        {
++            // A local is at an aligned frame slot, but a field of it is at any offset that its own
++            // alignment allows (a struct of bytes in a packed struct, the value of a Nullable<T> of
++            // one), and the unrolled copy reads it in pieces of up to a register.
++            const unsigned pieceSize = (size >= REGSIZE_BYTES) ? REGSIZE_BYTES : (size >= 4) ? 4 : (size >= 2) ? 2 : 1;
++            if ((src->AsLclVarCommon()->GetLclOffs() % pieceSize) != 0)
++            {
++                blkNode->gtFlags |= GTF_IND_UNALIGNED;
++            }
++        }
++#endif // TARGET_RISCV64
+         ContainBlockStoreAddress(blkNode, size, dstAddr, nullptr);
+         return;
+     }

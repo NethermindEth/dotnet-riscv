@@ -1,0 +1,44 @@
+name: Patch tests
+
+# Every patch a pull request adds or changes has to name the test that covers
+# it, in a "Regression test:" line of its message (the format is at the top of
+# tools/check_patch_tests.py). A patch changes the code every guest is
+# compiled with, and a change nobody tests is found by whoever runs the guest.
+
+on:
+  pull_request:
+    paths:
+      - 'fixup/**'
+      - 'tools/check_patch_tests.py'
+      - '.github/workflows/patch-tests.yml'
+
+permissions: {}
+
+jobs:
+  patch-tests:
+    name: Patches name their tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check the patches the pull request adds or changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          mapfile -t patches < <(git diff --name-only --diff-filter=AMR \
+              "$BASE_SHA...$HEAD_SHA" -- 'fixup/**/*.patch')
+          if [ "${#patches[@]}" -eq 0 ]; then
+            echo "No patch is added or changed."
+            exit 0
+          fi
+          printf '%s\n' "${patches[@]}"
+          python3 tools/check_patch_tests.py "${patches[@]}"

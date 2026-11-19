@@ -1,3 +1,10 @@
+Regression test: bflat-ts:integers/rv32_long_arith
+Regression test: bflat-ts:integers/rv32_long_shifts
+Regression test: bflat-ts:integers/rv32_long_casts
+Regression test: bflat-ts:calls/rv32_long_calls
+Regression test: bflat-ts:memory/rv32_arrays_blocks
+Regression test: bflat-ts:optimizer/rv32_zk_knobs
+
 diff --git b/src/coreclr/jit/abi.h a/src/coreclr/jit/abi.h
 index 28e4fd54d04..184521c7eee 100644
 --- b/src/coreclr/jit/abi.h

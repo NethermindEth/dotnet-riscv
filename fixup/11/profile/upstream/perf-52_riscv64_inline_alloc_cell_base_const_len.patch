@@ -15,6 +15,12 @@ Per allocation this is 3-4 fewer executed instructions (and ~5 for constant-leng
 
 RISC-V64 zkVM: cheaper inline allocation - lui+slli constants, bump cell via base+imm12, constant lengths folded.
 
+Regression test: bflat-ts:integers/load_immediates
+Regression test: bflat-ts:memory/inline_array_alloc
+Regression test: bflat-ts:memory/inline_array_alloc_helper
+Regression test: bflat-ts:memory/array_length_checks
+Regression test: bflat-ts:memory/array_length_checks_helper
+
 diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
 index 2a87d1bf4..1b038c7bf 100644
 --- a/src/coreclr/jit/emitriscv64.cpp

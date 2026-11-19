@@ -1,0 +1,25 @@
+JIT: keep the unaligned flag of a struct that is returned in a register (applies after perf-35).
+
+LowerRetStruct turns the GT_BLK of a returned struct into a GT_IND with ChangeOper, which keeps only
+the common flags. The load of Unsafe.ReadUnaligned<T> lost GTF_IND_UNALIGNED that way, and a target
+without unaligned access (JitNoUnalignedAccess) loaded it whole. The flag is carried over, as
+TryTransformStoreObjAsStoreInd does for a store.
+
+Regression test: bflat-ts:alignment/unaligned_access
+Regression test: bflat-ts:alignment/unaligned_access_byte_wise
+
+diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
+--- a/src/coreclr/jit/lower.cpp
++++ b/src/coreclr/jit/lower.cpp
+@@ -6078,7 +6078,11 @@ void Lowering::LowerRetStruct(GenTreeUnOp* ret)
+                 break;
+             }
+ 
++            // ChangeOper keeps only the common flags, and an unaligned block load must stay unaligned: a target
++            // without unaligned access (JitNoUnalignedAccess) expands the scalar load.
++            const GenTreeFlags unaligned = retVal->gtFlags & GTF_IND_UNALIGNED;
+             retVal->ChangeOper(GT_IND);
++            retVal->gtFlags |= unaligned;
+             retVal->ChangeType(nativeReturnType);
+             LowerIndir(retVal->AsIndir());
+             break;

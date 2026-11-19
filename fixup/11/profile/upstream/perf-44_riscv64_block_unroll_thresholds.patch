@@ -11,6 +11,9 @@ unrolled sequence as before.
 RISC-V64: raise the block unroll thresholds to memcpy:128 / memset:256 (zkVM: a Memmove call costs more
 than the unrolled copy up to that size).
 
+Regression test: bflat-ts:memory/block_copies
+Regression test: bflat-ts:memory/block_copies_no_csr
+
 diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
 index b28714c70..02db5a29b 100644
 --- a/src/coreclr/jit/compiler.h

@@ -26,6 +26,9 @@ was deleted upstream in #133474 and needs a new home.
 Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
 
+Regression test: bflat-ts:softfloat/soft_float_arith
+Regression test: bflat-ts:softfloat/soft_float_compare
+
 diff --git a/src/coreclr/inc/corinfo.h b/src/coreclr/inc/corinfo.h
 --- a/src/coreclr/inc/corinfo.h
 +++ b/src/coreclr/inc/corinfo.h

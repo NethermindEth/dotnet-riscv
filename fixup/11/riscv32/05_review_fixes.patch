@@ -1,3 +1,5 @@
+Regression test: bflat-ts:integers/rv32_long_arith
+
 diff --git a/eng/build.sh b/eng/build.sh
 index b4496e0bc..72c970d8d 100755
 --- a/eng/build.sh

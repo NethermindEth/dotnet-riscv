@@ -4,6 +4,8 @@ independent indirections (TryDecomposeBlockStoreAsIndirs) or the bulk
 copy helper, so there is no per-slot CORINFO_HELP_ASSIGN_BYREF call in
 the riscv64 codegen to inline.
 
+Regression test: bflat-ts:memory/gc_ref_stores
+
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 --- a/src/coreclr/jit/codegenriscv64.cpp
 +++ b/src/coreclr/jit/codegenriscv64.cpp

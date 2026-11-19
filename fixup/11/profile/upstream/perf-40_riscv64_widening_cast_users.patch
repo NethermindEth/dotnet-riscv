@@ -11,6 +11,8 @@ Keep the widening elision only under users whose width comes from their own type
 value operand of a shift or rotate, STOREIND data, STORE_LCL_VAR, RETURN, integer Min/Max). Same-width
 int->int elision is unchanged.
 
+Regression test: bflat-ts:integers/int_extension_matrix_a
+
 diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
 --- a/src/coreclr/jit/lower.cpp
 +++ b/src/coreclr/jit/lower.cpp

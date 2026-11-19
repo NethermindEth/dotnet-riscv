@@ -1,0 +1,42 @@
+RISC-V: keep the int-to-long cast under a checked ADD or SUB and a 32-bit shift out of SH(X)ADD.
+
+TryRemoveCast (perf-28, perf-40) hands the user of an int-to-long cast the INT operand. A checked ADD
+or SUB takes the width and the signedness of its operands from their types to test for the overflow,
+so the cast stays under it. A 64-bit ADD can now have a 32-bit LSH or MUL operand, which wraps at 32
+bits: TryLowerShiftAddToShxadd leaves it alone.
+
+Regression test: bflat-ts:integers/int_extension_matrix_a
+Regression test: bflat-ts:integers/bit_manipulation
+
+diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
+--- a/src/coreclr/jit/lower.cpp
++++ b/src/coreclr/jit/lower.cpp
+@@ -10460,7 +10460,10 @@ bool Lowering::TryRemoveCast(GenTreeCast* node)
+                 }
+                 else
+                 {
+-                    canElide = user->OperIs(GT_ADD, GT_SUB, GT_NEG, GT_NOT, GT_STORE_LCL_VAR, GT_RETURN) ||
++                    // A checked ADD or SUB takes the width and the signedness of its operands from their
++                    // types to test for the overflow.
++                    canElide = (user->OperIs(GT_ADD, GT_SUB) && !user->gtOverflow()) ||
++                               user->OperIs(GT_NEG, GT_NOT, GT_STORE_LCL_VAR, GT_RETURN) ||
+                                (user->OperIs(GT_LSH, GT_RSH, GT_RSZ, GT_ROL, GT_ROR) && (user->gtGetOp1() == node)) ||
+                                (user->OperIs(GT_STOREIND) && (user->AsStoreInd()->Data() == node));
+                 }
+diff --git a/src/coreclr/jit/lowerriscv64.cpp b/src/coreclr/jit/lowerriscv64.cpp
+--- a/src/coreclr/jit/lowerriscv64.cpp
++++ b/src/coreclr/jit/lowerriscv64.cpp
+@@ -2779,6 +2779,13 @@ bool Lowering::TryLowerShiftAddToShxadd(GenTreeOp* tree, GenTree** next)
+         return false;
+     }
+ 
++    // A 32-bit shift or multiplication wraps at 32 bits and sign-extends its result, which SH(X)ADD,
++    // shifting the whole register, would not. Its user can be a 64-bit ADD: see Lowering::TryRemoveCast.
++    if (!shift->OperIs(GT_SLLI_UW) && (emitActualTypeSize(shift) == EA_4BYTE))
++    {
++        return false;
++    }
++
+     bool isSlliUw = false;
+     if (shift->OperIs(GT_SLLI_UW))
+     {

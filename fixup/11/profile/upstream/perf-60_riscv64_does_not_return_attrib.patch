@@ -9,6 +9,8 @@ attribute bit) for methods carrying the attribute, matched on the typical method
 definition so generic instantiations qualify, and the importer marks a direct call to
 such a method no-return; morph then ends the block in a throw and liveness drops.
 
+Regression test: bflat-ts:calls/noreturn_calls
+
 diff --git a/src/coreclr/inc/corinfo.h b/src/coreclr/inc/corinfo.h
 index bbd2bfc1c..8a509cc3b 100644
 --- a/src/coreclr/inc/corinfo.h

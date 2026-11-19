@@ -181,3 +181,5 @@ RISC-V: no sext.w for a LONG-to-INT cast whose operand is already in int32 range
      {
          tgtPrefUse = BuildUse(src);
          srcCount   = 1;
+
+Regression test: bflat-ts:integers/zero_extended_loads

@@ -3,6 +3,8 @@ genCodeForCompare/genCodeForJumpCompare no longer sign-extend 32-bit
 operands in .NET 11, so only the emitter peephole, the lowering cast
 elision and the genRangeCheck part are carried over.
 
+Regression test: bflat-ts:integers/int_extension_matrix_a
+
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 --- a/src/coreclr/jit/codegenriscv64.cpp
 +++ b/src/coreclr/jit/codegenriscv64.cpp

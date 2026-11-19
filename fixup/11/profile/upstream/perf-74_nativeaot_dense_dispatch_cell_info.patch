@@ -15,6 +15,8 @@ Nethermind stateless guest on ZisK (ziskemu 1.3.0), on top of perf-73: ~250 step
   block 26112793 steps 130,833,026 -> 130,744,346 (-0.07%)
 Outputs identical on 11 mainnet blocks.
 
+Regression test: bflat-ts:dispatch/interface_dispatch
+
 diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/DispatchCellNode.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/DispatchCellNode.cs
 --- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/DispatchCellNode.cs
 +++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/DispatchCellNode.cs

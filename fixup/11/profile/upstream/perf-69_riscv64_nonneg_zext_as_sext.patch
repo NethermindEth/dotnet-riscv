@@ -14,6 +14,8 @@ Nethermind stateless guest on ZisK, block 26055159 / 26112793:
   sll_u_w 321,604 -> 145,663 on the light block.
 Outputs identical on 11 mainnet blocks.
 
+Regression test: bflat-ts:integers/zero_extended_loads
+
 diff --git a/src/coreclr/jit/assertionprop.cpp b/src/coreclr/jit/assertionprop.cpp
 --- a/src/coreclr/jit/assertionprop.cpp
 +++ b/src/coreclr/jit/assertionprop.cpp

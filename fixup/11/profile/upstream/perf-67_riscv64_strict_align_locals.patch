@@ -25,6 +25,9 @@ Nethermind stateless guest on SP1 (sp1-runner v6.5.0), cycles:
   block 26112793: 409,369,758 -> 399,352,385 (-2.4%) alone, -> 320,921,838 (-21.6%)
 Outputs identical on 11 mainnet blocks. Only builds with JitRiscV64StrictAlign change.
 
+Regression test: bflat-ts:alignment/strict_alignment
+Regression test: bflat-ts:alignment/strict_alignment_strict
+
 diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
 index ce453ec..4db10e7 100644
 --- a/src/coreclr/jit/lower.cpp

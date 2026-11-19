@@ -14,6 +14,8 @@ CoreLib (riscv64 only): MemmoveNative passes the refs as pointers - the uGC neve
 so pinning is redundant - and is AggressiveInlining, so Memmove's native path becomes the two
 DMA instructions in line and Memmove itself has no call left to save RA for.
 
+Regression test: bflat-ts:memory/memmove_lengths
+
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 index 81c381e1b..2f1662c8f 100644
 --- a/src/coreclr/jit/codegenriscv64.cpp

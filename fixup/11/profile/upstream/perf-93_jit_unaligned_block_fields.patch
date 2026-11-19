@@ -1,0 +1,39 @@
+JIT: keep the unaligned flag on the fields of a block copied field by field (applies after perf-35).
+
+MorphCopyBlock turns the copy of a promoted struct into loads and stores of its fields. The
+indirections it creates took the heap flags of the block but not GTF_IND_UNALIGNED, so the copy of
+Unsafe.ReadUnaligned<T> or Unsafe.WriteUnaligned<T> of a struct that travels in registers was made
+with whole loads and stores on a target without unaligned access (JitNoUnalignedAccess).
+
+Regression test: bflat-ts:alignment/unaligned_access
+Regression test: bflat-ts:alignment/unaligned_access_byte_wise
+Regression test: bflat-ts:alignment/rv32_unaligned_wrappers
+
+diff --git a/src/coreclr/jit/morphblock.cpp b/src/coreclr/jit/morphblock.cpp
+--- a/src/coreclr/jit/morphblock.cpp
++++ b/src/coreclr/jit/morphblock.cpp
+@@ -1344,7 +1344,13 @@ GenTree* MorphCopyBlockHelper::CopyFieldByField()
+                     else
+                     {
+                         GenTree* fldAddr = grabAddr(fldOffset);
+-                        srcFld           = m_compiler->gtNewIndir(destType, fldAddr, getCopyIndirFlags(destType));
++                        // The fields of an unaligned block are unaligned.
++                        GenTreeFlags indirFlags = getCopyIndirFlags(destType);
++                        if (m_src->OperIsIndir())
++                        {
++                            indirFlags |= m_src->gtFlags & GTF_IND_UNALIGNED;
++                        }
++                        srcFld = m_compiler->gtNewIndir(destType, fldAddr, indirFlags);
+                     }
+                 }
+             }
+@@ -1398,7 +1404,8 @@ GenTree* MorphCopyBlockHelper::CopyFieldByField()
+                     GenTreeFlags indirFlags = getCopyIndirFlags(srcType);
+                     if (m_store->OperIs(GT_STORE_BLK, GT_STOREIND))
+                     {
+-                        indirFlags |= m_store->gtFlags & (GTF_IND_TGT_NOT_HEAP | GTF_IND_TGT_HEAP);
++                        // The fields of an unaligned block are unaligned.
++                        indirFlags |= m_store->gtFlags & (GTF_IND_TGT_NOT_HEAP | GTF_IND_TGT_HEAP | GTF_IND_UNALIGNED);
+                         if (m_store->OperIs(GT_STORE_BLK) && m_store->AsBlk()->GetLayout()->IsStackOnly(m_compiler))
+                         {
+                             indirFlags |= GTF_IND_TGT_NOT_HEAP;

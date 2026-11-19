@@ -35,6 +35,9 @@ alone changes nothing (the callee-save preference still wins); keep-reg with the
 200% -0.31%; the policy without perf-62 -0.72%; the policy with plain LSRA spilling loses
 (+0.25..0.4%). Outputs identical.
 
+Regression test: bflat-ts:optimizer/spill_reload
+Regression test: bflat-ts:optimizer/spill_reload_plain_spill
+
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 index 2f1662c8f..783e58dae 100644
 --- a/src/coreclr/jit/codegenriscv64.cpp

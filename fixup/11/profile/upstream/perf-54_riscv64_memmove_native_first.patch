@@ -6,6 +6,8 @@ block) are such copies. The threshold test now comes first on riscv64.
 
 RISC-V64 zkVM: Memmove decides on the native DMA path before the overlap and size tests.
 
+Regression test: bflat-ts:memory/memmove_lengths
+
 diff --git a/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.ByteMemOps.cs b/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.ByteMemOps.cs
 index a4c4d0129..486136a1f 100644
 --- a/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.ByteMemOps.cs

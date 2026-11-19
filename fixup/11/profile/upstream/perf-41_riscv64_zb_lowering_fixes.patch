@@ -8,6 +8,8 @@ RISC-V Zba/Zbb/Zbs lowering fixes found while auditing perf-28's producer assump
 - ADD_UW/SH(X)ADD_UW no longer absorb a checked int->long cast, and SH(X)ADD no longer absorbs a checked
   MUL: both folds dropped the overflow check.
 
+Regression test: bflat-ts:integers/bit_manipulation
+
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 --- a/src/coreclr/jit/codegenriscv64.cpp
 +++ b/src/coreclr/jit/codegenriscv64.cpp

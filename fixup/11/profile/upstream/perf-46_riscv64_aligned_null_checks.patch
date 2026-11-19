@@ -63,3 +63,5 @@ RISC-V: probe object references with an aligned ld. Applied after perf-43; JIT o
      }
  
      // If fast tail call, then we are done here, we just have to load the call
+
+Regression test: bflat-ts:optimizer/null_check_probes

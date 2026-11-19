@@ -1,0 +1,57 @@
+riscv32: keep a split struct parameter on the frame and copy byte-aligned structs in aligned pieces.
+
+A struct parameter passed in one register and on the stack (a struct of one 8-byte field after seven
+words of arguments) is not promoted: the prolog homes the stack part of a struct that stays on the
+frame, not of a promoted one.
+
+Without strict alignment a base is trusted to be aligned for the struct it points to. An unrolled copy
+moves a struct in pieces up to the register size, so a struct whose own alignment is smaller than the
+piece (bytes, shorts) is copied as an unaligned block.
+
+Regression test: bflat-ts:calls/rv32_long_calls
+Regression test: bflat-ts:alignment/rv32_byte_aligned_structs
+
+diff --git a/src/coreclr/jit/lclvars.cpp b/src/coreclr/jit/lclvars.cpp
+--- a/src/coreclr/jit/lclvars.cpp
++++ b/src/coreclr/jit/lclvars.cpp
+@@ -2030,6 +2030,17 @@ bool Compiler::StructPromotionHelper::ShouldPromoteStructVar(unsigned lclNum)
+                         lclNum, structPromotionInfo.fieldCnt);
+                 shouldPromote = false;
+             }
++#if defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV)
++            else if (m_compiler->lvaGetParameterABIInfo(lclNum).IsSplitAcrossRegistersAndStack())
++            {
++                // One register and the stack (on riscv32, a struct of one 8-byte field after seven
++                // words of arguments): the prolog homes the stack part of a struct that stays on the
++                // frame (genHomeStackPartOfSplitParameter), not of a promoted one.
++                JITDUMP("Not promoting struct local V%02u, because it is split between a register and the stack.\n",
++                        lclNum);
++                shouldPromote = false;
++            }
++#endif // TARGET_LOONGARCH64 || TARGET_RISCV
+         }
+     }
+     else if ((lclNum == m_compiler->genReturnLocal) && (structPromotionInfo.fieldCnt > 1))
+diff --git a/src/coreclr/jit/lowerriscv64.cpp b/src/coreclr/jit/lowerriscv64.cpp
+--- a/src/coreclr/jit/lowerriscv64.cpp
++++ b/src/coreclr/jit/lowerriscv64.cpp
+@@ -2647,6 +2647,19 @@ void Lowering::ContainBlockStoreAddress(GenTreeBlk* blkNode, unsigned size, GenT
+     {
+         blkNode->gtFlags |= GTF_IND_UNALIGNED;
+     }
++    // A trusted base is aligned for the struct, not for the pieces of the copy: a struct of bytes or of
++    // shorts can be at any address its own alignment allows (an array element, a field), and the unrolled
++    // copy would move it in wider pieces.
++    if (RiscV64TrustedAlign() && !blkNode->IsUnaligned())
++    {
++        ClassLayout* const layout = blkNode->GetLayout();
++        if ((layout != nullptr) && !layout->IsCustomLayout() && (layout->GetClassHandle() != NO_CLASS_HANDLE) &&
++            (m_compiler->info.compCompHnd->getClassAlignmentRequirement(layout->GetClassHandle()) <
++             RiscV64BlockAlignment(size)))
++        {
++            blkNode->gtFlags |= GTF_IND_UNALIGNED;
++        }
++    }
+ 
+     if (addr->OperIs(GT_LCL_ADDR) && IsContainableLclAddr(addr->AsLclFld(), size))
+     {

@@ -20,6 +20,10 @@ Checked on the Nethermind Airbender guest with the same change made after the li
 11962410, 25526356 give the same digests; exception tests (caught exception with finally, checked
 conversions, gvm suite) pass.
 
+Regression test: bflat-ts:memory/uninit_gc_locals
+Regression test: bflat-ts:memory/uninit_gc_locals_must_init
+Regression test: tools/tests/NoGcMustInit
+
 diff --git a/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWritingOptions.cs b/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWritingOptions.cs
 index 7e9f4e61f..9aa58d121 100644
 --- a/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWritingOptions.cs

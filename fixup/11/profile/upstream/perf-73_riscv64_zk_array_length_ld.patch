@@ -21,6 +21,9 @@ block 26055159 / 26112793: steps unchanged; cost -0.17% / -0.16%; MemAlign rows 
 block 26112793 needs one MemAlign instance fewer (46 -> 45 instances). Outputs identical on 11
 mainnet blocks.
 
+Regression test: bflat-ts:memory/array_length_word
+Regression test: bflat-ts:memory/array_length_word_no_bump
+
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 --- a/src/coreclr/jit/codegenriscv64.cpp
 +++ b/src/coreclr/jit/codegenriscv64.cpp

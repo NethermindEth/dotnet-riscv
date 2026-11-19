@@ -200,3 +200,6 @@ Regression test: tools/tests/StrictAlignment/FastPath.
          {
              clone->SetKindAndTargetEdge(BBJ_ALWAYS, m_compiler->fgAddRefPred(cloneTarget(block->GetTarget()), clone));
          }
+
+Regression test: bflat-ts:alignment/strict_alignment
+Regression test: bflat-ts:alignment/strict_alignment_strict

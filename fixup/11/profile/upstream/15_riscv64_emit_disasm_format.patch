@@ -4,6 +4,8 @@ GetMajorOpcode returns emitter::MajorOpcode, and passing an enum to a %d
 conversion is -Wformat. The riscv64 cross build runs with -Werror, so the
 file does not compile.
 
+Regression test: none - a format string of the disassembler output, compiled only into a Checked JIT
+
 diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
 --- a/src/coreclr/jit/emitriscv64.cpp
 +++ b/src/coreclr/jit/emitriscv64.cpp

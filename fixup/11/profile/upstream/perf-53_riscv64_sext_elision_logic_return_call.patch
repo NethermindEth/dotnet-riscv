@@ -13,6 +13,9 @@ Three sources of redundant sign extension found by tracing block 25532480 (3.0M 
 
 RISC-V64: drop redundant sext.w after 32-bit logic ops, on return and after managed INT calls.
 
+Regression test: bflat-ts:integers/int_extension_matrix_a
+Regression test: bflat-ts:calls/int_call_results
+
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 index c00a629a3..93b9ce074 100644
 --- a/src/coreclr/jit/codegenriscv64.cpp

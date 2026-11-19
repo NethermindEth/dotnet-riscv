@@ -1,0 +1,22 @@
+RISC-V: pad code with a 4-byte NOP when the target has no C extension (applies after patch 16).
+
+Patch 16 pads a code section with c.nop, which is an instruction only with the C extension. Without
+it every method ends on a four-byte boundary, and the padding is the 4-byte nop (addi x0, x0, 0), so
+that a linear decoder of a no-C image reads instructions there too.
+
+Regression test: none - the padding between methods is never executed
+
+diff --git a/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWriter.cs b/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWriter.cs
+--- a/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWriter.cs
++++ b/src/coreclr/tools/Common/Compiler/ObjectWriter/ObjectWriter.cs
+@@ -61,6 +61,10 @@ private protected ObjectWriter(NodeFactory factory, ObjectWritingOptions options
+             // encoding: it is udf #0 on ARM64 and illegal on LoongArch64 and RISC-V.
+             _insPadding = factory.Target.Architecture switch
+             {
++                // Without the C extension c.nop is not an instruction, and every method
++                // ends on a four-byte boundary: the 4-byte NOP.
++                TargetArchitecture.RiscV64 when !options.HasFlag(ObjectWritingOptions.RiscV64Compressed)
++                    => [0x13, 0x00, 0x00, 0x00],                              // nop
+                 TargetArchitecture.X86 => [0x90],                             // nop
+                 TargetArchitecture.X64 => [0x90],                             // nop
+                 TargetArchitecture.ARM64 => [0x1F, 0x20, 0x03, 0xD5],         // nop

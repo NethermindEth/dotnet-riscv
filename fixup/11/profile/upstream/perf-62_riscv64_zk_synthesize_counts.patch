@@ -8,6 +8,9 @@ arms, 50/50 conditions) only runs under dynamic PGO or a DEBUG knob; JitZkSynthe
 compiled without profile data. Measured on nine mainnet blocks: -0.45% executed steps,
 identical outputs.
 
+Regression test: bflat-ts:optimizer/synthesized_block_weights
+Regression test: bflat-ts:optimizer/synthesized_block_weights_synthesized
+
 diff --git a/src/coreclr/jit/fgprofile.cpp b/src/coreclr/jit/fgprofile.cpp
 index 46c3077ec..834d9da8e 100644
 --- a/src/coreclr/jit/fgprofile.cpp

@@ -16,6 +16,9 @@ Measured on nine mainnet blocks on top of perf-62..64: -2.44% executed steps
 (1,463,698,587 = -5.07% versus perf-61, -14.08% versus master); 16- and 32-byte
 minimums are the same to 0.004%. Outputs identical.
 
+Regression test: bflat-ts:memory/block_copies
+Regression test: bflat-ts:memory/block_copies_no_csr
+
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 index 279a0bcd4..56348677d 100644
 --- a/src/coreclr/jit/codegenriscv64.cpp

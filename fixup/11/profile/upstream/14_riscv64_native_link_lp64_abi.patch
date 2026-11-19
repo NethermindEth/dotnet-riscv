@@ -29,6 +29,8 @@ the linker gives the shared object itself no interpreter.
 Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
 
+Regression test: none - MSBuild link configuration that bflat does not use; a wrong ABI fails the link
+
 diff --git a/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets b/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets
 --- a/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets
 +++ b/src/coreclr/nativeaot/BuildIntegration/Microsoft.NETCore.Native.Unix.targets

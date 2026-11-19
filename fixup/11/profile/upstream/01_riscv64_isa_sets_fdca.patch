@@ -43,6 +43,8 @@ commit.
 Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
 
+Regression test: bflat-ts:softfloat/soft_float_arith
+
 diff --git a/src/coreclr/inc/clrconfigvalues.h b/src/coreclr/inc/clrconfigvalues.h
 --- a/src/coreclr/inc/clrconfigvalues.h
 +++ b/src/coreclr/inc/clrconfigvalues.h
