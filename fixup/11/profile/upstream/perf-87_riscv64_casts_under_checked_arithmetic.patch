@@ -5,7 +5,7 @@ or SUB takes the width and the signedness of its operands from their types to te
 so the cast stays under it. A 64-bit ADD can now have a 32-bit LSH or MUL operand, which wraps at 32
 bits: TryLowerShiftAddToShxadd leaves it alone.
 
-Regression test: bflat-ts:integers/int_extension_matrix
+Regression test: bflat-ts:integers/int_extension_matrix_a
 Regression test: bflat-ts:integers/bit_manipulation
 
 diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp

@@ -953,5 +953,5 @@ RISC-V extension tracking and related register-allocation fixes, applied after p
  
          // For checked casts, we're done.
 
-Regression test: bflat-ts:integers/int_extension_matrix
+Regression test: bflat-ts:integers/int_extension_matrix_a
 Regression test: bflat-ts:calls/int_call_results

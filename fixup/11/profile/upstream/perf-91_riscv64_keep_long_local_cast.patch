@@ -6,7 +6,7 @@ operation compares the 32-bit result with the 64-bit one of its operands. The ca
 and is the sext.w that extends the value; a cast of an operator over such locals is narrowed as
 before, since its W form extends the result.
 
-Regression test: bflat-ts:integers/int_extension_matrix
+Regression test: bflat-ts:integers/int_extension_matrix_a
 
 diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
 --- a/src/coreclr/jit/morph.cpp

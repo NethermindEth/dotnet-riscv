@@ -68,18 +68,31 @@ diff --git a/src/coreclr/jit/importercalls.cpp b/src/coreclr/jit/importercalls.c
 diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
 --- a/src/coreclr/jit/lower.cpp
 +++ b/src/coreclr/jit/lower.cpp
-@@ -6004,6 +6004,10 @@ GenTree* Lowering::LowerStoreLocCommon(GenTreeLclVarCommon* lclStore)
- // Arguments:
- //     node - The return node to lower.
+@@ -5774,6 +5774,10 @@ void Lowering::LowerFieldListToFieldListOfRegisters(GenTreeFieldList*   fieldLis
+ // Returns:
+ //   Next node to lower.
  //
 +#ifdef TARGET_RISCV
 +static bool IsRegisterCopyUnderAligned(Compiler* comp, ClassLayout* layout, var_types regType);
 +#endif
 +
- void Lowering::LowerRetStruct(GenTreeUnOp* ret)
+ GenTree* Lowering::LowerStoreLocCommon(GenTreeLclVarCommon* lclStore)
  {
- #ifdef TARGET_ARM64
-@@ -6110,7 +6114,14 @@ void Lowering::LowerRetStruct(GenTreeUnOp* ret)
+     assert(lclStore->OperIs(GT_STORE_LCL_FLD, GT_STORE_LCL_VAR));
+@@ -5914,6 +5918,12 @@ GenTree* Lowering::LowerStoreLocCommon(GenTreeLclVarCommon* lclStore)
+ 
+             if (src->TypeIs(TYP_STRUCT))
+             {
++#ifdef TARGET_RISCV
++                if (src->OperIs(GT_IND, GT_BLK) && IsRegisterCopyUnderAligned(m_compiler, varDsc->GetLayout(), lclRegType))
++                {
++                    src->gtFlags |= GTF_IND_UNALIGNED;
++                }
++#endif
+                 src->ChangeType(lclRegType);
+                 if (src->OperIs(GT_IND, GT_BLK))
+                 {
+@@ -6110,7 +6120,14 @@ void Lowering::LowerRetStruct(GenTreeUnOp* ret)
  
              // ChangeOper keeps only the common flags, and an unaligned block load must stay unaligned: a target
              // without unaligned access (JitNoUnalignedAccess) expands the scalar load.
@@ -95,7 +108,7 @@ diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
              retVal->ChangeOper(GT_IND);
              retVal->gtFlags |= unaligned;
              retVal->ChangeType(nativeReturnType);
-@@ -13122,6 +13133,27 @@ bool Lowering::TryDecomposeBlockStoreAsIndirs(GenTreeBlk* blkNode)
+@@ -13122,6 +13139,27 @@ bool Lowering::TryDecomposeBlockStoreAsIndirs(GenTreeBlk* blkNode)
  // Return value:
  //    true if the replacement was made, false otherwise.
  //
@@ -123,7 +136,7 @@ diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
  bool Lowering::TryTransformStoreObjAsStoreInd(GenTreeBlk* blkNode)
  {
      assert(blkNode->OperIs(GT_STORE_BLK));
-@@ -13174,6 +13206,12 @@ bool Lowering::TryTransformStoreObjAsStoreInd(GenTreeBlk* blkNode)
+@@ -13174,6 +13212,12 @@ bool Lowering::TryTransformStoreObjAsStoreInd(GenTreeBlk* blkNode)
      }
      else if (varTypeIsStruct(src))
      {
@@ -136,7 +149,7 @@ diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
          src->ChangeType(regType);
          LowerNode(blkNode->Data());
      }
-@@ -13185,7 +13223,13 @@ bool Lowering::TryTransformStoreObjAsStoreInd(GenTreeBlk* blkNode)
+@@ -13185,7 +13229,13 @@ bool Lowering::TryTransformStoreObjAsStoreInd(GenTreeBlk* blkNode)
      JITDUMP("Replacing STORE_BLK with STOREIND for [%06u]\n", blkNode->gtTreeID);
      // ChangeOper keeps only the common flags, and an unaligned block store must stay unaligned: a target without
      // unaligned access (JitNoUnalignedAccess) expands the scalar store as it does the load it copies.
