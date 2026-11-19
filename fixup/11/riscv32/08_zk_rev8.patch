@@ -20,7 +20,7 @@ index 0baa5f3e..336e2235 100644
  
 -    assert(m_compiler->compOpportunisticallyDependsOn(InstructionSet_Zbb));
 +    // rev8 alone, without the rest of Zbb, under JitZkRev8.
-+    assert(m_compiler->compOpportunisticallyDependsOn(InstructionSet_Zbb) || (JitConfig.JitZkRev8() != 0));
++    assert(m_compiler->compOpportunisticallyDependsOn(InstructionSet_Zbb) || ((TARGET_POINTER_SIZE == 4) && (JitConfig.JitZkRev8() != 0)));
      emitter& emit = *GetEmitter();
      emit.emitIns_R_R(INS_rev8, size, dest, src);
      if (tree->OperIs(GT_BSWAP16))
@@ -48,7 +48,7 @@ index 96476de4..9e85ab13 100644
                      {
 -                        RISCV64_ONLY(if (compOpportunisticallyDependsOn(InstructionSet_Zbb)))
 +                        RISCV64_ONLY(
-+                            if (compOpportunisticallyDependsOn(InstructionSet_Zbb) || (JitConfig.JitZkRev8() != 0)))
++                            if (compOpportunisticallyDependsOn(InstructionSet_Zbb) || ((TARGET_POINTER_SIZE == 4) && (JitConfig.JitZkRev8() != 0))))
                          {
                              result = NI_System_Buffers_Binary_BinaryPrimitives_ReverseEndianness;
                          }
