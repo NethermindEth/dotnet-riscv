@@ -19,6 +19,9 @@ perf-61, -11.93% versus master); 24- and 32-byte minimums are indistinguishable.
 Outputs identical. In the traced block 3.6% of all steps were zero stores, 0.7% of
 them in runs of five or more.
 
+Regression test: bflat-ts:memory/frame_zero_init
+Regression test: bflat-ts:memory/frame_zero_init_no_csr
+
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 index 783e58dae..279a0bcd4 100644
 --- a/src/coreclr/jit/codegenriscv64.cpp

@@ -1,3 +1,6 @@
+Regression test: bflat-ts:memory/sequence_equal
+Regression test: bflat-ts:memory/sequence_equal_call
+
 diff --git a/src/coreclr/jit/codegen.h b/src/coreclr/jit/codegen.h
 --- a/src/coreclr/jit/codegen.h
 +++ b/src/coreclr/jit/codegen.h

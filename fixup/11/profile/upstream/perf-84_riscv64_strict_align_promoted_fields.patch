@@ -26,6 +26,9 @@ Airbender, main 69b95a9 with and without this patch, identical outputs and publi
   block 25532382: 463,991,664 -> 463,787,476 cycles (-0.044%)
 ROM: 4,175,168 -> 4,062,432 bytes (-2.70%). See the FastPath README for the build setup.
 
+Regression test: bflat-ts:alignment/strict_alignment
+Regression test: bflat-ts:alignment/strict_alignment_strict
+
 diff --git a/src/coreclr/jit/lowerriscv64.cpp b/src/coreclr/jit/lowerriscv64.cpp
 --- a/src/coreclr/jit/lowerriscv64.cpp
 +++ b/src/coreclr/jit/lowerriscv64.cpp

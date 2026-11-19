@@ -14,6 +14,8 @@ resolution; 343 resolutions on block 26055159.
   block 26112793 steps 131,086,840 -> 130,833,026 (-0.19%)
 Outputs identical on 11 mainnet blocks.
 
+Regression test: bflat-ts:dispatch/interface_dispatch
+
 diff --git a/src/coreclr/nativeaot/System.Private.CoreLib/src/Internal/Runtime/Dispatch.cs b/src/coreclr/nativeaot/System.Private.CoreLib/src/Internal/Runtime/Dispatch.cs
 --- a/src/coreclr/nativeaot/System.Private.CoreLib/src/Internal/Runtime/Dispatch.cs
 +++ b/src/coreclr/nativeaot/System.Private.CoreLib/src/Internal/Runtime/Dispatch.cs

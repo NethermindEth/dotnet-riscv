@@ -11,6 +11,8 @@ compiling:
 Include it directly, as pal_evp.c, opensslshim.c and pal_bio.c in the same
 library already do.
 
+Regression test: none - a missing include; without it the file does not compile
+
 diff --git a/src/native/libs/System.Security.Cryptography.Native/pal_hmac.c b/src/native/libs/System.Security.Cryptography.Native/pal_hmac.c
 --- a/src/native/libs/System.Security.Cryptography.Native/pal_hmac.c
 +++ b/src/native/libs/System.Security.Cryptography.Native/pal_hmac.c

@@ -1,3 +1,6 @@
+Regression test: bflat-ts:memory/stack_objects_in_loops
+Regression test: bflat-ts:memory/stack_objects_in_loops_heap
+
 diff --git a/src/coreclr/jit/objectalloc.cpp b/src/coreclr/jit/objectalloc.cpp
 --- a/src/coreclr/jit/objectalloc.cpp
 +++ b/src/coreclr/jit/objectalloc.cpp

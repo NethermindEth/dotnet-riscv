@@ -14,6 +14,8 @@ Fixes #130999
  src/coreclr/nativeaot/Runtime/GcEnum.cpp | 11 ++++++++---
  1 file changed, 8 insertions(+), 3 deletions(-)
 
+Regression test: none - the collector of the zkVM builds never collects, so the stack is never scanned
+
 diff --git a/src/coreclr/nativeaot/Runtime/GcEnum.cpp b/src/coreclr/nativeaot/Runtime/GcEnum.cpp
 --- a/src/coreclr/nativeaot/Runtime/GcEnum.cpp
 +++ b/src/coreclr/nativeaot/Runtime/GcEnum.cpp

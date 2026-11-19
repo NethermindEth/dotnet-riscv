@@ -17,6 +17,9 @@ subclasses in the guest (NethermindEth/nethermind companion change): interface d
   block 26112793 steps 130,709,033 -> 129,614,991 (-0.84%), cost 19,170,876,078 -> 19,067,586,567 (-0.54%)
 Without that change the patch removes 7 cells and is neutral (+0.01% steps). Outputs identical on 11 mainnet blocks.
 
+Regression test: bflat-ts:dispatch/unique_target_devirt
+Regression test: bflat-ts:dispatch/unique_target_devirt_virtual
+
 diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
 --- a/src/coreclr/jit/compiler.h
 +++ b/src/coreclr/jit/compiler.h

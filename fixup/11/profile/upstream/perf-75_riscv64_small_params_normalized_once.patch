@@ -15,6 +15,8 @@ Nethermind stateless guest on ZisK (most of it a bool tested per lane in KeccakH
 steps -37,097 / -68,645 (-0.07% / -0.05%) and cost -2.52M / -4.67M on blocks 26055159 / 26112793.
 Outputs identical on 11 mainnet blocks.
 
+Regression test: bflat-ts:calls/small_int_params
+
 diff --git a/src/coreclr/jit/codegencommon.cpp b/src/coreclr/jit/codegencommon.cpp
 --- a/src/coreclr/jit/codegencommon.cpp
 +++ b/src/coreclr/jit/codegencommon.cpp

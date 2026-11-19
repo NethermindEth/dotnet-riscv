@@ -1,3 +1,6 @@
+Regression test: bflat-ts:memory/rv32_arrays_blocks
+Regression test: bflat-ts:alignment/rv32_unaligned_wrappers
+
 diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
 index ac40fdfd8f0..5974aa14e12 100644
 --- a/src/coreclr/jit/lower.cpp

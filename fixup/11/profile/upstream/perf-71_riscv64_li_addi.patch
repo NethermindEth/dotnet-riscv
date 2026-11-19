@@ -8,6 +8,8 @@ Nethermind stateless guest on ZisK: add_w 687,954 -> 601,594 on block 26055159;
 cost -3,784,545 / -7,215,385 on blocks 26055159 / 26112793, steps unchanged.
 Outputs identical on 11 mainnet blocks.
 
+Regression test: bflat-ts:integers/load_immediates
+
 diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
 --- a/src/coreclr/jit/emitriscv64.cpp
 +++ b/src/coreclr/jit/emitriscv64.cpp

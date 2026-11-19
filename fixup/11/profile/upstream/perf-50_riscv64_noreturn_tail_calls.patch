@@ -100,3 +100,5 @@ RISC-V: a call that never returns, ending a throw block, becomes a fast tail cal
  // RemoveRedundantExtensions: drop the 32-to-64-bit extensions whose operand register already holds the
  // extended value, where the user reads its operands as full registers.
  //
+
+Regression test: bflat-ts:calls/noreturn_calls

@@ -14,6 +14,9 @@ array length (perf-73).
 Nethermind stateless guest on ZisK, on top of perf-77, block 26055159 / 26112793: steps unchanged; cost -0.06% /
 -0.07%; MemAlign rows -2.9% / -2.6%. SP1 cycles unchanged. Outputs identical on 11 mainnet blocks.
 
+Regression test: bflat-ts:memory/object_word_loads
+Regression test: bflat-ts:memory/object_word_loads_no_bump
+
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 --- a/src/coreclr/jit/codegenriscv64.cpp
 +++ b/src/coreclr/jit/codegenriscv64.cpp

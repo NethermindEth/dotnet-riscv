@@ -5,6 +5,11 @@ genRestoreCalleeSavedRegistersHelp takes a base register and a
 reportUnwindData flag; RBM_CALL_GC_REGS(_ORDER) no longer exist (the
 across-call GC register set is derived from RBM_INT_CALLEE_SAVED).
 
+Regression test: bflat-ts:calls/frameless_frames
+Regression test: bflat-ts:calls/frameless_frames_framed
+Regression test: bflat-ts:exception_handler/eh_large_frame
+Regression test: bflat-ts:exception_handler/eh_large_frame_framed
+
 diff --git a/src/coreclr/jit/codegen.h b/src/coreclr/jit/codegen.h
 --- a/src/coreclr/jit/codegen.h
 +++ b/src/coreclr/jit/codegen.h

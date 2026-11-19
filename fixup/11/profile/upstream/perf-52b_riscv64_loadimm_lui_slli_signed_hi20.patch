@@ -5,6 +5,8 @@ so a negative hi20 failed the Checked JIT's isValidSimm20 assertion at emit time
 encoder masks the stored value, so Release output is identical; the value is now stored
 sign-extended like every other lui immediate.
 
+Regression test: bflat-ts:integers/load_immediates
+
 diff --git a/src/coreclr/jit/emitriscv64.cpp b/src/coreclr/jit/emitriscv64.cpp
 index 1b038c7bf..3c7734c3e 100644
 --- a/src/coreclr/jit/emitriscv64.cpp

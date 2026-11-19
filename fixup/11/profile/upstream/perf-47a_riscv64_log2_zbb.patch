@@ -7,6 +7,7 @@ the other targets.
 
 RISC-V64: import BitOperations.Log2 as clz (Zbb) instead of calling the software fallback.
 
+Regression test: bflat-ts:integers/bit_manipulation
 
 diff --git a/src/coreclr/jit/importercalls.cpp b/src/coreclr/jit/importercalls.cpp
 index a8ba40292..eeb21514b 100644

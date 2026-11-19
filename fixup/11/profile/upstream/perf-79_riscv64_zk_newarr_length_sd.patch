@@ -9,6 +9,9 @@ inside it.
 Nethermind stateless guest on ZisK, on top of perf-78, block 26055159 / 26112793: steps unchanged; cost -0.05% /
 -0.05%; MemAlign rows -2.2% / -1.7%. SP1 cycles unchanged. Outputs identical on 11 mainnet blocks.
 
+Regression test: bflat-ts:memory/array_length_word
+Regression test: bflat-ts:memory/array_length_word_no_bump
+
 diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
 --- a/src/coreclr/jit/morph.cpp
 +++ b/src/coreclr/jit/morph.cpp

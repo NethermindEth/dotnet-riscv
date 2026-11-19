@@ -97,3 +97,5 @@ RISC-V: drop shift-count masks the shift instructions already apply. Applied aft
                  }
              case GT_ROL:
                  if (sizeof(T) == 8)
+
+Regression test: bflat-ts:integers/shift_counts

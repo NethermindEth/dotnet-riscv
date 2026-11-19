@@ -15,6 +15,9 @@ sequence (each try_* is idempotent, so the default sequence then re-applies them
 no-ops) and in checked builds through the default JitLsraOrdering string. Intervals that
 span a call keep preferring callee-saved registers exactly as before.
 
+Regression test: bflat-ts:optimizer/register_classes
+Regression test: bflat-ts:optimizer/register_classes_default_order
+
 diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
 index fd3f839c3..7799772bd 100644
 --- a/src/coreclr/jit/jitconfigvalues.h

@@ -31,6 +31,10 @@ localloc, OSR, P/Invoke frame, parameters).
 Only valid when the runtime never scans a stack: a GC (or any stack walk that reads GC slots) would see
 garbage in unzeroed slots.
 
+Regression test: bflat-ts:memory/uninit_gc_locals
+Regression test: bflat-ts:memory/uninit_gc_locals_must_init
+Regression test: tools/tests/NoGcMustInit
+
 diff --git a/src/coreclr/jit/codegencommon.cpp b/src/coreclr/jit/codegencommon.cpp
 index 366f335..e757f32 100644
 --- a/src/coreclr/jit/codegencommon.cpp

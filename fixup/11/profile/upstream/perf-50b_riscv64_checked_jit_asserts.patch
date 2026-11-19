@@ -12,6 +12,8 @@ JIT - needed for JitDump/inlining diagnostics - aborted on either of these:
   type and that the node is 64-bit; 32-bit forms reach it, and perf-40 may contain a
   widening cast of an operand. Only the integral kind is asserted now.
 
+Regression test: bflat-ts:memory/const_size_moves
+
 diff --git a/src/coreclr/jit/lsrariscv64.cpp b/src/coreclr/jit/lsrariscv64.cpp
 index ec17b7198..44f703c52 100644
 --- a/src/coreclr/jit/lsrariscv64.cpp

@@ -13,6 +13,9 @@ the front end cannot prove aligned.
 
 RISC-V64: unroll constant-size Memmove (<= 64 bytes, overlap-safe) and Fill/Clear calls.
 
+Regression test: bflat-ts:memory/block_copies
+Regression test: bflat-ts:memory/block_copies_no_csr
+
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 index 31b4bd193..c00a629a3 100644
 --- a/src/coreclr/jit/codegenriscv64.cpp

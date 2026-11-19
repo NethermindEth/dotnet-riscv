@@ -9,6 +9,9 @@ memory.
 
 RISC-V64: JitRiscV64NoMemoryBarriers (default 1) - emit no fence; zkVM guests are single-hart.
 
+Regression test: bflat-ts:pal/interlocked_single_hart
+Regression test: bflat-ts:pal/interlocked_single_hart_barriers
+
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 index 0d4f8702b..8d5bae87d 100644
 --- a/src/coreclr/jit/codegenriscv64.cpp

@@ -21,6 +21,9 @@ macros rather than on the InstructionSet model used elsewhere.
 Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
 
+Regression test: bflat-ts:softfloat/soft_float_handlers
+Regression test: bflat-ts:softfloat/soft_float_runtime
+
 diff --git a/src/coreclr/debug/di/riscv64/floatconversion.S b/src/coreclr/debug/di/riscv64/floatconversion.S
 --- a/src/coreclr/debug/di/riscv64/floatconversion.S
 +++ b/src/coreclr/debug/di/riscv64/floatconversion.S
