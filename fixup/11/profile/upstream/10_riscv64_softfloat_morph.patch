@@ -20,6 +20,11 @@ fails on the method that produced it.
 Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
 
+Regression test: bflat-ts:softfloat/soft_float_arith
+Regression test: bflat-ts:softfloat/soft_float_compare
+Regression test: bflat-ts:softfloat/soft_float_conv
+Regression test: bflat-ts:softfloat/soft_float_math
+
 diff --git a/src/coreclr/jit/codegencommon.cpp b/src/coreclr/jit/codegencommon.cpp
 --- a/src/coreclr/jit/codegencommon.cpp
 +++ b/src/coreclr/jit/codegencommon.cpp

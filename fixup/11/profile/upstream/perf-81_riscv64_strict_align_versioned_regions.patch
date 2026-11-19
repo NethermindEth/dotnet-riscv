@@ -649,3 +649,6 @@ Regression test: tools/tests/StrictAlignment/FastPath.
          {
              bool canEndRun = true;
              for (int i = 0; canEndRun && (i < pendingValues.Height()); i++)
+
+Regression test: bflat-ts:alignment/strict_alignment
+Regression test: bflat-ts:alignment/strict_alignment_strict

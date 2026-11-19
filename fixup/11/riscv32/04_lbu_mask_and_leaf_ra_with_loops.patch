@@ -1,3 +1,5 @@
+Regression test: bflat-ts:integers/rv32_int_muldiv
+
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 index 98aeb9e2f16..0644f4c28e8 100644
 --- a/src/coreclr/jit/codegenriscv64.cpp

@@ -1,3 +1,6 @@
+Regression test: bflat-ts:calls/rv32_long_calls
+Regression test: bflat-ts:memory/rv32_arrays_blocks
+
 diff --git a/src/coreclr/jit/codegencommon.cpp b/src/coreclr/jit/codegencommon.cpp
 index 81d110aae68..dd31a8439b2 100644
 --- a/src/coreclr/jit/codegencommon.cpp

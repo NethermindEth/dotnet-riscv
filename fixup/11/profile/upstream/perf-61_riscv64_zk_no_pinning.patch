@@ -6,6 +6,9 @@ JitZkNoPinning (default 0; bflat passes 1 for the zkVM libcs) the attribute is d
 import for the root method's and inlinees' locals, and the pointer lives in a register.
 Measured with perf-60 on nine blocks: -0.17% executed steps, identical outputs.
 
+Regression test: bflat-ts:memory/fixed_pinned
+Regression test: bflat-ts:memory/fixed_pinned_pinned
+
 diff --git a/src/coreclr/jit/importer.cpp b/src/coreclr/jit/importer.cpp
 index f75974de2..21b9e96cb 100644
 --- a/src/coreclr/jit/importer.cpp

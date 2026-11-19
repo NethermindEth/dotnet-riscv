@@ -24,6 +24,9 @@ Three things differ from arm64, all forced by the ISA:
   - the tail call to RhpUniversalTransitionTailCall is written out by
     hand: the tail pseudo-instruction expands through t1, which is
     carrying the thunk parameter.
+
+Regression test: bflat-ts:dispatch/interface_dispatch
+
 diff --git a/src/coreclr/nativeaot/Runtime/riscv64/DispatchResolve.S b/src/coreclr/nativeaot/Runtime/riscv64/DispatchResolve.S
 --- a/src/coreclr/nativeaot/Runtime/riscv64/DispatchResolve.S
 +++ b/src/coreclr/nativeaot/Runtime/riscv64/DispatchResolve.S

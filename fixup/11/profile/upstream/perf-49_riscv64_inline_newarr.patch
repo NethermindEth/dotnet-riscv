@@ -15,6 +15,11 @@ JIT helper and stay as they are.
 
 RISC-V64 zkVM: inline bump allocation of single-dimensional arrays (JitZkBumpAddr).
 
+Regression test: bflat-ts:memory/inline_array_alloc
+Regression test: bflat-ts:memory/inline_array_alloc_helper
+Regression test: bflat-ts:memory/array_length_checks
+Regression test: bflat-ts:memory/array_length_checks_helper
+
 diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
 index 02db5a29b..b14e4dd84 100644
 --- a/src/coreclr/jit/compiler.h

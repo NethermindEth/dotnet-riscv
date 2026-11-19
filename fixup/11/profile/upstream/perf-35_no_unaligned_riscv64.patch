@@ -1,3 +1,6 @@
+Regression test: bflat-ts:alignment/unaligned_access
+Regression test: bflat-ts:alignment/unaligned_access_byte_wise
+
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 --- a/src/coreclr/jit/codegenriscv64.cpp
 +++ b/src/coreclr/jit/codegenriscv64.cpp

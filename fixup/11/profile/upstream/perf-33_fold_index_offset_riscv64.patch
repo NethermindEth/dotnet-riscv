@@ -2,6 +2,8 @@ Port of fixup/10/profile/perf/33_fold_index_offset_riscv64 to .NET 11.
 Same change as on .NET 10; only the emit.h flag definition moved (it is
 now a shifted bit next to IGF_OUT_OF_ORDER_HEAD).
 
+Regression test: bflat-ts:integers/index_offset_fold
+
 diff --git a/src/coreclr/jit/emit.cpp b/src/coreclr/jit/emit.cpp
 --- a/src/coreclr/jit/emit.cpp
 +++ b/src/coreclr/jit/emit.cpp

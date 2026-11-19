@@ -27,6 +27,8 @@ and still the only ones taken.
 Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
 
+Regression test: none - HP libunwind is not linked into a NativeAOT guest
+
 diff --git a/src/native/external/libunwind/include/libunwind-riscv.h b/src/native/external/libunwind/include/libunwind-riscv.h
 --- a/src/native/external/libunwind/include/libunwind-riscv.h
 +++ b/src/native/external/libunwind/include/libunwind-riscv.h

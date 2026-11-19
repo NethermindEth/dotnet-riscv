@@ -8,6 +8,8 @@ few words up. MemmoveNativeThreshold drops from 64 to 16 bytes and ZeroMemoryNat
 from 1024 to 64 on riscv64. In the traced Nethermind block SpanHelpers.Memmove ran 101k
 times at ~15 steps each, two thirds of them for 32..64-byte copies that now take ~5.
 
+Regression test: bflat-ts:memory/memmove_lengths
+
 diff --git a/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.ByteMemOps.cs b/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.ByteMemOps.cs
 index 34d483611..28468b523 100644
 --- a/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.ByteMemOps.cs

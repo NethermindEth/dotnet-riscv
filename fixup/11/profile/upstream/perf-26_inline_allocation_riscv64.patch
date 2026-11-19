@@ -1,3 +1,8 @@
+Regression test: bflat-ts:memory/inline_object_alloc
+Regression test: bflat-ts:memory/inline_object_alloc_helper
+Regression test: bflat-ts:memory/array_length_checks
+Regression test: bflat-ts:memory/array_length_checks_helper
+
 diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
 --- a/src/coreclr/jit/jitconfigvalues.h
 +++ b/src/coreclr/jit/jitconfigvalues.h

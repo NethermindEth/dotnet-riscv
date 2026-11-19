@@ -9,6 +9,8 @@ methods get the ordinary prolog (only the registers they modify, frameless when 
 
 RISC-V64 zkVM: P/Invoke methods no longer save all callee-saved registers nor force a frame pointer.
 
+Regression test: bflat-ts:calls/pinvoke_live_values
+
 diff --git a/src/coreclr/jit/codegencommon.cpp b/src/coreclr/jit/codegencommon.cpp
 index 5b8f588a5..812abd17e 100644
 --- a/src/coreclr/jit/codegencommon.cpp

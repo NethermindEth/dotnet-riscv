@@ -26,6 +26,10 @@ to keep sp 16-byte aligned; the fast path gains one sd and one ld.
  src/coreclr/runtime/riscv64/AllocFast.S | 11 ++++++++---
  1 file changed, 8 insertions(+), 3 deletions(-)
 
+Regression test: bflat-ts:memory/inline_array_alloc
+Regression test: bflat-ts:memory/inline_array_alloc_helper
+Regression test: tools/tests/AllocFast
+
 diff --git a/src/coreclr/runtime/riscv64/AllocFast.S b/src/coreclr/runtime/riscv64/AllocFast.S
 --- a/src/coreclr/runtime/riscv64/AllocFast.S
 +++ b/src/coreclr/runtime/riscv64/AllocFast.S

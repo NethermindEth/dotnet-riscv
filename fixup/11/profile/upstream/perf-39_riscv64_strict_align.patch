@@ -22,6 +22,9 @@ stackalloc buffer reinterpreted at an odd offset, and dependently promoted
 fields of packed structs reached through GT_LCL_VAR) are accessed byte-wise.
 bflat passes the knob for --libc sp1 and openvm. Applies on top of perf-35.
 
+Regression test: bflat-ts:alignment/strict_alignment
+Regression test: bflat-ts:alignment/strict_alignment_strict
+
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 --- a/src/coreclr/jit/codegenriscv64.cpp
 +++ b/src/coreclr/jit/codegenriscv64.cpp

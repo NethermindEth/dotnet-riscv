@@ -1,3 +1,11 @@
+Regression test: bflat-ts:integers/rv32_long_arith
+Regression test: bflat-ts:integers/rv32_long_shifts
+Regression test: bflat-ts:integers/rv32_long_casts
+Regression test: bflat-ts:calls/rv32_long_calls
+Regression test: bflat-ts:integers/rv32_int_muldiv
+Regression test: bflat-ts:alignment/rv32_byte_aligned_structs
+Regression test: bflat-ts:softfloat/rv32_soft_double
+
 diff --git a/eng/common/cross/toolchain.cmake b/eng/common/cross/toolchain.cmake
 index 530ab5aa860..5043889f861 100644
 --- a/eng/common/cross/toolchain.cmake

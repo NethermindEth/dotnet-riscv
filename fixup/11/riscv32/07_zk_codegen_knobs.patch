@@ -1,3 +1,6 @@
+Regression test: bflat-ts:optimizer/rv32_zk_knobs
+Regression test: tools/tests/InlineBox
+
 diff --git a/src/coreclr/jit/codegencommon.cpp b/src/coreclr/jit/codegencommon.cpp
 index 81d110aa..d48d05d5 100644
 --- a/src/coreclr/jit/codegencommon.cpp

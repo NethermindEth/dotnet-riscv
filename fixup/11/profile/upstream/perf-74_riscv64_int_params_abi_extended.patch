@@ -10,6 +10,8 @@ half the caller does not define.
 Nethermind stateless guest on ZisK: steps -38,510 / -68,293 (-0.07% / -0.05%) and cost -2.76M /
 -4.94M on blocks 26055159 / 26112793. Outputs identical on 11 mainnet blocks.
 
+Regression test: bflat-ts:calls/int_params
+
 diff --git a/src/coreclr/jit/codegencommon.cpp b/src/coreclr/jit/codegencommon.cpp
 --- a/src/coreclr/jit/codegencommon.cpp
 +++ b/src/coreclr/jit/codegencommon.cpp

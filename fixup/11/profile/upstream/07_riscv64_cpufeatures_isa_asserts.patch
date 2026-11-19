@@ -10,6 +10,8 @@ for. Assert what the build actually requires instead.
 Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
 
+Regression test: none - debug assertions at startup, compiled out of a release build
+
 diff --git a/src/native/minipal/cpufeatures.c b/src/native/minipal/cpufeatures.c
 --- a/src/native/minipal/cpufeatures.c
 +++ b/src/native/minipal/cpufeatures.c

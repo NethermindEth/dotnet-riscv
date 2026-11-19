@@ -13,6 +13,8 @@ because it is the part that is purely a calling convention.
 Signed-off-by: Maxim Menshikov <maksim.menshikov@nethermind.io>
 ---
 
+Regression test: bflat-ts:softfloat/soft_float_calls
+
 diff --git a/src/coreclr/inc/corjitflags.h b/src/coreclr/inc/corjitflags.h
 --- a/src/coreclr/inc/corjitflags.h
 +++ b/src/coreclr/inc/corjitflags.h

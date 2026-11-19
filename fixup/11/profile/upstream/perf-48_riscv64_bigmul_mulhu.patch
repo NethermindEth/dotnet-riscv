@@ -193,3 +193,6 @@ RISC-V: Math.BigMul(ulong, ulong, out ulong) as mul + mulhu. Applied after perf-
          [CLSCompliant(false)]
          [MethodImpl(MethodImplOptions.AggressiveInlining)]
          public static unsafe ulong BigMul(ulong a, ulong b, out ulong low)
+
+Regression test: bflat-ts:integers/big_mul
+Regression test: tools/tests/BigMul

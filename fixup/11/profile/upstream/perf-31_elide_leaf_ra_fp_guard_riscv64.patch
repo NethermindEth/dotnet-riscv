@@ -1,3 +1,6 @@
+Regression test: bflat-ts:calls/leaf_no_ra
+Regression test: bflat-ts:calls/leaf_no_ra_ra_saved
+
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 --- a/src/coreclr/jit/codegenriscv64.cpp
 +++ b/src/coreclr/jit/codegenriscv64.cpp

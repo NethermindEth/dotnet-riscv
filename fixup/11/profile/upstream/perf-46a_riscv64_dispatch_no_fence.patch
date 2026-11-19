@@ -6,6 +6,8 @@ was a wasted step on the hot path of every interface call (~1500 call sites in t
 
 RISC-V64 NativeAOT: no fences in the interface dispatch stubs (single-hart zkVM guests).
 
+Regression test: bflat-ts:dispatch/interface_dispatch
+
 diff --git a/src/coreclr/nativeaot/Runtime/riscv64/DispatchResolve.S b/src/coreclr/nativeaot/Runtime/riscv64/DispatchResolve.S
 index 3c7a07e10..3bee78e7b 100644
 --- a/src/coreclr/nativeaot/Runtime/riscv64/DispatchResolve.S

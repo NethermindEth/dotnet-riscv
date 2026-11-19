@@ -1,3 +1,5 @@
+Regression test: bflat-ts:calls/pinvoke_live_values
+
 diff --git a/src/coreclr/jit/flowgraph.cpp b/src/coreclr/jit/flowgraph.cpp
 --- a/src/coreclr/jit/flowgraph.cpp
 +++ b/src/coreclr/jit/flowgraph.cpp

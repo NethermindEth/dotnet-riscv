@@ -4,6 +4,8 @@ after the method (arm64-style), because the zkVM transpilers decode the
 code section linearly and reject data between instructions. Same as
 fixup/11/profile/minimal/20.
 
+Regression test: bflat-ts:optimizer/jump_tables
+
 diff --git a/src/coreclr/jit/ee_il_dll.cpp b/src/coreclr/jit/ee_il_dll.cpp
 --- a/src/coreclr/jit/ee_il_dll.cpp
 +++ b/src/coreclr/jit/ee_il_dll.cpp

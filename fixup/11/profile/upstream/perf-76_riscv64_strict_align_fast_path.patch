@@ -31,6 +31,8 @@ Nethermind stateless guest on SP1 (sp1-runner v6.6.0, master cd336c4ccc), cycles
 The JIT change alone, without the localloc proof, was -3.4% / -3.8%. Only builds with
 JitNoUnalignedAccess change: the ZisK guest builds byte-identical.
 Regression test: tools/tests/StrictAlignment/FastPath.
+Regression test: bflat-ts:alignment/strict_alignment
+Regression test: bflat-ts:alignment/strict_alignment_strict
 
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 --- a/src/coreclr/jit/codegenriscv64.cpp

@@ -15,6 +15,9 @@ passes it for the zisk libc.
 Measured on nine mainnet blocks with ziskemu, same JIT with the knob at 0 vs 3:
 -2.2% executed steps (-35.3M), identical outputs; guest code grew 3%.
 
+Regression test: bflat-ts:optimizer/inlining_knobs
+Regression test: bflat-ts:optimizer/inlining_knobs_multiplier
+
 diff --git a/src/coreclr/jit/inlinepolicy.cpp b/src/coreclr/jit/inlinepolicy.cpp
 index 2641cc168..b0c6731d2 100644
 --- a/src/coreclr/jit/inlinepolicy.cpp
