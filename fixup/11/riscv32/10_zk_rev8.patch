@@ -10,6 +10,8 @@ library splits into two 32-bit reversals, as on every 32-bit target.
 rev8 is a grev with a shift amount of XLEN - 8, so its encoding differs by width: 0x698 in
 the immediate on RV32, 0x6b8 on RV64. On RV32 the result needs no sign extension.
 
+Regression test: tools/tests/Rev8
+
 diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
 index 0baa5f3e..336e2235 100644
 --- a/src/coreclr/jit/codegenriscv64.cpp
