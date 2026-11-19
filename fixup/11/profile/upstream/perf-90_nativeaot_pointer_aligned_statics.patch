@@ -1,0 +1,31 @@
+NativeAOT: align the non-GC statics of a type to the pointer size at least.
+
+The region was aligned to the largest alignment of its fields, which is 1 for a byte-packed struct.
+The RISC-V JIT takes the base of the region to be pointer-aligned when it decides whether an access
+to a field needs an alignment test (JitRiscV64StrictAlign, perf-39), and tests only the offset.
+
+Regression test: bflat-ts:alignment/strict_alignment
+Regression test: bflat-ts:alignment/strict_alignment_strict
+
+diff --git a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/NonGCStaticsNode.cs b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/NonGCStaticsNode.cs
+--- a/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/NonGCStaticsNode.cs
++++ b/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/NonGCStaticsNode.cs
+@@ -145,12 +145,14 @@ private static int GetClassConstructorContextAlignment(TargetDetails target)
+ 
+         public int GetAlignment(NodeFactory factory)
+         {
+-            // The non-GC static region is aligned to the largest static field's alignment, which
+-            // can be smaller than the pointer size for byte-packed layouts. When a cctor context
+-            // is prefixed, the region additionally needs pointer alignment for that context.
++            // The non-GC static region is aligned to the largest static field's alignment, and
++            // to the pointer size at least: the alignment of a byte-packed layout is smaller, and
++            // the RISC-V JIT takes the base of the region to be pointer-aligned when it decides
++            // whether an access to a field needs an alignment test (JitRiscV64StrictAlign). A cctor
++            // context that is prefixed needs the pointer alignment as well.
+             // Keep this in sync with the alignment applied in GetDehydratableData.
+             int fieldAlignment = _type.NonGCStaticFieldAlignment.AsInt;
+-            return HasCCtorContext ? Math.Max(fieldAlignment, GetClassConstructorContextAlignment(factory.Target)) : fieldAlignment;
++            return Math.Max(fieldAlignment, GetClassConstructorContextAlignment(factory.Target));
+         }
+ 
+         public override bool HasConditionalStaticDependencies => _type.ConvertToCanonForm(CanonicalFormKind.Specific) != _type;
