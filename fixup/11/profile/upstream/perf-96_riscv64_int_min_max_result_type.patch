@@ -1,0 +1,31 @@
+RISC-V: the result of a 32-bit integer Math.Min / Math.Max with Zbb is an INT.
+
+With Zbb the importer turns Math.Min and Math.Max on integers into an intrinsic node on whole
+registers: operands narrower than a register are extended, and the node is typed as a native integer
+whatever the type the method returns. The code after the call is typed for an INT result: a
+conversion of a uint result to long zero-extends it, a shift right of it is a 32-bit one, an addition
+wraps at 32 bits. On a native integer node these are 64-bit operations, or nothing at all. The
+intrinsic of a 32-bit or narrower form is now under a cast to INT. Its operands are extended from 32
+bits, so the result is too, and code generation emits nothing for the cast.
+
+Regression test: bflat-ts:memory/const_size_moves
+
+diff --git a/src/coreclr/jit/importercalls.cpp b/src/coreclr/jit/importercalls.cpp
+--- a/src/coreclr/jit/importercalls.cpp
++++ b/src/coreclr/jit/importercalls.cpp
+@@ -5862,6 +5862,15 @@ GenTree* Compiler::impIntrinsic(CORINFO_CLASS_HANDLE    clsHnd,
+                         GenTreeIntrinsic(TYP_I_IMPL, op1, op2, ni, nullptr R2RARG(CORINFO_CONST_LOOKUP{IAT_VALUE}));
+ 
+                     retNode = minMax;
++
++                    if (genTypeSize(preciseType) < REGSIZE_BYTES)
++                    {
++                        // The method returns INT, and the code after the call is typed for it: a conversion of
++                        // the result to a wider type extends it, and INT arithmetic on it wraps at 32 bits.
++                        // Keep the node that the stack holds an INT one. The operands are extended from 32
++                        // bits, so the result is too, and the cast costs no instruction.
++                        retNode = gtNewCastNode(TYP_INT, minMax, false, TYP_INT);
++                    }
+                 }
+ #endif // TARGET_RISCV64
+             }
