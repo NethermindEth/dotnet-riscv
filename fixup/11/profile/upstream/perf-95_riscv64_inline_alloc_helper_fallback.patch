@@ -1,0 +1,359 @@
+RISC-V: an inline allocation that does not fit in the heap throws OutOfMemoryException (applies after perf-94).
+
+The inline allocation of an object (perf-26) and of an array (perf-49) ended the guest when the new
+bump pointer reached the floor of the heap; the allocation helper throws OutOfMemoryException there,
+which a program can catch. The guard is now the condition of a QMARK whose other branch is the
+helper call the allocation would have been: the helper allocates from the same heap, below the same
+bump pointer, so it throws. The call is marked as not returning, which keeps the register allocator
+out of its way: nothing is live after it.
+
+A QMARK is legal only as the whole value a statement stores to a local. An object allocation always
+is one, and so is an array allocation when the object allocator phase meets it, which is where arrays
+are expanded now; the preamble of the sequence (the pointers, and for an array the length and its
+guard) goes into a statement of its own before it. An array allocation that is first met in morph,
+inside a tree, keeps the guard that fails fast.
+
+The fast path is the same instructions. The temporaries of the sequence now live across a branch,
+which can leave a loop with several allocation sites one register short for a hoisted constant
+(on a loop with four sites: 69 steps an iteration where it was 60). JitZkAllocFallback=0 restores
+the guard that fails fast.
+
+The Checked JIT also names the overflow and fail-fast bounds checks in its dumps, where it asserted.
+
+Regression test: bflat-ts:memory/array_length_checks
+Regression test: bflat-ts:memory/array_length_checks_helper
+
+diff --git a/src/coreclr/jit/compiler.h b/src/coreclr/jit/compiler.h
+--- a/src/coreclr/jit/compiler.h
++++ b/src/coreclr/jit/compiler.h
+@@ -7408,7 +7408,7 @@ private:
+                                                      Statement*       paramAssignmentInsertionPoint);
+     GenTree* fgMorphCall(GenTreeCall* call);
+ #if defined(TARGET_RISCV64)
+-    GenTree* fgRiscV64TryInlineNewArr(GenTreeCall* call);
++    GenTree* fgRiscV64TryInlineNewArr(GenTreeCall* call, GenTree** preamble = nullptr);
+     int      zkCsrForPInvoke(GenTreeCall* call);
+     bool     zkInitBlkUsesMemsetCsr(GenTreeBlk* blk, bool* needsAddrReg);
+     bool     zkCpBlkUsesMemcpyCsr(GenTreeBlk* blk, bool* needsDstReg, bool* needsSrcReg);
+diff --git a/src/coreclr/jit/gentree.cpp b/src/coreclr/jit/gentree.cpp
+--- a/src/coreclr/jit/gentree.cpp
++++ b/src/coreclr/jit/gentree.cpp
+@@ -12877,6 +12877,12 @@ void Compiler::gtDispNodeName(GenTree* tree)
+             case SCK_ARG_RNG_EXCPN:
+                 sprintf_s(bufp, sizeof(buf), " %s_ArgRng", name);
+                 break;
++            case SCK_OVERFLOW:
++                sprintf_s(bufp, sizeof(buf), " %s_Ovf", name);
++                break;
++            case SCK_FAIL_FAST:
++                sprintf_s(bufp, sizeof(buf), " %s_FailFast", name);
++                break;
+             default:
+                 unreached();
+         }
+diff --git a/src/coreclr/jit/gentree.h b/src/coreclr/jit/gentree.h
+--- a/src/coreclr/jit/gentree.h
++++ b/src/coreclr/jit/gentree.h
+@@ -4443,6 +4443,7 @@ enum GenTreeCallFlags : unsigned int
+ 
+     GTF_CALL_M_DOES_NOT_RETURN         = 0x00002000, // call does not return
+     GTF_CALL_M_STACK_ARRAY             = 0x00004000, // this call is a new array helper for a stack allocated array.
++    GTF_CALL_M_ZK_ALLOC_FALLBACK       = 0x10000000, // zkVM: this allocation helper call is the slow path of an inline allocation
+     GTF_CALL_M_FAT_POINTER_CHECK       = 0x00008000, // NativeAOT managed calli needs transformation, that checks
+                                                      // special bit in calli address. If it is set, then it is necessary
+                                                      // to restore real function address and load hidden argument
+diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
+--- a/src/coreclr/jit/jitconfigvalues.h
++++ b/src/coreclr/jit/jitconfigvalues.h
+@@ -474,6 +474,11 @@ RELEASE_CONFIG_INTEGER(EnableArm64SveSm4,           "EnableArm64SveSm4",
+ // leave it at 0: the address is a raw absolute constant with no relocation and
+ // means nothing outside the guest it was chosen for.
+ RELEASE_CONFIG_INTEGER(JitZkBumpAddr,               "JitZkBumpAddr",             0)
++// With JitZkBumpAddr: an inline allocation that does not fit in the heap calls the allocation helper,
++// which throws OutOfMemoryException, instead of failing fast. The fast path is the same instructions;
++// the temporaries of the sequence live across a branch, which can leave a loop with several
++// allocation sites one register short for a hoisted constant. 0 restores the fail-fast guard.
++RELEASE_CONFIG_INTEGER(JitZkAllocFallback,          "JitZkAllocFallback",        1)
+ RELEASE_CONFIG_INTEGER(EnableRiscV64Zba,            "EnableRiscV64Zba",          1) // Allows RiscV64 Zba hardware intrinsics to be disabled
+ RELEASE_CONFIG_INTEGER(EnableRiscV64Zbb,            "EnableRiscV64Zbb",          1) // Allows RiscV64 Zbb hardware intrinsics to be disabled
+ RELEASE_CONFIG_INTEGER(EnableRiscV64Zbs,            "EnableRiscV64Zbs",          1) // Allows RiscV64 Zbs hardware intrinsics to be disabled
+diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
+--- a/src/coreclr/jit/morph.cpp
++++ b/src/coreclr/jit/morph.cpp
+@@ -6583,7 +6583,9 @@ int Compiler::zkCsrForPInvoke(GenTreeCall* call)
+ //    (cell, floor, size header) and why the floor load is invariant.
+ //
+ // Arguments:
+-//    call - the helper call
++//    call     - the helper call
++//    preamble - [out, optional] given when the call is the whole value that a statement stores to a
++//               local: a tree to evaluate in a statement of its own right before that one
+ //
+ // Return Value:
+ //    A TYP_REF tree producing the array, to be morphed by the caller, or nullptr
+@@ -6609,7 +6611,7 @@ int Compiler::zkCsrForPInvoke(GenTreeCall* call)
+ //    generic code looks it up at run time), the frozen-segment helper, and arrays
+ //    the object allocator already placed on the stack (GTF_CALL_M_STACK_ARRAY).
+ //
+-GenTree* Compiler::fgRiscV64TryInlineNewArr(GenTreeCall* call)
++GenTree* Compiler::fgRiscV64TryInlineNewArr(GenTreeCall* call, GenTree** preamble)
+ {
+     // Low 32 bits of the cell address, zero-extended. 0 disables the transform.
+     const ssize_t bumpAddr = (ssize_t)(size_t)(uint32_t)JitConfig.JitZkBumpAddr();
+@@ -6629,7 +6631,7 @@ GenTree* Compiler::fgRiscV64TryInlineNewArr(GenTreeCall* call)
+             return nullptr;
+     }
+ 
+-    if ((call->gtCallMoreFlags & GTF_CALL_M_STACK_ARRAY) != 0)
++    if ((call->gtCallMoreFlags & (GTF_CALL_M_STACK_ARRAY | GTF_CALL_M_ZK_ALLOC_FALLBACK)) != 0)
+     {
+         return nullptr;
+     }
+@@ -6773,10 +6775,24 @@ GenTree* Compiler::fgRiscV64TryInlineNewArr(GenTreeCall* call)
+     // floor = *(intptr*)(BUMP_ADDR - 8), invariant, through the base local (see the object allocator).
+     GenTree* floor = gtNewIndir(TYP_I_IMPL, cellAddr(cellOff - 8), GTF_IND_NONFAULTING | GTF_IND_INVARIANT);
+ 
+-    // Guard: fail fast when hdr <= floor (heap exhausted).
+-    GenTreeBoundsChk* heapGuard = new (this, GT_BOUNDS_CHECK)
+-        GenTreeBoundsChk(floor, gtNewLclvNode(hdrLcl, TYP_I_IMPL), SCK_FAIL_FAST);
+-    heapGuard->gtInxType = TYP_I_IMPL;
++    // The array does not fit when hdr <= floor (heap exhausted). When the allocation is the whole value of
++    // a statement that stores it to a local - which is how the importer leaves it, and how the object
++    // allocator phase finds it - that case goes to the helper, which throws OutOfMemoryException: a
++    // QMARK is legal there. A call that is met later, inside a tree, fails fast.
++    const bool withFallback = (preamble != nullptr) && (JitConfig.JitZkAllocFallback() != 0);
++    GenTree*          fits      = nullptr;
++    GenTreeBoundsChk* heapGuard = nullptr;
++    if (withFallback)
++    {
++        fits = gtNewOperNode(GT_LT, TYP_INT, floor, gtNewLclvNode(hdrLcl, TYP_I_IMPL));
++        fits->SetUnsigned();
++    }
++    else
++    {
++        heapGuard = new (this, GT_BOUNDS_CHECK)
++            GenTreeBoundsChk(floor, gtNewLclvNode(hdrLcl, TYP_I_IMPL), SCK_FAIL_FAST);
++        heapGuard->gtInxType = TYP_I_IMPL;
++    }
+ 
+     // *(intptr*)cell = hdr
+     GenTree* storeBump = gtNewStoreIndNode(TYP_I_IMPL, cellAddr(cellOff), gtNewLclvNode(hdrLcl, TYP_I_IMPL));
+@@ -6785,8 +6801,19 @@ GenTree* Compiler::fgRiscV64TryInlineNewArr(GenTreeCall* call)
+     GenTree* storeSizeHdr =
+         gtNewStoreIndNode(TYP_LONG, gtNewLclvNode(hdrLcl, TYP_I_IMPL), gtNewLclvNode(sizeLcl, TYP_LONG));
+ 
+-    // *(intptr*)obj = MethodTable
+-    GenTree* storeMt = gtNewStoreIndNode(TYP_I_IMPL, gtNewLclvNode(objLcl, TYP_I_IMPL), clsArg);
++    // *(intptr*)obj = MethodTable. With the fallback the call keeps its own class argument, and the
++    // store, which is then in a block of its own, takes the handle from a local set in the preamble:
++    // a constant in a block that always runs is still hoisted out of a loop.
++    unsigned mtLcl      = BAD_VAR_NUM;
++    GenTree* storeMtLcl = nullptr;
++    if (withFallback)
++    {
++        mtLcl                   = lvaGrabTemp(true DEBUGARG("zkVM inline-newarr mt"));
++        lvaTable[mtLcl].lvType  = TYP_I_IMPL;
++        storeMtLcl              = gtNewStoreLclVarNode(mtLcl, gtCloneExpr(clsArg));
++    }
++    GenTree* storeMt = gtNewStoreIndNode(TYP_I_IMPL, gtNewLclvNode(objLcl, TYP_I_IMPL),
++                                         withFallback ? gtNewLclvNode(mtLcl, TYP_I_IMPL) : clsArg);
+ 
+     // *(int64*)(obj + OFFSETOF__CORINFO_Array__length) = len: the length and its zero padding word in one aligned
+     // store (len lies in [0, CORINFO_Array_MaxLength], see the guard), which a zkVM charges less than a 4-byte one.
+@@ -6805,6 +6832,33 @@ GenTree* Compiler::fgRiscV64TryInlineNewArr(GenTreeCall* call)
+     tree          = gtNewOperNode(GT_COMMA, TYP_REF, storeMt, tree);
+     tree          = gtNewOperNode(GT_COMMA, TYP_REF, storeSizeHdr, tree);
+     tree          = gtNewOperNode(GT_COMMA, TYP_REF, storeBump, tree);
++    if (withFallback)
++    {
++        // The length, its guard and the new pointers are computed in the preamble (the condition of a
++        // QMARK has to be a bare compare); the stores are made only when the array fits, and the
++        // helper is called with the same length otherwise.
++        GenTree* pre = gtNewOperNode(GT_COMMA, TYP_VOID, storeObj, storeHdr);
++        pre          = gtNewOperNode(GT_COMMA, TYP_VOID, storeMtLcl, pre);
++        pre          = gtNewOperNode(GT_COMMA, TYP_VOID, storeCell, pre);
++        pre          = gtNewOperNode(GT_COMMA, TYP_VOID, storeSize, pre);
++        if (lenGuard != nullptr)
++        {
++            pre = gtNewOperNode(GT_COMMA, TYP_VOID, lenGuard, pre);
++        }
++        pre       = gtNewOperNode(GT_COMMA, TYP_VOID, storeLen, pre);
++        *preamble = pre;
++
++        // The helper allocates from the same heap, below the same bump pointer, so it cannot succeed
++        // where the guard has failed: the call does not return. That keeps it out of the way of the
++        // register allocator - nothing is live after it - and the fast path as it was with a guard that
++        // failed fast.
++        call->gtArgs.GetUserArgByIndex(1)->SetEarlyNode(gtNewLclvNode(lenLcl, TYP_LONG));
++        call->gtCallMoreFlags |= (GTF_CALL_M_ZK_ALLOC_FALLBACK | GTF_CALL_M_DOES_NOT_RETURN);
++
++        GenTreeQmark* qmark = gtNewQmarkNode(TYP_REF, fits, gtNewColonNode(TYP_REF, tree, call));
++        qmark->SetThenNodeLikelihood(100);
++        return qmark;
++    }
+     tree          = gtNewOperNode(GT_COMMA, TYP_REF, heapGuard, tree);
+     tree          = gtNewOperNode(GT_COMMA, TYP_REF, storeHdr, tree);
+     tree          = gtNewOperNode(GT_COMMA, TYP_REF, storeObj, tree);
+diff --git a/src/coreclr/jit/objectalloc.cpp b/src/coreclr/jit/objectalloc.cpp
+--- a/src/coreclr/jit/objectalloc.cpp
++++ b/src/coreclr/jit/objectalloc.cpp
+@@ -1355,13 +1355,38 @@ bool ObjectAllocator::MorphAllocObjNodes()
+             GenTree* const             data      = stmtExpr->AsLclVar()->Data();
+             ObjectAllocationType const allocType = AllocationKind(data);
+ 
+-            if (allocType == OAT_NONE)
++            if (allocType != OAT_NONE)
+             {
+-                continue;
++                AllocationCandidate c(block, stmt, stmtExpr, lclNum, allocType);
++                MorphAllocObjNode(c);
+             }
+ 
+-            AllocationCandidate c(block, stmt, stmtExpr, lclNum, allocType);
+-            MorphAllocObjNode(c);
++#if defined(TARGET_RISCV64)
++            // zkVM: an array that stays on the heap is allocated inline here, where the helper call is
++            // still the whole value of its statement and can be kept as the slow path (see
++            // Compiler::fgRiscV64TryInlineNewArr).
++            GenTree* const root = stmt->GetRootNode();
++            if (root->OperIs(GT_STORE_LCL_VAR) && root->AsLclVar()->Data()->IsHelperCall())
++            {
++                GenTree*       preamble = nullptr;
++                GenTree* const inlined  =
++                    m_compiler->fgRiscV64TryInlineNewArr(root->AsLclVar()->Data()->AsCall(), &preamble);
++                if (inlined != nullptr)
++                {
++                    root->AsLclVar()->Data() = inlined;
++                    root->AddAllEffectsFlags(inlined);
++                    m_zkAllocPreamble = preamble;
++                }
++            }
++            if (m_zkAllocPreamble != nullptr)
++            {
++                // The preamble of an inline allocation (of an array, here, or of an object, in
++                // MorphAllocObjNodeIntoHelperCall) goes right before the statement of the allocation.
++                Statement* const preStmt = m_compiler->fgNewStmtFromTree(m_zkAllocPreamble, stmt->GetDebugInfo());
++                m_compiler->fgInsertStmtBefore(block, stmt, preStmt);
++                m_zkAllocPreamble = nullptr;
++            }
++#endif // TARGET_RISCV64
+         }
+     }
+ 
+@@ -1846,17 +1871,29 @@ GenTree* ObjectAllocator::MorphAllocObjNodeIntoHelperCall(GenTreeAllocObj* alloc
+             // load of a constant address and is CSEd/hoisted, while codegen needs one ld.
+             GenTree* floor = m_compiler->gtNewIndir(TYP_I_IMPL, cellAddr(cellOff - 8), GTF_IND_NONFAULTING | GTF_IND_INVARIANT);
+ 
+-            // Guard: fail fast when hdr <= floor. GT_BOUNDS_CHECK traps on
++            // The object fits when floor < hdr, unsigned. Rejecting the exact boundary costs at most
++            // one object at the very bottom of the heap and keeps this to a single instruction. An
++            // object that does not fit goes to the allocation helper, which throws
++            // OutOfMemoryException: the value is a QMARK, legal here because an allocation is the
++            // whole value that its statement stores to a local.
++            // With JitZkAllocFallback=0 the guard fails fast instead: GT_BOUNDS_CHECK traps on
+             // (unsigned)index >= (unsigned)length, so index = floor, length = hdr.
+-            // Rejecting the exact boundary costs at most one object at the very
+-            // bottom of the heap and keeps this to a single instruction.
+-            GenTreeBoundsChk* guard = new (m_compiler, GT_BOUNDS_CHECK)
+-                GenTreeBoundsChk(floor, m_compiler->gtNewLclvNode(hdrLcl, TYP_I_IMPL), SCK_FAIL_FAST);
+-            // The node's operands are plain pointers, not an array element and
+-            // its length, so it is never a loop-cloning candidate - but leave
+-            // gtInxType well-formed rather than the constructor's TYP_UNKNOWN
+-            // (loopcloning.cpp asserts it is not TYP_VOID).
+-            guard->gtInxType = TYP_I_IMPL;
++            const bool        withFallback = (JitConfig.JitZkAllocFallback() != 0);
++            GenTree*          fits         = nullptr;
++            GenTreeBoundsChk* guard        = nullptr;
++            if (withFallback)
++            {
++                fits = m_compiler->gtNewOperNode(GT_LT, TYP_INT, floor, m_compiler->gtNewLclvNode(hdrLcl, TYP_I_IMPL));
++                fits->SetUnsigned();
++            }
++            else
++            {
++                guard = new (m_compiler, GT_BOUNDS_CHECK)
++                    GenTreeBoundsChk(floor, m_compiler->gtNewLclvNode(hdrLcl, TYP_I_IMPL), SCK_FAIL_FAST);
++                // Not an array element and its length, so never a loop-cloning candidate; gtInxType
++                // is left well-formed (loopcloning.cpp asserts it is not TYP_VOID).
++                guard->gtInxType = TYP_I_IMPL;
++            }
+ 
+             // *(intptr*)cell = hdr
+             GenTree* storeBump =
+@@ -1867,8 +1904,22 @@ GenTree* ObjectAllocator::MorphAllocObjNodeIntoHelperCall(GenTreeAllocObj* alloc
+                                                          m_compiler->gtNewIconNode(payload, TYP_LONG));
+ 
+             // *(intptr*)obj = MethodTable
+-            GenTree* storeMt =
+-                m_compiler->gtNewStoreIndNode(TYP_I_IMPL, m_compiler->gtNewLclvNode(objLcl, TYP_I_IMPL), arg);
++            // The store is in a block of its own, so it takes the handle from a local set in the preamble:
++            // a constant in a block that always runs is still hoisted out of a loop.
++            GenTree* storeMtLcl = nullptr;
++            GenTree* storeMt;
++            if (withFallback)
++            {
++                unsigned mtLcl = m_compiler->lvaGrabTemp(true DEBUGARG("zkVM inline-alloc mt"));
++                m_compiler->lvaTable[mtLcl].lvType = TYP_I_IMPL;
++                storeMtLcl = m_compiler->gtNewStoreLclVarNode(mtLcl, m_compiler->gtCloneExpr(arg));
++                storeMt    = m_compiler->gtNewStoreIndNode(TYP_I_IMPL, m_compiler->gtNewLclvNode(objLcl, TYP_I_IMPL),
++                                                           m_compiler->gtNewLclvNode(mtLcl, TYP_I_IMPL));
++            }
++            else
++            {
++                storeMt = m_compiler->gtNewStoreIndNode(TYP_I_IMPL, m_compiler->gtNewLclvNode(objLcl, TYP_I_IMPL), arg);
++            }
+ 
+             // The result is the object as a reference. obj is a native int, and the
+             // JIT does not allow reading a TYP_I_IMPL local as TYP_REF (a Checked
+@@ -1885,11 +1936,35 @@ GenTree* ObjectAllocator::MorphAllocObjNodeIntoHelperCall(GenTreeAllocObj* alloc
+             tree          = m_compiler->gtNewOperNode(GT_COMMA, TYP_REF, storeMt, tree);
+             tree          = m_compiler->gtNewOperNode(GT_COMMA, TYP_REF, storeSize, tree);
+             tree          = m_compiler->gtNewOperNode(GT_COMMA, TYP_REF, storeBump, tree);
+-            tree          = m_compiler->gtNewOperNode(GT_COMMA, TYP_REF, guard, tree);
+-            tree          = m_compiler->gtNewOperNode(GT_COMMA, TYP_REF, storeHdr, tree);
+-            tree          = m_compiler->gtNewOperNode(GT_COMMA, TYP_REF, storeObj, tree);
+-            tree          = m_compiler->gtNewOperNode(GT_COMMA, TYP_REF, storeCell, tree);
+-            return tree;
++            if (!withFallback)
++            {
++                tree = m_compiler->gtNewOperNode(GT_COMMA, TYP_REF, guard, tree);
++                tree = m_compiler->gtNewOperNode(GT_COMMA, TYP_REF, storeHdr, tree);
++                tree = m_compiler->gtNewOperNode(GT_COMMA, TYP_REF, storeObj, tree);
++                tree = m_compiler->gtNewOperNode(GT_COMMA, TYP_REF, storeCell, tree);
++                return tree;
++            }
++
++            // The new pointers are computed in a statement of their own before this one (the condition
++            // of a QMARK has to be a bare compare); the stores are made when the object fits.
++            GenTree* pre      = m_compiler->gtNewOperNode(GT_COMMA, TYP_VOID, storeObj, storeHdr);
++            pre               = m_compiler->gtNewOperNode(GT_COMMA, TYP_VOID, storeMtLcl, pre);
++            m_zkAllocPreamble = m_compiler->gtNewOperNode(GT_COMMA, TYP_VOID, storeCell, pre);
++
++            // The slow path is the helper call the node would have become. The helper allocates from
++            // the same heap, below the same bump pointer, so it cannot succeed where the guard has
++            // failed: the call does not return, and nothing has to be kept live across it.
++            GenTree* const slow = m_compiler->fgMorphIntoHelperCall(allocObj, allocObj->gtNewHelper, false, arg);
++            slow->AsCall()->gtCallMoreFlags |= GTF_CALL_M_DOES_NOT_RETURN;
++            if (helperHasSideEffects)
++            {
++                slow->AsCall()->gtCallMoreFlags |= GTF_CALL_M_ALLOC_SIDE_EFFECTS;
++            }
++
++            GenTreeQmark* const qmark =
++                m_compiler->gtNewQmarkNode(TYP_REF, fits, m_compiler->gtNewColonNode(TYP_REF, tree, slow));
++            qmark->SetThenNodeLikelihood(100);
++            return qmark;
+         }
+     }
+     // =========================================================================
+diff --git a/src/coreclr/jit/objectalloc.h b/src/coreclr/jit/objectalloc.h
+--- a/src/coreclr/jit/objectalloc.h
++++ b/src/coreclr/jit/objectalloc.h
+@@ -184,6 +184,7 @@ class ObjectAllocator final : public Phase
+     BitSetShortLongRep* m_ConnGraphAdjacencyMatrix;
+     unsigned int        m_StackAllocMaxSize;
+     unsigned            m_stackAllocationCount;
++    GenTree*            m_zkAllocPreamble = nullptr; // zkVM: the preamble of the inline allocation being made
+ 
+     // Info for conditionally-escaping locals
+     LocalToLocalMap m_EnumeratorLocalToPseudoIndexMap;
