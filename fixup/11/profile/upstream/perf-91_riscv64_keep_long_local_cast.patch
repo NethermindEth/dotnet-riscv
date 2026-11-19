@@ -1,0 +1,33 @@
+RISC-V: keep the cast of a LONG local to INT.
+
+fgOptimizeCast discards the cast by reading the local as INT. In a register that is the whole 64-bit
+value, while an INT value is sign-extended in its register and its users rely on it: a checked
+operation compares the 32-bit result with the 64-bit one of its operands. The cast is kept on riscv64
+and is the sext.w that extends the value; a cast of an operator over such locals is narrowed as
+before, since its W form extends the result.
+
+Regression test: bflat-ts:integers/int_extension_matrix
+
+diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
+--- a/src/coreclr/jit/morph.cpp
++++ b/src/coreclr/jit/morph.cpp
+@@ -9568,8 +9568,18 @@ GenTree* Compiler::fgOptimizeCast(GenTreeCast* cast)
+             return src;
+         }
+ 
++#if defined(TARGET_RISCV64) && defined(TARGET_64BIT)
++        // A LONG local narrowed to INT is the local read with another type: in a register that is the
++        // whole 64-bit value, while an INT value is sign-extended in its register and its users rely on
++        // it (a checked operation, a call argument, a return value). The cast is the sext.w that makes
++        // it so. An operator over such locals is still narrowed: its W form extends the result.
++        const bool keepCast = src->OperIs(GT_LCL_VAR) && (genActualType(castToType) == TYP_INT);
++#else
++        const bool keepCast = false;
++#endif
++
+         // Try to narrow the operand of the cast and discard the cast.
+-        if (opts.OptEnabled(CLFLG_TREETRANS) && (genTypeSize(src) > genTypeSize(castToType)) &&
++        if (!keepCast && opts.OptEnabled(CLFLG_TREETRANS) && (genTypeSize(src) > genTypeSize(castToType)) &&
+             optNarrowTree(src, src->TypeGet(), castToType, cast->gtVNPair, false))
+         {
+             optNarrowTree(src, src->TypeGet(), castToType, cast->gtVNPair, true);
