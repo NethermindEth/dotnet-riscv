@@ -1,0 +1,62 @@
+RISC-V: sign-extend an INT argument or result that is already in its register (applies after perf-74).
+
+perf-53 lets a caller take the INT result of a managed method to be sign-extended, and perf-74 lets a
+method take its INT parameters to be. Both rely on the move into a0 or into the argument register to
+extend the value, and both moves were skipped when the value already was in that register, extended
+or not: an int read from a long local, for one.
+
+genPutArgReg and genSimpleReturn now emit sext.w in place for a value that IsInt32SignExtendedInReg does
+not accept. A struct returned in a register is not a result of genSimpleReturn, so its caller does not
+take it to be extended.
+
+Regression test: bflat-ts:calls/int_params
+Regression test: bflat-ts:calls/int_call_results
+
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -1543,6 +1543,14 @@ void CodeGen::genSimpleReturn(GenTree* treeNode)
+ 
+     bool movRequired = (op1->GetRegNum() != retReg);
+ 
++    // The callers take an INT result to be sign-extended (see Lowering::IsInt32SignExtendedInReg), so one
++    // that is not known to be is extended even when it already is in a0.
++    if (!movRequired && !varTypeUsesFloatArgReg(treeNode) && (emitActualTypeSize(targetType) == EA_4BYTE) &&
++        !Lowering::IsInt32SignExtendedInReg(m_compiler, op1))
++    {
++        movRequired = true;
++    }
++
+     if (!movRequired)
+     {
+         if (op1->OperIs(GT_LCL_VAR))
+@@ -5103,9 +5111,12 @@ void CodeGen::genPutArgReg(GenTreeOp* tree)
+         targetType = TYP_LONG;
+     }
+ 
+-    // If child node is not already in the register we need, move it
++    // If child node is not already in the register we need, move it. The callee takes an INT argument to
++    // be sign-extended (see genHomeRegisterParams), so one that is not known to be is extended even when
++    // it already is in its register: a 4-byte move is sext.w.
++    const bool canSkip = varTypeIsFloating(tree) || (targetType != TYP_INT);
+     GetEmitter()->emitIns_Mov(ins_Copy(op1->GetRegNum(), targetType), emitActualTypeSize(targetType), targetReg,
+-                              op1->GetRegNum(), true);
++                              op1->GetRegNum(), canSkip);
+     genProduceReg(tree);
+ }
+ 
+diff --git a/src/coreclr/jit/lowerriscv64.cpp b/src/coreclr/jit/lowerriscv64.cpp
+--- a/src/coreclr/jit/lowerriscv64.cpp
++++ b/src/coreclr/jit/lowerriscv64.cpp
+@@ -438,7 +438,10 @@ bool Lowering::IsInt32SignExtendedInReg(Compiler* comp, GenTree* node, unsigned
+             // tail call only forwards that register. Helpers and unmanaged callees are not trusted:
+             // some are hand-written assembly or C code returning narrower types.
+             GenTreeCall* const call = node->AsCall();
+-            return call->TypeIs(TYP_INT) && (call->gtCallType == CT_USER_FUNC) && !call->IsUnmanaged() &&
++            // A struct returned in a register is not a result of genSimpleReturn: its upper half is
++            // whatever the fields above the first four bytes are, or was never written.
++            return call->TypeIs(TYP_INT) && (call->gtReturnType == TYP_INT) && (call->gtCallType == CT_USER_FUNC) &&
++                   !call->IsUnmanaged() &&
+                    !call->IsHelperCall() && !call->HasMultiRegRetVal();
+         }
+ 
