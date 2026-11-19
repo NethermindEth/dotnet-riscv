@@ -1,0 +1,108 @@
+riscv32: split a 2*XLEN scalar between the last register and the stack; test every base in unoptimized code.
+
+With one argument register left a 64-bit scalar went wholly on the stack and the register stayed
+unused. The psABI splits it, and native code on the other side of a P/Invoke or of a reverse
+P/Invoke follows the psABI. The classifier splits it now, as it does an aggregate; a split long
+parameter is not promoted and the prolog homes its stack half next to the register half.
+
+Without strict alignment a base is trusted and only a misaligned offset is looked for. Unoptimized
+code keeps addresses in temporaries, where the offset is not seen (a field of a packed local taken
+by address), so there every access through a base that is not known to be aligned is tested, as
+with strict alignment.
+
+Regression test: bflat-ts:calls/rv32_long_calls
+Regression test: bflat-ts:memory/rv32_arrays_blocks
+
+diff --git a/src/coreclr/jit/codegencommon.cpp b/src/coreclr/jit/codegencommon.cpp
+--- a/src/coreclr/jit/codegencommon.cpp
++++ b/src/coreclr/jit/codegencommon.cpp
+@@ -4700,7 +4700,7 @@ void CodeGen::genHomeStackPartOfSplitParameter(regNumber initReg, bool* initRegS
+     for (; lclNum < m_compiler->info.compArgsCount; lclNum++)
+     {
+         LclVarDsc* var = m_compiler->lvaGetDesc(lclNum);
+-        if (!var->lvOnFrame || !varTypeIsStruct(var))
++        if (!var->lvOnFrame)
+         {
+             continue;
+         }
+diff --git a/src/coreclr/jit/decomposelongs.cpp b/src/coreclr/jit/decomposelongs.cpp
+--- a/src/coreclr/jit/decomposelongs.cpp
++++ b/src/coreclr/jit/decomposelongs.cpp
+@@ -3208,6 +3208,13 @@ void DecomposeLongs::TryPromoteLongVar(unsigned lclNum)
+     {
+         return;
+     }
++    if (varDsc->lvIsParam && (lclNum < m_compiler->info.compArgsCount) &&
++        m_compiler->lvaGetParameterABIInfo(lclNum).IsSplitAcrossRegistersAndStack())
++    {
++        // Split between the last register and the stack: it stays on the frame, where the prolog puts
++        // the two halves together (genHomeStackPartOfSplitParameter).
++        return;
++    }
+ #if defined(FEATURE_HW_INTRINSICS) && defined(TARGET_X86)
+     if (varDsc->lvIsParam)
+     {
+diff --git a/src/coreclr/jit/lowerriscv64.cpp b/src/coreclr/jit/lowerriscv64.cpp
+--- a/src/coreclr/jit/lowerriscv64.cpp
++++ b/src/coreclr/jit/lowerriscv64.cpp
+@@ -1714,7 +1714,8 @@ bool Lowering::IsAlignmentTestedAccess(GenTreeIndir* indir, unsigned* lclNum, un
+     {
+         return false;
+     }
+-    // Without strict alignment only the accesses the front end flagged unaligned are tested.
++    // Without strict alignment only the accesses the front end flagged unaligned are tested
++    // (in unoptimized code ContainCheckIndir flags every access through an unknown base).
+     if (RiscV64TrustedAlign() && !indir->IsUnaligned())
+     {
+         return false;
+@@ -2628,8 +2629,12 @@ void Lowering::ContainBlockStoreAddress(GenTreeBlk* blkNode, unsigned size, GenT
+     // whole unrolled copy/init "unaligned" (genCodeForCpBlkUnroll then tests it at
+     // run time and falls back to a byte-wise copy; genCodeForInitBlkUnroll stores
+     // byte-wise). Locals not going through here are stack-aligned.
+-    if (RiscV64StrictAlign() && !blkNode->IsUnaligned() &&
+-        !IsAddrKnownAligned(addr, RiscV64BlockAlignment(size)))
++    // Unoptimized code keeps addresses in temporaries, where the offset that makes an access
++    // misaligned is not seen (a field of a packed local through its address): every base is tested
++    // there, as with strict alignment.
++    const bool testBases =
++        RiscV64StrictAlign() || (RiscV64TrustedAlign() && m_compiler->opts.OptimizationDisabled());
++    if (testBases && !blkNode->IsUnaligned() && !IsAddrKnownAligned(addr, RiscV64BlockAlignment(size)))
+     {
+         blkNode->gtFlags |= GTF_IND_UNALIGNED;
+     }
+@@ -3241,7 +3246,12 @@ void Lowering::ContainCheckIndir(GenTreeIndir* indirNode)
+     // and then takes the checked wide/byte-wise path below.
+     // An access the front end flagged unaligned (Unsafe.ReadUnaligned etc.) whose address is proven
+     // aligned needs no check either.
+-    if (RiscV64StrictAlign() && indirNode->OperIs(GT_IND, GT_STOREIND) && (genTypeSize(indirNode->TypeGet()) > 1))
++    // Unoptimized code keeps addresses in temporaries, where the offset that makes an access
++    // misaligned is not seen (a field of a packed local through its address): every base is tested
++    // there, as with strict alignment.
++    const bool testBases =
++        RiscV64StrictAlign() || (RiscV64TrustedAlign() && m_compiler->opts.OptimizationDisabled());
++    if (testBases && indirNode->OperIs(GT_IND, GT_STOREIND) && (genTypeSize(indirNode->TypeGet()) > 1))
+     {
+         if (IsAddrKnownAligned(indirNode->Addr(), genTypeSize(indirNode->TypeGet())))
+         {
+diff --git a/src/coreclr/jit/targetriscv64.cpp b/src/coreclr/jit/targetriscv64.cpp
+--- a/src/coreclr/jit/targetriscv64.cpp
++++ b/src/coreclr/jit/targetriscv64.cpp
+@@ -169,15 +169,11 @@ ABIPassingInformation RiscV64Classifier::Classify(Compiler*    comp,
+                 ABIPassingSegment seg = ABIPassingSegment::InRegister(m_intRegs.Dequeue(), 0, passedSize);
+                 return ABIPassingInformation::FromSegment(comp, passedByRef, seg);
+             }
+-            else if (!varTypeIsStruct(type) && (m_intRegs.Count() == 1))
+-            {
+-                // A 2*XLEN scalar is not split between the last register and the stack, as the psABI would:
+-                // the JIT splits only aggregates. It goes wholly on the stack and the last register stays unused.
+-                m_intRegs.Dequeue();
+-                return ABIPassingInformation::FromSegment(comp, passedByRef, passOnStack(0, passedSize));
+-            }
+             else
+             {
++                // With one register left a 2*XLEN value is split between it and the stack, a scalar as well
++                // as an aggregate: the psABI says so, and native code on the other side of a P/Invoke or of
++                // a reverse P/Invoke follows it.
+                 assert(varTypeIsStruct(type) || !TargetArchitecture::IsRiscV64);
+                 unsigned int tailSize = passedSize - TARGET_POINTER_SIZE;
+ 
