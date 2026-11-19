@@ -1,0 +1,68 @@
+RISC-V: an array length the inline allocation does not take throws OverflowException (applies after perf-52).
+
+The inline allocation of an array (perf-49) ended the guest for a length the helper would reject. It
+now throws OverflowException, as the helper does for a negative length: the guard is the same
+compare and branch, to the overflow helper block instead of the fail-fast one.
+
+The guard also bounds the size below 2 GiB. The heap guard compares the new bump pointer with the
+floor of the heap, which is right only while "bump pointer - size" does not wrap, and the heap lies
+above 2 GiB. A constant length over the bound keeps the helper call.
+
+Regression test: bflat-ts:memory/array_length_checks
+Regression test: bflat-ts:memory/array_length_checks_helper
+
+diff --git a/src/coreclr/jit/morph.cpp b/src/coreclr/jit/morph.cpp
+--- a/src/coreclr/jit/morph.cpp
++++ b/src/coreclr/jit/morph.cpp
+@@ -6600,9 +6600,10 @@ int Compiler::zkCsrForPInvoke(GenTreeCall* call)
+ //    Semantics kept: the array is exactly-typed (its MethodTable is the constant
+ //    the IL named), zeroed (fresh zkVM RAM, as for objects), its length field set,
+ //    its size the aligned OFFSETOF__CORINFO_Array__data + length * elementSize.
+-//    Semantics changed, like the object path: a length that the helper would
+-//    reject (negative, or beyond the maximum array length) and heap exhaustion
+-//    fail fast instead of throwing OverflowException / OutOfMemoryException.
++//    Semantics changed, like the object path: heap exhaustion fails fast instead
++//    of throwing OutOfMemoryException. A length that the helper would reject
++//    (negative, or beyond the maximum array length) throws OverflowException, as
++//    the helper does.
+ //
+ //    Left alone: a class handle that is not a compile-time constant (shared
+ //    generic code looks it up at run time), the frozen-segment helper, and arrays
+@@ -6674,7 +6675,13 @@ GenTree* Compiler::fgRiscV64TryInlineNewArr(GenTreeCall* call)
+         constLen ? (lenArg->TypeIs(TYP_INT) ? (int64_t)(int32_t)lenArg->AsIntConCommon()->IconValue()
+                                             : lenArg->AsIntConCommon()->IntegralValue())
+                  : 0;
+-    if (constLen && ((constLenVal < 0) || (constLenVal > (int64_t)CORINFO_Array_MaxLength)))
++    // The heap guard below compares the new bump pointer with the floor of the heap, which catches an
++    // allocation that does not fit only while "bump pointer - size" does not wrap. The heap lies above
++    // 2 GiB (see the object allocator), so a size below 2 GiB cannot wrap: a longer array, which the
++    // heap could not hold anyway, is rejected by its length.
++    const int64_t maxLen = min((int64_t)CORINFO_Array_MaxLength,
++                               (int64_t)((INT32_MAX - (OFFSETOF__CORINFO_Array__data + 7)) / elemSize));
++    if (constLen && ((constLenVal < 0) || (constLenVal > maxLen)))
+     {
+         return nullptr;
+     }
+@@ -6706,16 +6713,16 @@ GenTree* Compiler::fgRiscV64TryInlineNewArr(GenTreeCall* call)
+     // len = (long)length
+     GenTree* storeLen = gtNewStoreLclVarNode(lenLcl, lenVal);
+ 
+-    // Guard (non-constant length only): fail fast unless 0 <= len <= CORINFO_Array_MaxLength.
+-    // GT_BOUNDS_CHECK traps on (unsigned)index >= (unsigned)length, so index = len (negative values
+-    // are huge as unsigned) and length = MaxLength + 1. The same bound the helper enforces (it
+-    // would throw OverflowException).
++    // Guard (non-constant length only): throw OverflowException unless 0 <= len <= maxLen.
++    // GT_BOUNDS_CHECK branches on (unsigned)index >= (unsigned)length, so index = len (negative values
++    // are huge as unsigned) and length = maxLen + 1. The exception is the one the helper throws for a
++    // length it rejects; for a length between maxLen and CORINFO_Array_MaxLength the helper would
++    // throw OutOfMemoryException instead.
+     GenTree* lenGuard = nullptr;
+     if (!constLen)
+     {
+         GenTreeBoundsChk* chk = new (this, GT_BOUNDS_CHECK)
+-            GenTreeBoundsChk(gtNewLclvNode(lenLcl, TYP_LONG), gtNewLconNode((int64_t)CORINFO_Array_MaxLength + 1),
+-                             SCK_FAIL_FAST);
++            GenTreeBoundsChk(gtNewLclvNode(lenLcl, TYP_LONG), gtNewLconNode(maxLen + 1), SCK_OVERFLOW);
+         chk->gtInxType = TYP_LONG;
+         lenGuard       = chk;
+     }
