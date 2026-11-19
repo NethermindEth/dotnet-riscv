@@ -1,4 +1,4 @@
-riscv32: split a 2*XLEN scalar between the last register and the stack; test every base in unoptimized code.
+riscv32: psABI split of 2*XLEN scalars, tested bases in unoptimized code, register-sized copies of byte-aligned structs, 64-bit Interlocked.Or/And.
 
 With one argument register left a 64-bit scalar went wholly on the stack and the register stayed
 unused. The psABI splits it, and native code on the other side of a P/Invoke or of a reverse
@@ -10,8 +10,17 @@ code keeps addresses in temporaries, where the offset is not seen (a field of a 
 by address), so there every access through a base that is not known to be aligned is tested, as
 with strict alignment.
 
+A struct of the register size is copied, and returned, as one scalar. When its own alignment is
+smaller than that scalar (a struct of bytes or of shorts) the scalar access is marked unaligned, as
+the unrolled copy of such a struct already is.
+
+Interlocked.Or and Interlocked.And on a 64-bit value are not expanded as intrinsics on a 32-bit
+target, like on x86: the decomposition of longs has no form for them.
+
 Regression test: bflat-ts:calls/rv32_long_calls
 Regression test: bflat-ts:memory/rv32_arrays_blocks
+Regression test: bflat-ts:memory/const_size_moves
+Regression test: bflat-ts:pal/interlocked_single_hart
 
 diff --git a/src/coreclr/jit/codegencommon.cpp b/src/coreclr/jit/codegencommon.cpp
 --- a/src/coreclr/jit/codegencommon.cpp
@@ -42,6 +51,106 @@ diff --git a/src/coreclr/jit/decomposelongs.cpp b/src/coreclr/jit/decomposelongs
  #if defined(FEATURE_HW_INTRINSICS) && defined(TARGET_X86)
      if (varDsc->lvIsParam)
      {
+diff --git a/src/coreclr/jit/importercalls.cpp b/src/coreclr/jit/importercalls.cpp
+--- a/src/coreclr/jit/importercalls.cpp
++++ b/src/coreclr/jit/importercalls.cpp
+@@ -4532,8 +4532,8 @@ GenTree* Compiler::impIntrinsic(CORINFO_CLASS_HANDLE    clsHnd,
+             case NI_System_Threading_Interlocked_Or:
+             case NI_System_Threading_Interlocked_And:
+             {
+-#if defined(TARGET_X86)
+-                // On x86, TYP_LONG is not supported as an intrinsic
++#if defined(TARGET_X86) || defined(TARGET_RISCV32)
++                // On a 32-bit target, TYP_LONG is not supported as an intrinsic
+                 if (genActualType(callType) == TYP_LONG)
+                 {
+                     break;
+diff --git a/src/coreclr/jit/lower.cpp b/src/coreclr/jit/lower.cpp
+--- a/src/coreclr/jit/lower.cpp
++++ b/src/coreclr/jit/lower.cpp
+@@ -6004,6 +6004,10 @@ GenTree* Lowering::LowerStoreLocCommon(GenTreeLclVarCommon* lclStore)
+ // Arguments:
+ //     node - The return node to lower.
+ //
++#ifdef TARGET_RISCV
++static bool IsRegisterCopyUnderAligned(Compiler* comp, ClassLayout* layout, var_types regType);
++#endif
++
+ void Lowering::LowerRetStruct(GenTreeUnOp* ret)
+ {
+ #ifdef TARGET_ARM64
+@@ -6110,7 +6114,14 @@ void Lowering::LowerRetStruct(GenTreeUnOp* ret)
+ 
+             // ChangeOper keeps only the common flags, and an unaligned block load must stay unaligned: a target
+             // without unaligned access (JitNoUnalignedAccess) expands the scalar load.
+-            const GenTreeFlags unaligned = retVal->gtFlags & GTF_IND_UNALIGNED;
++            GenTreeFlags unaligned = retVal->gtFlags & GTF_IND_UNALIGNED;
++#ifdef TARGET_RISCV
++            if (retVal->OperIs(GT_BLK) &&
++                IsRegisterCopyUnderAligned(m_compiler, retVal->AsBlk()->GetLayout(), nativeReturnType))
++            {
++                unaligned = GTF_IND_UNALIGNED;
++            }
++#endif
+             retVal->ChangeOper(GT_IND);
+             retVal->gtFlags |= unaligned;
+             retVal->ChangeType(nativeReturnType);
+@@ -13122,6 +13133,27 @@ bool Lowering::TryDecomposeBlockStoreAsIndirs(GenTreeBlk* blkNode)
+ // Return value:
+ //    true if the replacement was made, false otherwise.
+ //
++#ifdef TARGET_RISCV
++//------------------------------------------------------------------------
++// IsRegisterCopyUnderAligned: whether a struct copied as one scalar of its size can be at an address
++// that is not aligned for that scalar.
++//
++// Notes:
++//    Without strict alignment a base is trusted to be aligned for the struct it points to, and a struct
++//    of bytes or of shorts can be at any address its own alignment allows. With strict alignment every
++//    base is tested anyway (see ContainCheckIndir).
++//
++static bool IsRegisterCopyUnderAligned(Compiler* comp, ClassLayout* layout, var_types regType)
++{
++    if ((JitConfig.JitNoUnalignedAccess() == 0) || (JitConfig.JitRiscV64StrictAlign() != 0) || (layout == nullptr) ||
++        layout->IsCustomLayout() || (layout->GetClassHandle() == NO_CLASS_HANDLE))
++    {
++        return false;
++    }
++    return comp->info.compCompHnd->getClassAlignmentRequirement(layout->GetClassHandle()) < genTypeSize(regType);
++}
++#endif // TARGET_RISCV
++
+ bool Lowering::TryTransformStoreObjAsStoreInd(GenTreeBlk* blkNode)
+ {
+     assert(blkNode->OperIs(GT_STORE_BLK));
+@@ -13174,6 +13206,12 @@ bool Lowering::TryTransformStoreObjAsStoreInd(GenTreeBlk* blkNode)
+     }
+     else if (varTypeIsStruct(src))
+     {
++#ifdef TARGET_RISCV
++        if (src->OperIsIndir() && IsRegisterCopyUnderAligned(m_compiler, blkNode->GetLayout(), regType))
++        {
++            src->gtFlags |= GTF_IND_UNALIGNED;
++        }
++#endif
+         src->ChangeType(regType);
+         LowerNode(blkNode->Data());
+     }
+@@ -13185,7 +13223,13 @@ bool Lowering::TryTransformStoreObjAsStoreInd(GenTreeBlk* blkNode)
+     JITDUMP("Replacing STORE_BLK with STOREIND for [%06u]\n", blkNode->gtTreeID);
+     // ChangeOper keeps only the common flags, and an unaligned block store must stay unaligned: a target without
+     // unaligned access (JitNoUnalignedAccess) expands the scalar store as it does the load it copies.
+-    const GenTreeFlags unaligned = blkNode->gtFlags & GTF_IND_UNALIGNED;
++    GenTreeFlags unaligned = blkNode->gtFlags & GTF_IND_UNALIGNED;
++#ifdef TARGET_RISCV
++    if (IsRegisterCopyUnderAligned(m_compiler, blkNode->GetLayout(), regType))
++    {
++        unaligned = GTF_IND_UNALIGNED;
++    }
++#endif
+     blkNode->ChangeOper(GT_STOREIND);
+     blkNode->gtFlags |= unaligned;
+     blkNode->ChangeType(regType);
 diff --git a/src/coreclr/jit/lowerriscv64.cpp b/src/coreclr/jit/lowerriscv64.cpp
 --- a/src/coreclr/jit/lowerriscv64.cpp
 +++ b/src/coreclr/jit/lowerriscv64.cpp
