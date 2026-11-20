@@ -1,0 +1,90 @@
+riscv32 zkVM: BinaryPrimitives.ReverseEndianness is rev8 under JitZkRev8
+
+Airbender's machines decode the Zbb byte reverse, rev8, in every configuration, and nothing
+else of Zbb: no clz, ctz, cpop, min, max or rotate. The importer makes GT_BSWAP only under
+InstructionSet_Zbb, so a guest reverses bytes with the managed fallback, eight instructions of
+shifts and masks, each a proved cycle. JitZkRev8 lets the importer make GT_BSWAP and
+GT_BSWAP16 of 16 and 32-bit values without Zbb. The 64-bit overload stays a call that the
+library splits into two 32-bit reversals, as on every 32-bit target.
+
+rev8 is a grev with a shift amount of XLEN - 8, so its encoding differs by width: 0x698 in
+the immediate on RV32, 0x6b8 on RV64. On RV32 the result needs no sign extension.
+
+Regression test: bflat-ts:integers/bit_manipulation_zk_rev8, tools/tests/Rev8
+
+diff --git a/src/coreclr/jit/codegenriscv64.cpp b/src/coreclr/jit/codegenriscv64.cpp
+index 0baa5f3e..336e2235 100644
+--- a/src/coreclr/jit/codegenriscv64.cpp
++++ b/src/coreclr/jit/codegenriscv64.cpp
+@@ -1959,7 +1959,8 @@ void CodeGen::genCodeForBswap(GenTree* tree)
+     regNumber dest = tree->GetRegNum();
+     regNumber src  = genConsumeReg(tree->gtGetOp1());
+ 
+-    assert(m_compiler->compOpportunisticallyDependsOn(InstructionSet_Zbb));
++    // rev8 alone, without the rest of Zbb, under JitZkRev8.
++    assert(m_compiler->compOpportunisticallyDependsOn(InstructionSet_Zbb) || ((TARGET_POINTER_SIZE == 4) && (JitConfig.JitZkRev8() != 0)));
+     emitter& emit = *GetEmitter();
+     emit.emitIns_R_R(INS_rev8, size, dest, src);
+     if (tree->OperIs(GT_BSWAP16))
+@@ -1969,11 +1970,13 @@ void CodeGen::genCodeForBswap(GenTree* tree)
+         // properly extended.
+         emit.emitIns_R_R_I(INS_srli, size, dest, dest, (REGSIZE_BYTES - 2) * 8);
+     }
++#ifdef TARGET_64BIT
+     else if (size == EA_4BYTE)
+     {
+         // Shift arithmetically so the int32 result stays sign-extended, as RV64 expects of 32-bit values.
+         emit.emitIns_R_R_I(INS_srai, size, dest, dest, 32);
+     }
++#endif // TARGET_64BIT
+ 
+     genProduceReg(tree);
+ }
+diff --git a/src/coreclr/jit/importercalls.cpp b/src/coreclr/jit/importercalls.cpp
+index 96476de4..9e85ab13 100644
+--- a/src/coreclr/jit/importercalls.cpp
++++ b/src/coreclr/jit/importercalls.cpp
+@@ -12157,7 +12157,8 @@ NamedIntrinsic Compiler::lookupNamedIntrinsic(CORINFO_METHOD_HANDLE method)
+                 {
+                     if (strcmp(methodName, "ReverseEndianness") == 0)
+                     {
+-                        RISCV64_ONLY(if (compOpportunisticallyDependsOn(InstructionSet_Zbb)))
++                        RISCV64_ONLY(
++                            if (compOpportunisticallyDependsOn(InstructionSet_Zbb) || ((TARGET_POINTER_SIZE == 4) && (JitConfig.JitZkRev8() != 0))))
+                         {
+                             result = NI_System_Buffers_Binary_BinaryPrimitives_ReverseEndianness;
+                         }
+diff --git a/src/coreclr/jit/instrsriscv64.h b/src/coreclr/jit/instrsriscv64.h
+index 328c725e..42f5e104 100644
+--- a/src/coreclr/jit/instrsriscv64.h
++++ b/src/coreclr/jit/instrsriscv64.h
+@@ -273,7 +273,12 @@ INST(cpopw,         "cpopw",          0,   0x6020101b)
+ INST(sext_b,        "sext.b",         0,   0x60401013)
+ INST(sext_h,        "sext.h",         0,   0x60501013)
+ INST(zext_h,        "zext.h",         0,   0x0800403b)
++#ifdef TARGET_64BIT
+ INST(rev8,          "rev8",           0,   0x6b805013)
++#else
++// The byte reverse is a grev with shamt XLEN - 8: 0x698 on RV32, 0x6b8 on RV64.
++INST(rev8,          "rev8",           0,   0x69805013)
++#endif
+ 
+ //// R_R_R
+ INST(rol,           "rol",            0,   0x60001033)
+diff --git a/src/coreclr/jit/jitconfigvalues.h b/src/coreclr/jit/jitconfigvalues.h
+index 35f73f38..8b5cde9c 100644
+--- a/src/coreclr/jit/jitconfigvalues.h
++++ b/src/coreclr/jit/jitconfigvalues.h
+@@ -637,6 +637,12 @@ RELEASE_CONFIG_INTEGER(JitZkInitLocallocOnly, "JitZkInitLocallocOnly", 0)
+ // Default 0.
+ RELEASE_CONFIG_INTEGER(JitZkNewObjInPlace, "JitZkNewObjInPlace", 0)
+ 
++// zkVM: BinaryPrimitives.ReverseEndianness of a 16 or 32-bit value is the Zbb rev8 instruction without the
++// rest of Zbb. Airbender's machines decode rev8 on its own (no clz, ctz, cpop, min, max or rotate), and the
++// managed fallback is eight instructions of shifts and masks where every instruction is a proved cycle.
++// Default 0.
++RELEASE_CONFIG_INTEGER(JitZkRev8, "JitZkRev8", 0)
++
+ RELEASE_CONFIG_INTEGER(EnableEmbeddedBroadcast,     "EnableEmbeddedBroadcast",   1) // Allows embedded broadcasts to be disabled
+ RELEASE_CONFIG_INTEGER(EnableEmbeddedMasking,       "EnableEmbeddedMasking",     1) // Allows embedded masking to be disabled
+ RELEASE_CONFIG_INTEGER(EnableApxNDD,                "EnableApxNDD",              0) // Allows APX NDD feature to be disabled
