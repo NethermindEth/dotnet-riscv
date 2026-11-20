@@ -5137,13 +5137,13 @@ index b1e51f8cad6..34e3832468f 100644
      if ((format & UNWIND_RISCV64_MODE_MASK) != UNWIND_RISCV64_MODE_DWARF) {
          CompactUnwinder_riscv64<LocalAddressSpace, Registers_REGDISPLAY> compactInst;
          int stepRet = compactInst.stepWithCompactEncoding(format, start_ip, _addressSpace, *(Registers_REGDISPLAY*)regs);
-@@ -1333,7 +1333,7 @@ bool UnwindHelpers::GetUnwindProcInfo(PCODE pc, UnwindInfoSections &uwInfoSectio
-     libunwind::UnwindCursor<LocalAddressSpace, Registers_x86> uc(_addressSpace);
+@@ -1367,7 +1367,7 @@ bool UnwindHelpers::GetUnwindProcInfo(PCODE pc, UnwindInfoSections &uwInfoSectio
+     using NativeRegisters = Registers_x86;
  #elif defined(HOST_LOONGARCH64)
-     libunwind::UnwindCursor<LocalAddressSpace, Registers_loongarch> uc(_addressSpace);
+     using NativeRegisters = Registers_loongarch;
 -#elif defined(HOST_RISCV64)
 +#elif defined(HOST_RISCV64) || defined(HOST_RISCV32)
-     libunwind::UnwindCursor<LocalAddressSpace, Registers_riscv> uc(_addressSpace);
+     using NativeRegisters = Registers_riscv;
  #else
      #error "Unwinding is not implemented for this architecture yet."
 @@ -1359,7 +1359,7 @@ bool UnwindHelpers::GetUnwindProcInfo(PCODE pc, UnwindInfoSections &uwInfoSectio
