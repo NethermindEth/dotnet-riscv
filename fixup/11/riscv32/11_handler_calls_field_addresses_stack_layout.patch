@@ -1,0 +1,122 @@
+riscv32 zkVM: handler calls that do not return, field addresses, stack layout of 8-byte-aligned structs, array sizes
+
+A call that does not return is made as a jump after the epilog only when the callee does not take
+its arguments in s1-s8 while the caller restores them (JitZkHandlerConv), as fgCanFastTailCall
+already decides for the other tail calls.
+
+The alignment known for the address of a local counts the offset of a field of a struct local.
+
+ilp32: a struct with an 8-byte-aligned field that is passed wholly on the stack is aligned to 8
+bytes, as a 2*XLEN scalar is.
+
+The slow path of the array allocation adds the elements to the base size before rounding, as the
+fast path does.
+
+Regression test: bflat-ts:calls/handler_noreturn_calls, bflat-ts:alignment/struct_values_unaligned, bflat-ts:memory/rv32_arrays_blocks
+
+diff --git a/src/coreclr/jit/lowerriscv64.cpp b/src/coreclr/jit/lowerriscv64.cpp
+--- a/src/coreclr/jit/lowerriscv64.cpp
++++ b/src/coreclr/jit/lowerriscv64.cpp
+@@ -738,6 +738,13 @@
+         }
+     }
+ 
++    // JitZkHandlerConv: the epilog of a method that is not a handler restores s1-s8, where the
++    // arguments of a handler travel (as in fgCanFastTailCall).
++    if (((call->gtCallMoreFlags & GTF_CALL_M_ZK_HANDLER) != 0) && !m_compiler->compZkHandlerConv)
++    {
++        return;
++    }
++
+     for (unsigned lclNum = 0; lclNum < m_compiler->lvaCount; lclNum++)
+     {
+         const LclVarDsc* const varDsc = m_compiler->lvaGetDesc(lclNum);
+@@ -1315,7 +1322,8 @@
+         {
+             // Stack locals are pointer-aligned; the field offset decides.
+             const unsigned slotLog2 = (unsigned)BitOperations::Log2((unsigned)TARGET_POINTER_SIZE);
+-            unsigned       offs     = node->AsLclFld()->GetLclOffs();
++            const LclVarDsc* varDsc = m_compiler->lvaGetDesc(node->AsLclFld());
++            unsigned offs = node->AsLclFld()->GetLclOffs() + (varDsc->lvIsStructField ? varDsc->lvFldOffset : 0);
+             return (offs == 0) ? slotLog2 : min((unsigned)BitOperations::TrailingZeroCount(offs), slotLog2);
+         }
+ 
+@@ -1422,7 +1430,7 @@
+ //    multiple of the access size makes the access misaligned for any aligned base - a field
+ //    of a byte-aligned struct read whole, a small field read through a wider load.
+ //
+-static bool IsOffsetMisaligned(GenTree* addr, unsigned align)
++static bool IsOffsetMisaligned(Compiler* comp, GenTree* addr, unsigned align)
+ {
+     if (align <= 1)
+     {
+@@ -1440,7 +1448,8 @@
+     }
+     else if (addr->OperIs(GT_LCL_ADDR))
+     {
+-        offset = addr->AsLclFld()->GetLclOffs();
++        const LclVarDsc* varDsc = comp->lvaGetDesc(addr->AsLclFld());
++        offset = addr->AsLclFld()->GetLclOffs() + (varDsc->lvIsStructField ? varDsc->lvFldOffset : 0);
+     }
+ 
+     return (offset & (ssize_t)(align - 1)) != 0;
+@@ -2648,7 +2657,7 @@
+         blkNode->gtFlags |= GTF_IND_UNALIGNED;
+     }
+ 
+-    if (RiscV64TrustedAlign() && IsOffsetMisaligned(addr, RiscV64BlockAlignment(size)))
++    if (RiscV64TrustedAlign() && IsOffsetMisaligned(m_compiler, addr, RiscV64BlockAlignment(size)))
+     {
+         blkNode->gtFlags |= GTF_IND_UNALIGNED;
+     }
+@@ -3270,7 +3279,7 @@
+         }
+     }
+     else if (RiscV64TrustedAlign() && indirNode->OperIs(GT_IND, GT_STOREIND) &&
+-             IsOffsetMisaligned(indirNode->Addr(), genTypeSize(indirNode->TypeGet())))
++             IsOffsetMisaligned(m_compiler, indirNode->Addr(), genTypeSize(indirNode->TypeGet())))
+     {
+         indirNode->gtFlags |= GTF_IND_UNALIGNED;
+     }
+diff --git a/src/coreclr/jit/targetriscv64.cpp b/src/coreclr/jit/targetriscv64.cpp
+--- a/src/coreclr/jit/targetriscv64.cpp
++++ b/src/coreclr/jit/targetriscv64.cpp
+@@ -146,13 +146,15 @@
+     else
+     {
+         // Integer calling convention
+-        auto passOnStack = [this, type](unsigned offset, unsigned size) -> ABIPassingSegment {
++        auto passOnStack = [this, type, comp, structLayout](unsigned offset, unsigned size) -> ABIPassingSegment {
+             assert(size > 0);
+             assert(size <= 2 * TARGET_POINTER_SIZE);
+             assert((m_stackArgSize % TARGET_POINTER_SIZE) == 0);
+ #ifndef TARGET_64BIT
+-            // ilp32: a 2*XLEN scalar passed wholly on the stack is aligned to its size.
+-            if ((offset == 0) && (size == 2 * TARGET_POINTER_SIZE) && !varTypeIsStruct(type))
++            // ilp32: a 2*XLEN scalar passed wholly on the stack is aligned to its size, and so is a
++            // struct with a field of that alignment.
++            if ((offset == 0) && (size == 2 * TARGET_POINTER_SIZE) &&
++                (!varTypeIsStruct(type) || (structLayout->GetAlignmentRequirement(comp) > TARGET_POINTER_SIZE)))
+             {
+                 m_stackArgSize = roundUp(m_stackArgSize, 2 * TARGET_POINTER_SIZE);
+             }
+diff --git a/src/coreclr/nativeaot/Runtime/GCHelpers.cpp b/src/coreclr/nativeaot/Runtime/GCHelpers.cpp
+--- a/src/coreclr/nativeaot/Runtime/GCHelpers.cpp
++++ b/src/coreclr/nativeaot/Runtime/GCHelpers.cpp
+@@ -511,7 +511,7 @@
+         uFlags &= ~GC_ALLOC_ZEROING_OPTIONAL;
+     }
+ 
+-    size_t cbSize = ALIGN_UP(pEEType->GetBaseSize(), OBJECT_SIZE_ALIGNMENT);
++    size_t cbSize = pEEType->GetBaseSize();
+ 
+     if (pEEType->HasComponentSize())
+     {
+@@ -549,6 +549,7 @@
+     else
+     {
+         ASSERT(numElements == 0);
++        cbSize = ALIGN_UP(cbSize, OBJECT_SIZE_ALIGNMENT);
+     }
+ 
+     if ((cbSize >= RH_LARGE_OBJECT_SIZE) && (cbSize >= GCHeapUtilities::GetGCHeap()->GetLOHThreshold()))
