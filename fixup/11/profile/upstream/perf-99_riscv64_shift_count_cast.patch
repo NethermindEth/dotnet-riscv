@@ -2,7 +2,8 @@ RISC-V: elide unchecked long-local casts used as register shift counts.
 
 perf-91 keeps the signed int representation of a narrowed local. When its
 only use is the count of a register shift, RV64 reads the low five or six
-bits of the original local directly.
+bits of the original local directly. A cast that CSE shares between several
+shifts becomes an INT local and keeps its single sext.w.
 
 Regression test: tools/tests/ShiftCountCast
 Regression test: bflat-ts:integers/int_extension_matrix_a

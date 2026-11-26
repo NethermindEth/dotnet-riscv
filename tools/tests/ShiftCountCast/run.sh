@@ -23,5 +23,9 @@ check_shift() {
     fi
 }
 
-check_shift Shift64 srl
-check_shift Shift32 sllw
+check_shift ShiftLeft64 sll
+check_shift ShiftRightUnsigned64 srl
+check_shift ShiftRight64 sra
+check_shift ShiftLeft32 sllw
+check_shift ShiftRightUnsigned32 srlw
+check_shift ShiftRight32 sraw
